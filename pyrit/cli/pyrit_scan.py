@@ -1019,6 +1019,7 @@ async def _run_scenario_async(
         int: Exit code (``0`` if the run completed successfully, ``1`` otherwise).
     """
     from pyrit.cli import _output
+    from pyrit.cli.api_client import CompatibilityError
     from pyrit.models import ScenarioRunState
 
     scenario_name = parsed_args.scenario_name
@@ -1055,6 +1056,11 @@ async def _run_scenario_async(
             print("Scenario run cancelled.")
         except Exception:
             print("Warning: could not cancel scenario run on server.")
+        return 1
+
+    except CompatibilityError as exc:
+        _print_cli_exception(exc=exc)
+        print("Polling stopped; the server run may still be active.")
         return 1
 
     if run.status == ScenarioRunState.COMPLETED:

@@ -6,9 +6,10 @@ import {
   type APIRequestContext,
   type Locator,
   type Page,
-} from "@playwright/test";
+} from "./_fixtures";
 
 import type { AddMessageResponse } from "@/types";
+import { compatibilityHeaders } from "./_compatibility";
 
 // ---------------------------------------------------------------------------
 // Mode detection
@@ -68,6 +69,7 @@ async function createTarget(
   authMode: AuthMode = "api_key",
 ): Promise<string> {
   const resp = await request.post("/api/targets", {
+    headers: compatibilityHeaders(),
     data: { type: targetType, params, auth_mode: authMode },
   });
   expect(resp.ok()).toBeTruthy();
@@ -86,6 +88,7 @@ async function seedAttack(
   targetRegistryName: string,
 ): Promise<SeededAttack> {
   const resp = await request.post("/api/attacks", {
+    headers: compatibilityHeaders(),
     data: { target_registry_name: targetRegistryName },
   });
   expect(resp.status()).toBe(201);
@@ -118,7 +121,7 @@ async function storeMessage(
   };
   const resp = await request.post(
     `/api/attacks/${encodeURIComponent(attackResultId)}/messages`,
-    { data },
+    { data, headers: compatibilityHeaders() },
   );
   expect(resp.ok()).toBeTruthy();
 }
@@ -140,7 +143,7 @@ async function sendMessage(
   };
   const resp = await request.post(
     `/api/attacks/${encodeURIComponent(attackResultId)}/messages`,
-    { data },
+    { data, headers: compatibilityHeaders() },
   );
   expect(resp.ok()).toBeTruthy();
   const body: AddMessageResponse = await resp.json();
@@ -189,7 +192,7 @@ async function createConversation(
   }
   const resp = await request.post(
     `/api/attacks/${encodeURIComponent(attackResultId)}/conversations`,
-    { data },
+    { data, headers: compatibilityHeaders() },
   );
   expect(resp.status()).toBe(201);
   const body = await resp.json();
@@ -793,6 +796,7 @@ for (const variant of TARGET_VARIANTS) {
           async () => {
             const resp = await request.get(
               `/api/attacks/${encodeURIComponent(attackResultId)}/conversations`,
+              { headers: compatibilityHeaders() },
             );
             const data = await resp.json();
             return data.main_conversation_id;
@@ -856,6 +860,7 @@ for (const variant of TARGET_VARIANTS) {
           async () => {
             const resp = await request.get(
               `/api/attacks/${encodeURIComponent(attackResultId)}/conversations`,
+              { headers: compatibilityHeaders() },
             );
             return (await resp.json()).conversations.length;
           },
@@ -865,6 +870,7 @@ for (const variant of TARGET_VARIANTS) {
 
       const convResp = await request.get(
         `/api/attacks/${encodeURIComponent(attackResultId)}/conversations`,
+        { headers: compatibilityHeaders() },
       );
       const convData = await convResp.json();
       const branchConv = convData.conversations.find(
@@ -968,6 +974,7 @@ for (const variant of TARGET_VARIANTS) {
           async () => {
             const resp = await request.get(
               `/api/attacks/${encodeURIComponent(attackResultId)}/conversations`,
+              { headers: compatibilityHeaders() },
             );
             const data = await resp.json();
             return data.main_conversation_id;
@@ -1087,6 +1094,7 @@ for (const variant of TARGET_VARIANTS) {
           async () => {
             const resp = await request.get(
               `/api/attacks/${encodeURIComponent(attackResultId)}/conversations`,
+              { headers: compatibilityHeaders() },
             );
             return (await resp.json()).conversations.length;
           },
@@ -1165,6 +1173,7 @@ for (const variant of TARGET_VARIANTS) {
           async () => {
             const resp = await request.get(
               `/api/attacks/${encodeURIComponent(attackResultId)}/conversations`,
+              { headers: compatibilityHeaders() },
             );
             const data = await resp.json();
             return data.main_conversation_id;
