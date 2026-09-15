@@ -136,6 +136,7 @@ describe("Navigation", () => {
     expect(labels).toEqual([
       "Home",
       "Chat",
+      "Conversation tree",
       "History",
       "Scanner",
       "Targets",
@@ -158,6 +159,18 @@ describe("Navigation", () => {
     expect(button).toHaveAttribute("aria-current", "page");
     await user.click(button);
     expect(onNavigate).toHaveBeenCalledWith("history");
+  });
+
+  it("opens the conversation tree workspace", async () => {
+    const user = userEvent.setup();
+    const onNavigate = jest.fn();
+    renderWithProvider(
+      <Navigation {...defaultProps} currentView="tree" onNavigate={onNavigate} />,
+    );
+    const button = screen.getByRole("button", { name: "Conversation tree" });
+    expect(button).toHaveAttribute("aria-current", "page");
+    await user.click(button);
+    expect(onNavigate).toHaveBeenCalledWith("tree");
   });
 
   it("calls onNavigate with 'scenarios' when the scenarios button is clicked", async () => {

@@ -78,6 +78,11 @@ const mockListTargets = targetsApi.listTargets as jest.Mock;
 const mockGetTarget = targetsApi.getTarget as jest.Mock;
 
 // Mock the child components to isolate App logic
+jest.mock("./components/ConversationTree/ConversationTree", () => ({
+  __esModule: true,
+  default: () => <div data-testid="conversation-tree" />,
+}));
+
 jest.mock("./components/Labels/LabelsBar", () => {
   const MockLabelsBar = () => <div data-testid="labels-bar" />;
   MockLabelsBar.displayName = "MockLabelsBar";
@@ -455,6 +460,22 @@ describe("App", () => {
       "configuration"
     );
     expect(screen.getByTestId("configuration")).toBeInTheDocument();
+  });
+
+  it("renders the conversation tree at /tree with the matching navigation state", () => {
+    renderApp("/tree");
+    expect(screen.getByTestId("main-layout")).toHaveAttribute("data-current-view", "tree");
+    expect(screen.getByTestId("conversation-tree")).toBeInTheDocument();
+  });
+
+  it("retains the tree workspace but hides it on client-side navigation", async () => {
+    const user = userEvent.setup();
+    renderApp("/tree");
+    const tree = screen.getByTestId("conversation-tree");
+    expect(tree).toBeVisible();
+    await user.click(screen.getByTestId("nav-chat"));
+    expect(screen.getByTestId("conversation-tree")).toBe(tree);
+    expect(tree).not.toBeVisible();
   });
 
   it("renders the attack history tab when deep-linked to /history/attacks", () => {

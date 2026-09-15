@@ -19,6 +19,7 @@ import {
   WeatherMoonRegular,
   WeatherSunnyRegular,
   TargetRegular,
+  BranchForkRegular,
 } from '@fluentui/react-icons'
 import { useTheme } from '../../hooks/useTheme'
 import type { ThemeMode } from '../../hooks/useTheme'
@@ -27,6 +28,7 @@ import { useNavigationStyles } from './Navigation.styles'
 export type ViewName =
   | 'home'
   | 'chat'
+  | 'tree'
   | 'history'
   | 'targets'
   | 'configuration'
@@ -94,6 +96,17 @@ export default function Navigation({
           aria-label="Chat"
           aria-current={currentView === 'chat' ? 'page' : undefined}
           onClick={() => onNavigate('chat')}
+        />
+
+        <Button
+          className={styles.navButton}
+          data-active={currentView === 'tree'}
+          appearance="subtle"
+          icon={<BranchForkRegular />}
+          title="Conversation tree"
+          aria-label="Conversation tree"
+          aria-current={currentView === 'tree' ? 'page' : undefined}
+          onClick={() => onNavigate('tree')}
         />
 
         <Button
