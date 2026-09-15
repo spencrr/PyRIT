@@ -57,6 +57,8 @@ interface MessageListProps {
   noTargetSelected?: boolean
   /** Conversation-wide default: render message text as Markdown. */
   globalMarkdown?: boolean
+  /** Disable for embedded inspectors so transcript updates do not scroll surrounding editors. */
+  autoScroll?: boolean
 }
 
 /** Image that shows a spinner while loading. */
@@ -541,7 +543,7 @@ function getRenderMessagePieces(message: Message, messageIndex: number): RenderM
   return pieces
 }
 
-export default function MessageList({ messages, onCopyToInput, onCopyToNewConversation, onBranchConversation, onBranchAttack, isLoading, isSingleTurn, isOperatorLocked, isCrossTarget, noTargetSelected, globalMarkdown = false }: MessageListProps) {
+export default function MessageList({ messages, onCopyToInput, onCopyToNewConversation, onBranchConversation, onBranchAttack, isLoading, isSingleTurn, isOperatorLocked, isCrossTarget, noTargetSelected, globalMarkdown = false, autoScroll = true }: MessageListProps) {
   const styles = useMessageListStyles()
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -566,8 +568,8 @@ export default function MessageList({ messages, onCopyToInput, onCopyToNewConver
   }
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    if (autoScroll) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, autoScroll])
 
   if (isLoading) {
     return (
