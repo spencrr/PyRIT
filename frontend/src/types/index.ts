@@ -873,3 +873,129 @@ export interface ScenarioRunProgress {
   has_more: boolean
   plan_complete: boolean
 }
+
+// --- Human-reviewed conversation trees (browser-local workspace schema) ---
+
+export interface TreeConverterSpec {
+  type: string
+  params: Record<string, unknown>
+}
+
+export interface ScorerCatalogEntry {
+  scorer_type: string
+  score_type: 'true_false' | 'float_scale' | 'unknown'
+  is_llm_based: boolean
+  parameters: Parameter[]
+  description?: string | null
+}
+
+export interface ScorerInstance {
+  scorer_id: string
+  scorer_type: string
+  identifier_hash: string
+  score_type: 'true_false' | 'float_scale' | 'unknown'
+}
+
+export interface TreeScorerSelection extends ScorerInstance {
+  scope: 'response' | 'conversation'
+  highIsRisk: boolean
+}
+
+export interface TreeScoreRun {
+  id: string
+  scorerId: string
+  scorerHash: string
+  status: 'complete' | 'not_applicable' | 'error'
+  scores: BackendScore[]
+  error?: string
+}
+
+export interface TreeSettings {
+  traversal: 'breadth-first' | 'depth-first'
+  operationBudget: number
+  confirmRuns: boolean
+  autoRun: boolean
+  continueOnError: boolean
+  markdown: boolean
+  stackSamples: boolean
+  stackVariants: boolean
+  autoScore: boolean
+  objective: string
+  scorers: TreeScorerSelection[]
+  primaryScorerId?: string
+}
+
+export interface TreeAttempt {
+  attemptId: string
+  parentAttemptId?: string
+  prompt: string
+  converters: TreeConverterSpec[]
+  status: 'completed' | 'error'
+  attackResultId?: string
+  conversationId?: string
+  lastSequence?: number
+  messages?: BackendMessage[]
+  error?: string
+  scoreRuns?: TreeScoreRun[]
+}
+
+export interface TreeGroup {
+  id: string
+  kind: 'sample' | 'variant'
+  nodeIds: string[]
+  collapsed: boolean
+  activeNodeId: string
+}
+
+export interface TreeNode {
+  id: string
+  parentId: string | null
+  prompt: string
+  converters: TreeConverterSpec[]
+  status: 'draft' | 'running' | 'completed' | 'error'
+  pruned: boolean
+  kept: boolean
+  forkedFrom?: string
+  position?: { x: number; y: number }
+  attackResultId?: string
+  conversationId?: string
+  lastSequence?: number
+  messages?: BackendMessage[]
+  error?: string
+  attemptId?: string
+  parentAttemptId?: string
+  attempts?: TreeAttempt[]
+  scoreRuns?: TreeScoreRun[]
+}
+
+export interface TreeWorkspace {
+  schemaVersion: 1
+  id: string
+  revision: number
+  name: string
+  targetRegistryName: string
+  targetIdentifierHash: string
+  systemPrompt: string
+  labels: Record<string, string>
+  nodes: TreeNode[]
+  createdAt: string
+  updatedAt: string
+  settings?: TreeSettings
+  groups?: TreeGroup[]
+}
+
+export type TreeCommand =
+  | { type: 'add'; parentId: string | null; prompt: string; converters?: TreeConverterSpec[] }
+  | { type: 'edit'; nodeId: string; prompt: string; converters: TreeConverterSpec[] }
+  | { type: 'fanOut'; nodeId: string; variants: Array<{ prompt: string; converters: TreeConverterSpec[] }> }
+  | { type: 'fork'; nodeId: string; prompt: string; converters: TreeConverterSpec[] }
+  | { type: 'prune'; nodeId: string; pruned: boolean }
+  | { type: 'keep'; nodeId: string }
+  | { type: 'move'; nodeId: string; position: { x: number; y: number } }
+  | { type: 'childVariants'; nodeId: string; variants: Array<{ prompt: string; converters: TreeConverterSpec[] }> }
+  | { type: 'sample'; nodeId: string; count: number }
+  | { type: 'retry'; nodeId: string; scope: 'node' | 'subtree' }
+  | { type: 'autoLayout' }
+  | { type: 'settings'; settings: TreeSettings }
+  | { type: 'group'; groupId: string; collapsed?: boolean; activeNodeId?: string }
+  | { type: 'score'; nodeId: string; attemptId: string; result: TreeScoreRun }

@@ -40,6 +40,9 @@ import type {
   EnvironmentFileListResponse,
   UpdateConfigurationFileRequest,
   AuthAccess,
+  ScorerCatalogEntry,
+  ScorerInstance,
+  BackendScore,
 } from '../types'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
@@ -244,6 +247,31 @@ export const convertersApi = {
 
   previewConversion: async (request: { original_value: string; converter_ids: string[]; original_value_data_type?: string }): Promise<{ converted_value: string; converted_value_data_type?: string }> => {
     const response = await apiClient.post('/converters/preview', request)
+    return response.data
+  },
+}
+
+export const scorersApi = {
+  listCatalog: async (): Promise<{ items: ScorerCatalogEntry[] }> => {
+    const response = await apiClient.get('/scorers/catalog')
+    return response.data
+  },
+  listScorers: async (): Promise<{ items: ScorerInstance[] }> => {
+    const response = await apiClient.get('/scorers')
+    return response.data
+  },
+  createScorer: async (request: { type: string; params: Record<string, unknown> }): Promise<ScorerInstance> => {
+    const response = await apiClient.post('/scorers', request)
+    return response.data
+  },
+  score: async (scorerId: string, request: {
+    attack_result_id: string
+    conversation_id: string
+    expected_scorer_hash: string
+    objective: string
+    scope: 'response' | 'conversation'
+  }): Promise<{ scorer_id: string; scorer_hash: string; scores: BackendScore[]; status: 'complete' | 'not_applicable' }> => {
+    const response = await apiClient.post(`/scorers/${encodeURIComponent(scorerId)}/score`, request)
     return response.data
   },
 }
