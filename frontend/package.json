@@ -26,6 +26,7 @@
     "@azure/msal-react": "^5.6.0",
     "@fluentui/react-components": "9.74.7",
     "@fluentui/react-icons": "2.0.338",
+    "@xyflow/react": "^12.11.6",
     "axios": "1.20.0",
     "prismjs": "^1.30.0",
     "react": "19.2.8",
