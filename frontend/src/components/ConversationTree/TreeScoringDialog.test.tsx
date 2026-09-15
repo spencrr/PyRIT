@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 
 import { scorersApi } from '@/services/api'
 import type { ScorerInstance } from '@/types'
+import { makeTarget } from '@/test-utils/targetFixtures'
 
 import { DEFAULT_TREE_SETTINGS } from './treeModel'
 import TreeScoringDialog from './TreeScoringDialog'
@@ -58,5 +59,50 @@ describe('TreeScoringDialog', () => {
     expect(screen.getByLabelText('Primary node metric')).toHaveValue('B')
     await user.click(screen.getByRole('button', { name: 'Save scoring settings' }))
     expect(save.mock.calls[0][0].primaryScorerId).toBe('B')
+  })
+
+  it('shows required scale scorer inputs and sends the rubric as a JSON object', async () => {
+    const user = userEvent.setup()
+    jest.mocked(scorersApi.listCatalog).mockResolvedValue({ items: [{
+      scorer_type: 'SelfAskScaleScorer', score_type: 'float_scale', is_llm_based: true,
+      parameters: [
+        { name: 'system_prompt', type_name: 'str', required: true, input_kind: 'multiline' },
+        { name: 'scale', type_name: 'NumericRubric', required: true, input_kind: 'json',
+          example: '{"minimum_value":0,"maximum_value":1,"category":"custom"}' },
+      ],
+    }] })
+    render(<FluentProvider theme={webLightTheme}><TreeScoringDialog settings={DEFAULT_TREE_SETTINGS}
+      targets={[makeTarget({ target_registry_name: 'judge' })]} open onSave={jest.fn()} onClose={jest.fn()} /></FluentProvider>)
+    await user.click(screen.getByText('Configure a new scorer'))
+    await user.selectOptions(screen.getByLabelText('Scorer type'), 'SelfAskScaleScorer')
+    await user.click(screen.getByRole('button', { name: 'Create and select scorer' }))
+    expect(screen.getByText('system_prompt is required.')).toBeVisible()
+    expect(scorersApi.createScorer).not.toHaveBeenCalled()
+    await user.type(screen.getByRole('textbox', { name: /system_prompt/ }), 'Return a numeric score_value and rationale.')
+    await user.selectOptions(screen.getByLabelText(/Judge target/), 'judge')
+    await user.click(screen.getByRole('button', { name: 'Use example scale' }))
+    await user.click(screen.getByRole('button', { name: 'Create and select scorer' }))
+    await waitFor(() => expect(scorersApi.createScorer).toHaveBeenCalledWith({
+      type: 'SelfAskScaleScorer',
+      params: {
+        chat_target: 'judge',
+        system_prompt: 'Return a numeric score_value and rationale.',
+        scale: { minimum_value: 0, maximum_value: 1, category: 'custom' },
+      },
+    }))
+  })
+
+  it('does not offer a broken create action when a required Python-only parameter is unsupported', async () => {
+    const user = userEvent.setup()
+    jest.mocked(scorersApi.listCatalog).mockResolvedValue({ items: [{
+      scorer_type: 'CustomScorer', score_type: 'unknown', is_llm_based: false,
+      parameters: [{ name: 'handler', type_name: 'ResponseHandler', required: true, input_kind: 'unsupported' }],
+    }] })
+    render(<FluentProvider theme={webLightTheme}><TreeScoringDialog settings={DEFAULT_TREE_SETTINGS}
+      targets={[]} open onSave={jest.fn()} onClose={jest.fn()} /></FluentProvider>)
+    await user.click(screen.getByText('Configure a new scorer'))
+    await user.selectOptions(screen.getByLabelText('Scorer type'), 'CustomScorer')
+    expect(screen.getByRole('button', { name: 'Create and select scorer' })).toBeDisabled()
+    expect(screen.getByText(/requires Python-only configuration for handler/)).toBeVisible()
   })
 })

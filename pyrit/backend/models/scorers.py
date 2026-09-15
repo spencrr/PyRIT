@@ -3,7 +3,7 @@
 
 """Request and response models for backend scorer endpoints."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,7 +18,16 @@ __all__ = [
     "ScorerCatalogResponse",
     "ScorerInstance",
     "ScorerListResponse",
+    "ScorerParameter",
 ]
+
+
+class ScorerParameter(Parameter):
+    """Parameter descriptor including supported structured JSON inputs."""
+
+    input_kind: Literal["field", "multiline", "json", "unsupported"] = "field"
+    json_schema: dict[str, Any] | None = None
+    example: str | None = None
 
 
 class ScorerCatalogEntry(BaseModel):
@@ -27,7 +36,7 @@ class ScorerCatalogEntry(BaseModel):
     scorer_type: str = Field(..., description="Scorer class name (e.g., 'SubStringScorer')")
     score_type: ScoreType = Field(..., description="Score family produced by this scorer")
     is_llm_based: bool = Field(False, description="Whether this scorer depends on an LLM judge target")
-    parameters: list[Parameter] = Field(
+    parameters: list[ScorerParameter] = Field(
         default_factory=list,
         description="Constructor parameters suitable for dynamic form generation",
     )

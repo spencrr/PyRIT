@@ -881,11 +881,17 @@ export interface TreeConverterSpec {
   params: Record<string, unknown>
 }
 
+export interface ScorerParameter extends Parameter {
+  input_kind?: 'field' | 'multiline' | 'json' | 'unsupported'
+  json_schema?: Record<string, unknown> | null
+  example?: string | null
+}
+
 export interface ScorerCatalogEntry {
   scorer_type: string
   score_type: 'true_false' | 'float_scale' | 'unknown'
   is_llm_based: boolean
-  parameters: Parameter[]
+  parameters: ScorerParameter[]
   description?: string | null
 }
 

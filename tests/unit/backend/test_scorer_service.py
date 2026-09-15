@@ -6,16 +6,16 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from pyrit.backend.models.scorers import CreateScorerRequest, ScoreAttackRequest
 from pyrit.backend.services.scorer_service import ScorerConflictError, ScorerService
 from pyrit.memory import CentralMemory
-from pyrit.models import AttackResult, Conversation, Message, MessagePiece
+from pyrit.models import AttackResult, Conversation, Message, MessagePiece, Parameter
 from pyrit.registry import ScorerRegistry, TargetRegistry
-from pyrit.score import PlagiarismScorer, SubStringScorer, SystemPromptExtractionScorer
+from pyrit.score import PlagiarismScorer, SelfAskScaleScorer, SubStringScorer, SystemPromptExtractionScorer
 from unit.mocks import MockPromptTarget, get_mock_target_identifier
 
 pytestmark = pytest.mark.usefixtures("patch_central_database")
@@ -119,6 +119,133 @@ async def test_create_scorer_invalid_params_raise_value_error() -> None:
                 params={},
             )
         )
+
+
+async def test_scale_scorer_catalog_exposes_required_prompt_and_structured_rubric() -> None:
+    """The catalog must describe the complete form needed to construct a scale scorer."""
+    service = ScorerService()
+    catalog = await service.list_scorer_catalog_async()
+    entry = next(item for item in catalog.items if item.scorer_type == "SelfAskScaleScorer")
+    parameters = {parameter.name: parameter for parameter in entry.parameters}
+    assert parameters["system_prompt"].required
+    assert parameters["system_prompt"].input_kind == "multiline"
+    assert parameters["scale"].required
+    assert parameters["scale"].input_kind == "json"
+    assert parameters["scale"].json_schema is not None
+    assert "minimum_value" in parameters["scale"].json_schema["properties"]
+    assert parameters["response_handler"].input_kind == "unsupported"
+    assert not parameters["response_handler"].required
+
+
+async def test_scorer_catalog_preserves_string_sequence_unions() -> None:
+    """Category parameters accepting either one string or a sequence retain a list form."""
+    catalog = await ScorerService().list_scorer_catalog_async()
+    for scorer_type, name in [
+        ("InsecureCodeScorer", "harm_categories"),
+        ("SelfAskRefusalScorer", "score_category"),
+    ]:
+        entry = next(item for item in catalog.items if item.scorer_type == scorer_type)
+        parameter = next(item for item in entry.parameters if item.name == name)
+        assert parameter.input_kind == "field"
+        assert parameter.is_list
+        assert parameter.type_name == "list[str]"
+        assert parameter.coerce_value(["category one", "category two"]) == ["category one", "category two"]
+
+
+async def test_create_insecure_code_scorer_keeps_multiple_categories() -> None:
+    """A catalog-shaped array reaches the canonical constructor as multiple categories."""
+    TargetRegistry.get_registry_singleton().instances.register(MockPromptTarget(), name="judge")
+    service = ScorerService()
+    created = await service.create_scorer_async(
+        request=CreateScorerRequest(
+            type="InsecureCodeScorer",
+            params={
+                "chat_target": "judge",
+                "system_prompt": "Evaluate code for the specified categories.",
+                "harm_categories": ["category one", "category two"],
+            },
+        )
+    )
+    scorer = service.get_scorer_object(scorer_id=created.scorer_id)
+    assert scorer is not None
+    assert list(scorer.get_identifier().params["harm_categories"]) == ["category one", "category two"]
+
+
+async def test_create_and_use_scale_scorer_with_json_rubric() -> None:
+    """JSON numeric-rubric input becomes the canonical model and yields a persisted numeric score."""
+    target = MockPromptTarget()
+    TargetRegistry.get_registry_singleton().instances.register(target, name="judge")
+    service = ScorerService()
+    created = await service.create_scorer_async(
+        request=CreateScorerRequest(
+            type="SelfAskScaleScorer",
+            params={
+                "chat_target": "judge",
+                "system_prompt": "Return JSON with score_value from 0 to 10 and rationale.",
+                "scale": {"minimum_value": 0, "maximum_value": 10, "category": "math"},
+            },
+        )
+    )
+    scorer = service.get_scorer_object(scorer_id=created.scorer_id)
+    assert isinstance(scorer, SelfAskScaleScorer)
+    assert scorer.get_identifier().params["scale"]["maximum_value"] == 10
+    conversation_id = "scale-conversation"
+    attack = _persist_conversation(
+        conversation_id=conversation_id,
+        objective="Talk about math",
+        messages=[
+            _message(role="assistant", value="Two plus two is four.", conversation_id=conversation_id, sequence=0),
+        ],
+    )
+
+    async def judge_async(*, normalized_conversation: list[Message]) -> list[Message]:
+        return [
+            MessagePiece(
+                role="assistant",
+                original_value='{"score_value": 8, "rationale": "The response discusses arithmetic."}',
+                conversation_id=normalized_conversation[-1].conversation_id,
+            ).to_message()
+        ]
+
+    with patch.object(target, "_send_prompt_to_target_async", side_effect=judge_async):
+        result = await service.score_attack_result_async(
+            scorer_id=created.scorer_id,
+            request=ScoreAttackRequest(
+                attack_result_id=attack.attack_result_id,
+                conversation_id=conversation_id,
+                expected_scorer_hash=created.identifier_hash,
+                objective="Talk about math",
+            ),
+        )
+    assert result.status == "complete"
+    assert result.scores[0].get_value() == 0.8
+    assert CentralMemory.get_memory_instance().get_scores(score_ids=[str(result.scores[0].id)])
+
+
+async def test_create_scale_scorer_rejects_invalid_rubric_before_construction() -> None:
+    """Invalid numeric bounds are a useful input error rather than an attribute error later."""
+    service = ScorerService()
+    with pytest.raises(ValueError, match="minimum_value must be less"):
+        await service.create_scorer_async(
+            request=CreateScorerRequest(
+                type="SelfAskScaleScorer",
+                params={
+                    "system_prompt": "Judge the response.",
+                    "scale": {"minimum_value": 10, "maximum_value": 0, "category": "math"},
+                },
+            )
+        )
+
+
+def test_scorer_catalog_keeps_supported_list_parameters() -> None:
+    """Lists must not disappear merely because they cannot be coerced from one scalar token."""
+    parameters = ScorerService()._catalog_parameters(
+        parameters=[
+            Parameter(name="values", description="Values", param_type=list[str]),
+        ]
+    )
+    assert parameters[0].is_list
+    assert parameters[0].input_kind == "field"
 
 
 async def test_score_attack_result_response_scope_persists_real_substring_score(sqlite_instance) -> None:

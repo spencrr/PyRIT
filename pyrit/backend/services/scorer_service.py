@@ -6,10 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 import uuid
+from collections.abc import Sequence
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
+
+from pydantic import BaseModel, ValidationError
 
 from pyrit.backend.models.attacks import ScoreView
 from pyrit.backend.models.common import SENSITIVE_FIELD_PATTERNS
@@ -21,14 +25,14 @@ from pyrit.backend.models.scorers import (
     ScorerCatalogResponse,
     ScorerInstance,
     ScorerListResponse,
+    ScorerParameter,
 )
+from pyrit.common.apply_defaults import REQUIRED_VALUE
 from pyrit.memory import CentralMemory
 from pyrit.models import ComponentType, Message, MessageScorable, Parameter, Score, ScoreType, ScoringExpectation
 from pyrit.registry import ScorerRegistry, TargetRegistry
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from pyrit.score import Scorer
 
 __all__ = [
@@ -124,7 +128,21 @@ class ScorerService:
             )
 
         try:
-            scorer = await asyncio.to_thread(self._registry.create_instance, request.type, **dict(request.params))
+            metadata = await asyncio.to_thread(self._registry.get_registered_class_metadata, request.type)
+            if metadata is None:
+                raise ValueError(f"Scorer type '{request.type}' is unavailable.")
+            params: dict[str, object] = dict(request.params)
+            for parameter in metadata.parameters:
+                if parameter.name not in params:
+                    continue
+                value = params[parameter.name]
+                model = self._structured_parameter_model(parameter)
+                if model is not None and (value is not None or parameter.required):
+                    try:
+                        params[parameter.name] = model.model_validate(value)
+                    except ValidationError as exc:
+                        raise ValueError(f"Invalid scorer parameter '{parameter.name}': {exc}") from None
+            scorer = await asyncio.to_thread(self._registry.create_instance, request.type, **params)
         except (TypeError, ValueError, KeyError) as exc:
             raise ValueError(str(exc)) from None
 
@@ -265,24 +283,56 @@ class ScorerService:
                 return message
         return None
 
-    def _catalog_parameters(self, *, parameters: Sequence[Parameter]) -> list[Parameter]:
+    def _catalog_parameters(self, *, parameters: Sequence[Parameter]) -> list[ScorerParameter]:
         """
         Project registry parameters into API-safe catalog parameters.
 
         Returns:
-            list[Parameter]: Scalar-compatible and selectable-reference parameters.
+            list[ScorerParameter]: Complete constructor contract, including unsupported object inputs.
         """
-        projected: list[Parameter] = []
+        projected: list[ScorerParameter] = []
         for parameter in parameters:
+            base = self._sanitize_parameter(parameter=parameter)
+            if parameter.reference is not None:
+                projected.append(self._project_reference_parameter(parameter=parameter))
+                continue
             if parameter.is_string_coercible:
-                projected.append(self._sanitize_parameter(parameter=parameter))
+                projected.append(base)
                 continue
-            if parameter.reference is None:
+            annotation = self._parameter_annotation(parameter)
+            sequence_type = self._sequence_parameter_type(annotation)
+            if sequence_type is not None:
+                projected.append(base.model_copy(update={"param_type": sequence_type}))
                 continue
-            projected.append(self._project_reference_parameter(parameter=parameter))
+            if get_origin(annotation) in (Union, types.UnionType) and str in get_args(annotation):
+                projected.append(base.model_copy(update={"param_type": str, "input_kind": "multiline"}))
+                continue
+            model = self._structured_parameter_model(parameter)
+            if model is not None:
+                example: dict[str, object] = {"minimum_value": 0, "maximum_value": 1}
+                if "category" in model.model_fields and model.model_fields["category"].is_required():
+                    example["category"] = "custom"
+                projected.append(
+                    base.model_copy(
+                        update={
+                            "input_kind": "json",
+                            "json_schema": model.model_json_schema(),
+                            "example": json.dumps(example, indent=2),
+                        }
+                    )
+                )
+                continue
+            projected.append(
+                base.model_copy(
+                    update={
+                        "input_kind": "unsupported",
+                        "default": parameter.default if parameter.required else None,
+                    }
+                )
+            )
         return projected
 
-    def _project_reference_parameter(self, *, parameter: Parameter) -> Parameter:
+    def _project_reference_parameter(self, *, parameter: Parameter) -> ScorerParameter:
         """
         Render a registry-reference parameter as a selectable string or string-list field.
 
@@ -297,7 +347,7 @@ class ScorerService:
         is_list = self._annotation_is_list(reference.annotation)
         param_type = self._choice_param_type(choices=choices, is_list=is_list)
 
-        return Parameter(
+        return ScorerParameter(
             name=parameter.name,
             description=parameter.description,
             default=self._sanitize_default(name=parameter.name, value=parameter.default),
@@ -347,19 +397,55 @@ class ScorerService:
         return types.GenericAlias(list, scalar_type) if is_list else scalar_type
 
     @staticmethod
-    def _sanitize_parameter(*, parameter: Parameter) -> Parameter:
+    def _sanitize_parameter(*, parameter: Parameter) -> ScorerParameter:
         """
         Clone a catalog parameter with sensitive defaults removed.
 
         Returns:
             Parameter: A parameter safe to serialize to the API.
         """
-        return Parameter(
+        return ScorerParameter(
             name=parameter.name,
             description=parameter.description,
             default=ScorerService._sanitize_default(name=parameter.name, value=parameter.default),
             param_type=parameter.param_type,
         )
+
+    @staticmethod
+    def _parameter_annotation(parameter: Parameter) -> Any:
+        """Return the non-null type of an optional constructor parameter."""
+        annotation = parameter.param_type
+        if get_origin(annotation) in (Union, types.UnionType):
+            members = [member for member in get_args(annotation) if member is not type(None)]
+            if len(members) == 1:
+                return members[0]
+        return annotation
+
+    @staticmethod
+    def _sequence_parameter_type(annotation: Any) -> Any | None:
+        """
+        Preserve sequence input in list/string unions instead of reducing it to scalar text.
+
+        Returns:
+            Any | None: A list annotation suitable for the form, or None for non-sequence inputs.
+        """
+        members = get_args(annotation) if get_origin(annotation) in (Union, types.UnionType) else (annotation,)
+        for member in members:
+            if get_origin(member) not in (list, Sequence):
+                continue
+            arguments = get_args(member)
+            element = arguments[0] if arguments else str
+            if Parameter(name="item", description="", param_type=element).is_string_coercible:
+                return types.GenericAlias(list, element)
+        return None
+
+    @staticmethod
+    def _structured_parameter_model(parameter: Parameter) -> type[BaseModel] | None:
+        """Return an allowlisted data-only numeric model accepted over the scorer API."""
+        from pyrit.score.float_scale.numeric_scale import NumericRange, NumericRubric
+
+        annotation = ScorerService._parameter_annotation(parameter)
+        return annotation if annotation in (NumericRange, NumericRubric) else None
 
     @staticmethod
     def _sanitize_default(*, name: str, value: Any) -> Any:
@@ -369,6 +455,8 @@ class ScorerService:
         Returns:
             Any: The original default when safe, otherwise None.
         """
+        if value is REQUIRED_VALUE:
+            return value
         lower_name = name.lower()
         if any(pattern in lower_name for pattern in SENSITIVE_FIELD_PATTERNS):
             return None

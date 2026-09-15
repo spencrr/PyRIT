@@ -204,6 +204,12 @@ history. It reuses the existing attack, converter, message, and history APIs.
   A primary metric drives an output-only red/green meter, with explicit polarity
   and numeric labels. Unscored, inapplicable, undetermined, and failed evaluations
   stay neutral; multiple scores are not silently averaged.
+  New LLM scorers require an explicit registered judge target in the form.
+  For `SelfAskScaleScorer`, supply the judge's `system_prompt` and a `scale`
+  JSON object, for example `{"minimum_value":0,"maximum_value":10,"category":"math"}`.
+  These are separate from the evaluation objective. Numeric range/rubric inputs
+  are validated into canonical PyRIT models. Required Python-only objects are
+  reported rather than silently omitted; configure those scorers in an initializer.
 - **Interruption:** keep the page open while running. Stop or navigation prevents
   subsequent requests but cannot cancel an in-flight provider call. Uncertain
   sends are not automatically retried: inspect their backend conversation and

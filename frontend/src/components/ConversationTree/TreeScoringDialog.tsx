@@ -6,12 +6,13 @@ import {
 } from '@fluentui/react-components'
 
 import ParameterField from '@/components/Parameters/ParameterField'
-import { buildParametersFromForm, getInitialFormValues, type ParameterFormValue } from '@/components/Parameters/parameterForm'
+import { getInitialFormValues, type ParameterFormValue } from '@/components/Parameters/parameterForm'
 import { scorersApi } from '@/services/api'
 import { toApiError } from '@/services/errors'
 import type { ScorerCatalogEntry, ScorerInstance, TargetInstance, TreeSettings } from '@/types'
 
 import { useConversationTreeStyles } from './ConversationTree.styles'
+import { buildScorerParameters } from './scorerForm'
 
 interface TreeScoringDialogProps {
   settings: TreeSettings
@@ -19,6 +20,10 @@ interface TreeScoringDialogProps {
   open: boolean
   onClose: () => void
   onSave: (settings: TreeSettings) => Promise<boolean>
+}
+
+function textValue(value: ParameterFormValue | undefined): string {
+  return typeof value === 'string' ? value : ''
 }
 
 export default function TreeScoringDialog({ settings, targets, open, onClose, onSave }: TreeScoringDialogProps) {
@@ -32,6 +37,7 @@ export default function TreeScoringDialog({ settings, targets, open, onClose, on
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const selected = catalog.find((entry: ScorerCatalogEntry) => entry.scorer_type === type)
+  const unsupportedRequired = selected?.parameters.filter((parameter) => parameter.required && parameter.input_kind === 'unsupported') ?? []
   useEffect(() => {
     if (!open) return
     let cancelled = false
@@ -50,8 +56,9 @@ export default function TreeScoringDialog({ settings, targets, open, onClose, on
   }
   async function create(): Promise<void> {
     if (!selected) return
-    const result = buildParametersFromForm(selected.parameters.filter((parameter) => parameter.name !== 'chat_target'), values)
+    const result = buildScorerParameters(selected.parameters.filter((parameter) => parameter.name !== 'chat_target'), values)
     if (!result.ok) { setError(result.error); return }
+    if (selected.is_llm_based && !judge) { setError('Select a registered judge target.'); return }
     setBusy(true)
     setError('')
     try {
@@ -121,21 +128,42 @@ export default function TreeScoringDialog({ settings, targets, open, onClose, on
                   const entry = catalog.find((item) => item.scorer_type === data.value)
                   setValues(getInitialFormValues(entry?.parameters ?? [], undefined, { prefillDefaults: false }))
                   setJudge('')
+                  setError('')
                 }}>
                   <option value="">Choose a scorer type</option>
                   {catalog.map((entry) => <option key={entry.scorer_type} value={entry.scorer_type}>{entry.scorer_type}{entry.is_llm_based ? ' (LLM)' : ''}</option>)}
                 </Select>
               </Field>
-              {selected?.is_llm_based && <Field label="Judge target">
+              {selected?.is_llm_based && <Field label="Judge target" required hint="Choose the registered model that will evaluate responses.">
                 <Select value={judge} disabled={busy} onChange={(_, data) => { setJudge(data.value) }}>
-                  <option value="">Use backend default</option>
+                  <option value="">Choose a judge target</option>
                   {targets.map((target) => <option key={target.target_registry_name} value={target.target_registry_name}>{target.target_registry_name}</option>)}
                 </Select>
               </Field>}
-              {selected?.parameters.filter((parameter) => parameter.name !== 'chat_target').map((parameter) =>
-                <ParameterField key={parameter.name} parameter={parameter} value={values[parameter.name] ?? ''} disabled={busy}
-                  onChange={(name, value) => { setValues({ ...values, [name]: value }) }} />)}
-              <Button className={styles.button} disabled={busy || !selected} onClick={() => { void create() }}>Create and select scorer</Button>
+              {selected?.parameters.filter((parameter) => parameter.name !== 'chat_target' && parameter.input_kind !== 'unsupported').map((parameter) =>
+                parameter.input_kind === 'json' || parameter.input_kind === 'multiline'
+                  ? <div key={parameter.name} className={styles.stack}>
+                    <Field label={parameter.name} required={parameter.required}
+                      hint={parameter.input_kind === 'json' ? `${parameter.type_name} as JSON. ${parameter.description ?? ''}` : parameter.description ?? undefined}>
+                      <Textarea rows={parameter.input_kind === 'json' ? 6 : 4} disabled={busy}
+                        value={textValue(values[parameter.name])}
+                        onChange={(_, data) => { setValues({ ...values, [parameter.name]: data.value }) }} />
+                    </Field>
+                    {parameter.example && <Button className={styles.button} disabled={busy} onClick={() => {
+                      setValues({ ...values, [parameter.name]: parameter.example ?? '' })
+                    }}>Use example {parameter.name}</Button>}
+                    {parameter.json_schema && <details className={styles.disclosure}>
+                      <summary>{parameter.name} schema</summary>
+                      <pre className={styles.parameters}>{JSON.stringify(parameter.json_schema, null, 2)}</pre>
+                    </details>}
+                  </div>
+                  : <ParameterField key={parameter.name} parameter={parameter} value={values[parameter.name] ?? ''} disabled={busy}
+                    onChange={(name, value) => { setValues({ ...values, [name]: value }) }} />)}
+              {unsupportedRequired.length > 0 && <MessageBar intent="warning"><MessageBarBody>
+                This scorer requires Python-only configuration for {unsupportedRequired.map((parameter) => parameter.name).join(', ')}.
+                Register it in an initializer, then select the registered scorer above.
+              </MessageBarBody></MessageBar>}
+              <Button className={styles.button} disabled={busy || !selected || unsupportedRequired.length > 0} onClick={() => { void create() }}>Create and select scorer</Button>
             </div>
           </details>
           <Text className={styles.muted}>Scoring uses persisted backend evidence and may invoke a judge model. Per-message scopes and composite scorers can make multiple calls per scoring request. Values are verdicts, not confidence probabilities.</Text>
