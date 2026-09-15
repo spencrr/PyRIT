@@ -252,6 +252,10 @@ export const convertersApi = {
 }
 
 export const scorersApi = {
+  validateScorer: async (request: { type: string; params: Record<string, unknown> }): Promise<{ valid: boolean }> => {
+    const response = await apiClient.post('/scorers/validate', request)
+    return response.data
+  },
   listCatalog: async (): Promise<{ items: ScorerCatalogEntry[] }> => {
     const response = await apiClient.get('/scorers/catalog')
     return response.data
@@ -270,6 +274,9 @@ export const scorersApi = {
     expected_scorer_hash: string
     objective: string
     scope: 'response' | 'conversation'
+    evidence_message_piece_ids?: string[]
+    evidence_sequence?: number
+    expected_response?: Array<{ id: string; converted_value: string; converted_value_data_type: string }>
   }): Promise<{ scorer_id: string; scorer_hash: string; scores: BackendScore[]; status: 'complete' | 'not_applicable' }> => {
     const response = await apiClient.post(`/scorers/${encodeURIComponent(scorerId)}/score`, request)
     return response.data
