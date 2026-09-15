@@ -26,6 +26,10 @@ const SCORE_FIELDS = [
 ] as const
 const EXECUTION_UPDATE_KEYS = ['status', 'attackResultId', 'conversationId', 'lastSequence', 'messages', 'error'] as const
 const NODE_UPDATE_CONFLICT_MESSAGE = 'Attempt changed before execution update; stopped without overwriting edits.'
+const PARALLEL_SAFE_TARGET_CLASSES = new Set([
+  'pyrit.prompt_target.openai.openai_chat_target.OpenAIChatTarget',
+  'pyrit.prompt_target.openai.openai_response_target.OpenAIResponseTarget',
+])
 
 /** Carries received evidence without representing it as a successful durable write. */
 export class TreePersistenceError extends Error {
@@ -35,6 +39,7 @@ export class TreePersistenceError extends Error {
   constructor(candidate: TreeWorkspace, failure: unknown) {
     super(`Execution stopped because its state could not be saved: ${failure instanceof Error ? failure.message : 'Storage failed'}`)
     this.name = 'TreePersistenceError'
+    Object.assign(this, { cause: failure })
     this.candidate = candidate
     this.workspace = candidate
   }
@@ -48,6 +53,7 @@ export interface RunOptions {
   readonly getLatest?: () => TreeWorkspace
   readonly onNodeCompleted?: (workspace: TreeWorkspace, nodeId: string) => Promise<void>
   readonly commitNodeUpdate?: (nodeId: string, expected: TreeNode, update: Partial<TreeNode>) => Promise<TreeWorkspace>
+  readonly onConcurrencyResolved?: (concurrency: number) => void
 }
 
 interface FrozenNodeSignature {
@@ -129,9 +135,9 @@ function pick<T extends object, K extends keyof T>(value: T, fields: readonly K[
   return result
 }
 
-function currentMessages(response: AddMessageResponse, afterSequence: number): BackendMessage[] {
-  requireCondition(Array.isArray(response.messages?.messages), 'Backend returned no message history')
-  const candidates = response.messages.messages.filter((message: BackendMessage) => message.turn_number > afterSequence)
+export function projectBackendMessages(messages: BackendMessage[], afterSequence: number): BackendMessage[] {
+  requireCondition(Array.isArray(messages), 'Backend returned no message history')
+  const candidates = messages.filter((message: BackendMessage) => message.turn_number > afterSequence)
   const current = candidates.filter((message: BackendMessage) => message.role !== 'system')
   requireCondition(current.length > 0, 'Backend returned no evidence for the current turn')
   return current.map((message: BackendMessage): BackendMessage => {
@@ -147,7 +153,12 @@ function currentMessages(response: AddMessageResponse, afterSequence: number): B
   })
 }
 
-function historySignature(messages: BackendMessage[]): string {
+function currentMessages(response: AddMessageResponse, afterSequence: number): BackendMessage[] {
+  requireCondition(Array.isArray(response.messages?.messages), 'Backend returned no message history')
+  return projectBackendMessages(response.messages.messages, afterSequence)
+}
+
+export function historySignature(messages: BackendMessage[]): string {
   return JSON.stringify(messages.map((message: BackendMessage) => ({
     sequence: message.turn_number,
     role: message.role === 'simulated_assistant' ? 'assistant' : message.role,
@@ -188,7 +199,9 @@ function verifyHistory(workspace: TreeWorkspace, node: TreeNode, messages: Backe
 }
 
 function refreshLatest(latest: TreeWorkspace, getLatest?: RunOptions['getLatest']): TreeWorkspace {
-  return parseTreeWorkspace(JSON.stringify(getLatest ? getLatest() : latest))
+  if (!getLatest) return parseTreeWorkspace(JSON.stringify(latest))
+  const current = parseTreeWorkspace(JSON.stringify(getLatest()))
+  return current.revision > latest.revision ? current : parseTreeWorkspace(JSON.stringify(latest))
 }
 
 function buildNodeUpdateCandidate(workspace: TreeWorkspace, expected: TreeNode, update: Partial<TreeNode>): TreeWorkspace {
@@ -237,11 +250,7 @@ async function saveExecutionState(
 
 async function notifyNodeCompleted(options: RunOptions, latest: TreeWorkspace, nodeId: string): Promise<TreeWorkspace> {
   if (!options.onNodeCompleted) return latest
-  try {
-    await options.onNodeCompleted(latest, nodeId)
-  } catch {
-    // Auto-scoring failures are recorded by the caller and must not invalidate the response evidence.
-  }
+  await options.onNodeCompleted(latest, nodeId)
   return refreshLatest(latest, options.getLatest)
 }
 
@@ -291,6 +300,29 @@ function findPreparedNode(workspace: TreeWorkspace, frozen: FrozenNodeSignature)
   return current
 }
 
+function relativeDepths(workspace: TreeWorkspace, nodeIds: string[]): Map<string, number> {
+  const queued = new Set(nodeIds)
+  const depths = new Map<string, number>()
+  for (const nodeId of nodeIds) {
+    let depth = 0
+    let current = findNode(workspace, nodeId)
+    while (current.parentId !== null && queued.has(current.parentId)) {
+      depth += 1
+      current = findNode(workspace, current.parentId)
+    }
+    depths.set(nodeId, depth)
+  }
+  return depths
+}
+
+async function resolveExecutionConcurrency(workspace: TreeWorkspace, requested: number): Promise<number> {
+  if (requested <= 1) return 1
+  const target = await targetsApi.getTarget(workspace.targetRegistryName)
+  validateTarget(target, workspace)
+  const qualifiedName = `${target.identifier.class_module}.${target.identifier.class_name}`
+  return PARALLEL_SAFE_TARGET_CLASSES.has(qualifiedName) ? requested : 1
+}
+
 /** Reconcile an interrupted persisted turn from backend evidence; never creates or sends a prompt. */
 export async function recoverTreeNode(
   workspace: TreeWorkspace,
@@ -330,8 +362,9 @@ export async function recoverTreeNode(
 }
 
 /**
- * Sequential, human-approved execution. Durably mark running before I/O and never retry a node.
- * Stop is checked between calls, not interpreted as cancellation of an in-flight request.
+ * Bounded, human-approved execution. State writes stay serialized even when
+ * backend requests run in parallel, so external edits and save failures never
+ * discard already observed evidence.
  */
 export async function runTree(workspace: TreeWorkspace, options: RunOptions): Promise<TreeWorkspace> {
   const approved = parseTreeWorkspace(JSON.stringify(workspace))
@@ -339,79 +372,162 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
   const queue = [...options.nodeIds]
   validateQueue(approved, queue)
   const frozenNodes = getFrozenNodes(approved, queue)
+  const queuedNodeIds = new Set(queue)
+  const depths = relativeDepths(approved, queue)
+  const concurrency = await resolveExecutionConcurrency(approved, frozenSettings.concurrency ?? 1)
+  options.onConcurrencyResolved?.(concurrency)
   let latest = approved
+  let stateTail: Promise<unknown> = Promise.resolve()
+  let persistenceFailure: TreePersistenceError | undefined
+  let persistenceCause: unknown
+  let unexpectedFailure: unknown
+  let dispatchStopped = options.isStopped()
+
+  type NodeState = 'pending' | 'inflight' | 'completed' | 'error' | 'skipped'
+  type NodeOutcome = { readonly nodeId: string; readonly outcome: 'completed' | 'error' | 'skipped' | 'stopped' | 'persistence' }
+  const states = new Map<string, NodeState>(queue.map((nodeId: string) => [nodeId, 'pending']))
+  const inflight = new Map<string, Promise<NodeOutcome>>()
+
+  function currentWorkspace(): TreeWorkspace {
+    latest = persistenceFailure ? parseTreeWorkspace(JSON.stringify(latest)) : refreshLatest(latest, options.getLatest)
+    return latest
+  }
+
+  function queueStateTask<T>(task: () => Promise<T>): Promise<T> {
+    const queued = stateTail.then(task, task)
+    stateTail = queued.then(() => undefined, () => undefined)
+    return queued
+  }
+
+  function recordPersistenceFailure(failure: TreePersistenceError): void {
+    persistenceFailure = failure
+    persistenceCause = (failure as Error & { cause?: unknown }).cause ?? failure
+    latest = failure.workspace
+    dispatchStopped = true
+  }
 
   async function persist(expected: TreeNode, update: Partial<TreeNode>): Promise<TreeWorkspace> {
-    latest = await saveExecutionState(latest, expected, update, options)
-    return latest
+    return queueStateTask(async () => {
+      if (persistenceFailure) {
+        latest = buildNodeUpdateCandidate(latest, expected, update)
+        return latest
+      }
+      try {
+        latest = await saveExecutionState(latest, expected, update, options)
+        return latest
+      } catch (failure) {
+        if (failure instanceof TreePersistenceError) recordPersistenceFailure(failure)
+        throw failure
+      }
+    })
   }
 
   async function persistTerminal(expected: TreeNode, update: Partial<TreeNode>): Promise<TreeWorkspace> {
     latest = await persist(expected, update)
-    latest = await notifyNodeCompleted(options, latest, expected.id)
+    latest = await queueStateTask(async () => {
+      if (persistenceFailure || !options.onNodeCompleted) return latest
+      try {
+        latest = await notifyNodeCompleted(options, latest, expected.id)
+        return latest
+      } catch (failure) {
+        if (failure instanceof TreePersistenceError) recordPersistenceFailure(failure)
+        throw failure
+      }
+    })
     return latest
   }
 
-  async function stopNode(nodeId: string): Promise<boolean> {
-    if (!options.isStopped()) return false
-    const current = refreshLatest(latest, options.getLatest).nodes.find((node: TreeNode) => node.id === nodeId)
-    if (current?.status === 'running') latest = await persistTerminal(current, { status: 'error', error: STOPPED_MESSAGE })
+  async function stopBeforeSend(nodeId: string): Promise<boolean> {
+    if (!options.isStopped() && !dispatchStopped && !persistenceFailure) return false
+    const current = currentWorkspace().nodes.find((node: TreeNode) => node.id === nodeId)
+    if (current?.status === 'running') await persistTerminal(current, { status: 'error', error: STOPPED_MESSAGE })
     return true
   }
 
-  for (const nodeId of queue) {
-    if (options.isStopped()) break
-    const currentWorkspace = refreshLatest(latest, options.getLatest)
-    const frozen = frozenNodes.get(nodeId)
-    if (!frozen) continue
-    const queuedNode = shouldDispatchNode(currentWorkspace, frozen)
-    if (!queuedNode) {
-      latest = currentWorkspace
-      continue
+  function dependencySatisfied(nodeId: string): boolean {
+    const node = findNode(approved, nodeId)
+    if (node.parentId === null || !queuedNodeIds.has(node.parentId)) return true
+    return states.get(node.parentId) === 'completed'
+  }
+
+  function drainBlockedNodes(): void {
+    for (const nodeId of queue) {
+      if (states.get(nodeId) !== 'pending') continue
+      const node = findNode(approved, nodeId)
+      if (node.parentId === null || !queuedNodeIds.has(node.parentId)) continue
+      const parentState = states.get(node.parentId)
+      if (parentState === 'error' || parentState === 'skipped') states.set(nodeId, 'skipped')
     }
+  }
+
+  function nextReadyNodeIds(): string[] {
+    drainBlockedNodes()
+    const pending = queue.filter((nodeId: string) => states.get(nodeId) === 'pending' && dependencySatisfied(nodeId))
+    if (pending.length === 0) return []
+    if (frozenSettings.traversal === 'depth-first') return pending
+    const activeDepth = Math.min(...queue
+      .filter((nodeId: string) => {
+        const state = states.get(nodeId)
+        return state === 'pending' || state === 'inflight'
+      })
+      .map((nodeId: string) => depths.get(nodeId) ?? 0))
+    return pending.filter((nodeId: string) => (depths.get(nodeId) ?? 0) === activeDepth)
+  }
+
+  function settleNodeState(nodeId: string, outcome: NodeOutcome['outcome']): void {
+    if (outcome === 'completed') {
+      states.set(nodeId, 'completed')
+      return
+    }
+    if (outcome === 'skipped') {
+      states.set(nodeId, 'skipped')
+      return
+    }
+    const current = currentWorkspace().nodes.find((node: TreeNode) => node.id === nodeId)
+    if (current?.status === 'completed') states.set(nodeId, 'completed')
+    else if (current?.status === 'error') states.set(nodeId, 'error')
+    else states.set(nodeId, 'skipped')
+  }
+
+  async function executeNode(nodeId: string, frozen: FrozenNodeSignature): Promise<NodeOutcome> {
+    if (dispatchStopped || options.isStopped()) return { nodeId, outcome: 'skipped' }
+    const queuedNode = shouldDispatchNode(currentWorkspace(), frozen)
+    if (!queuedNode) return { nodeId, outcome: 'skipped' }
     try {
       await persist(queuedNode, { status: 'running', error: undefined })
     } catch (failure) {
-      if (isNodeUpdateConflict(failure)) {
-        latest = refreshLatest(latest, options.getLatest)
-        continue
-      }
+      if (isNodeUpdateConflict(failure)) return { nodeId, outcome: 'skipped' }
       throw failure
     }
-    if (await stopNode(nodeId)) break
+    if (await stopBeforeSend(nodeId)) return { nodeId, outcome: 'stopped' }
 
     let target: TargetInstance
     try {
-      target = await targetsApi.getTarget(latest.targetRegistryName)
+      target = await targetsApi.getTarget(currentWorkspace().targetRegistryName)
     } catch (failure: unknown) {
-      await persistTerminal(findNode(refreshLatest(latest, options.getLatest), nodeId), {
-        status: 'error',
-        error: errorMessage(failure),
-      })
-      if (!frozenSettings.continueOnError) break
-      continue
+      await persistTerminal(findNode(currentWorkspace(), nodeId), { status: 'error', error: errorMessage(failure) })
+      return { nodeId, outcome: 'error' }
     }
     try {
-      validateTarget(target, latest)
+      validateTarget(target, currentWorkspace())
     } catch (failure: unknown) {
-      await persistTerminal(findNode(refreshLatest(latest, options.getLatest), nodeId), {
+      await persistTerminal(findNode(currentWorkspace(), nodeId), {
         status: 'error',
         error: `${failure instanceof Error ? failure.message : 'Target validation failed.'} ${INSPECT_HISTORY}`,
       })
-      if (!frozenSettings.continueOnError) break
-      continue
+      return { nodeId, outcome: 'error' }
     }
-    if (await stopNode(nodeId)) break
+    if (await stopBeforeSend(nodeId)) return { nodeId, outcome: 'stopped' }
 
-    const runningNode = findNode(refreshLatest(latest, options.getLatest), nodeId)
-    const parent = runningNode.parentId === null ? null : findNode(latest, runningNode.parentId)
+    const runningNode = findNode(currentWorkspace(), nodeId)
+    const parent = runningNode.parentId === null ? null : findNode(currentWorkspace(), runningNode.parentId)
     const request: CreateAttackRequest = {
-      target_registry_name: latest.targetRegistryName,
-      name: latest.name,
-      labels: getTreeLabels(latest, nodeId),
+      target_registry_name: currentWorkspace().targetRegistryName,
+      name: currentWorkspace().name,
+      labels: getTreeLabels(currentWorkspace(), nodeId),
       ...(parent
         ? { source_conversation_id: parent.conversationId, cutoff_index: parent.lastSequence }
-        : { system_prompt: latest.systemPrompt }),
+        : { system_prompt: currentWorkspace().systemPrompt }),
     }
 
     let created: Awaited<ReturnType<typeof attacksApi.createAttack>>
@@ -419,48 +535,42 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
       created = await attacksApi.createAttack(request)
       requireCondition(created?.attack_result_id && created.conversation_id, 'Backend returned no attack or conversation ID')
     } catch (failure: unknown) {
-      await persistTerminal(findNode(refreshLatest(latest, options.getLatest), nodeId), {
-        status: 'error',
-        error: errorMessage(failure),
-      })
-      if (!frozenSettings.continueOnError) break
-      continue
+      await persistTerminal(findNode(currentWorkspace(), nodeId), { status: 'error', error: errorMessage(failure) })
+      return { nodeId, outcome: 'error' }
     }
-    latest = await persist(findNode(refreshLatest(latest, options.getLatest), nodeId), {
+    await persist(findNode(currentWorkspace(), nodeId), {
       attackResultId: created.attack_result_id,
       conversationId: created.conversation_id,
     })
-    if (await stopNode(nodeId)) break
+    if (await stopBeforeSend(nodeId)) return { nodeId, outcome: 'stopped' }
 
     try {
       const attack = await attacksApi.getAttack(created.attack_result_id)
       requireCondition(attack.attack_result_id === created.attack_result_id &&
         attack.conversation_id === created.conversation_id &&
-        attack.target?.identifier_hash === latest.targetIdentifierHash,
+        attack.target?.identifier_hash === currentWorkspace().targetIdentifierHash,
       'New attack did not capture the approved target identity')
     } catch (failure: unknown) {
-      await persistTerminal(findNode(refreshLatest(latest, options.getLatest), nodeId), {
+      await persistTerminal(findNode(currentWorkspace(), nodeId), {
         status: 'error',
         error: `Unable to verify the created attack target. ${errorMessage(failure)}`,
       })
-      if (!frozenSettings.continueOnError) break
-      continue
+      return { nodeId, outcome: 'error' }
     }
-    if (await stopNode(nodeId)) break
+    if (await stopBeforeSend(nodeId)) return { nodeId, outcome: 'stopped' }
 
     try {
       const history = await attacksApi.getMessages(created.attack_result_id, created.conversation_id)
       requireCondition(history.conversation_id === created.conversation_id, 'Backend returned an unrelated conversation.')
-      verifyHistory(latest, findNode(latest, nodeId), history.messages)
+      verifyHistory(currentWorkspace(), findNode(currentWorkspace(), nodeId), history.messages)
     } catch (failure) {
-      await persistTerminal(findNode(refreshLatest(latest, options.getLatest), nodeId), {
+      await persistTerminal(findNode(currentWorkspace(), nodeId), {
         status: 'error',
         error: `Unable to verify required backend history. ${failure instanceof Error ? failure.message : 'History unavailable.'} ${INSPECT_HISTORY}`,
       })
-      if (!frozenSettings.continueOnError) break
-      continue
+      return { nodeId, outcome: 'error' }
     }
-    if (await stopNode(nodeId)) break
+    if (await stopBeforeSend(nodeId)) return { nodeId, outcome: 'stopped' }
 
     const converterIds: string[] = []
     let converterFailure: string | undefined
@@ -474,7 +584,7 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
         converterFailure = errorMessage(failure)
         break
       }
-      if (await stopNode(nodeId)) return refreshLatest(latest, options.getLatest)
+      if (await stopBeforeSend(nodeId)) return { nodeId, outcome: 'stopped' }
       let instance: ConverterInstance
       try {
         instance = await convertersApi.getConverter(createdConverter.converter_id)
@@ -488,24 +598,17 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
         converterFailure = `${failure instanceof Error ? failure.message : 'Converter validation failed.'} ${INSPECT_HISTORY}`
         break
       }
-      if (await stopNode(nodeId)) return refreshLatest(latest, options.getLatest)
+      if (await stopBeforeSend(nodeId)) return { nodeId, outcome: 'stopped' }
       converterIds.push(createdConverter.converter_id)
     }
     if (converterFailure) {
-      await persistTerminal(findNode(refreshLatest(latest, options.getLatest), nodeId), {
-        status: 'error',
-        error: converterFailure,
-      })
-      if (!frozenSettings.continueOnError) break
-      continue
+      await persistTerminal(findNode(currentWorkspace(), nodeId), { status: 'error', error: converterFailure })
+      return { nodeId, outcome: 'error' }
     }
-    if (await stopNode(nodeId)) break
+    if (await stopBeforeSend(nodeId)) return { nodeId, outcome: 'stopped' }
 
-    const prepared = findPreparedNode(refreshLatest(latest, options.getLatest), frozen)
-    if (!prepared) {
-      latest = refreshLatest(latest, options.getLatest)
-      continue
-    }
+    const prepared = findPreparedNode(currentWorkspace(), frozen)
+    if (!prepared) return { nodeId, outcome: 'skipped' }
 
     let response: AddMessageResponse
     try {
@@ -514,27 +617,23 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
         role: 'user',
         pieces: [{ data_type: 'text', original_value: prepared.prompt }],
         send: true,
-        target_registry_name: latest.targetRegistryName,
+        target_registry_name: currentWorkspace().targetRegistryName,
         target_conversation_id: prepared.conversationId,
         converter_ids: converterIds,
-        labels: getTreeLabels(latest, nodeId),
+        labels: getTreeLabels(currentWorkspace(), nodeId),
       })
     } catch (failure: unknown) {
-      await persistTerminal(findNode(refreshLatest(latest, options.getLatest), nodeId), {
-        status: 'error',
-        error: errorMessage(failure),
-      })
-      if (!frozenSettings.continueOnError) break
-      continue
+      await persistTerminal(findNode(currentWorkspace(), nodeId), { status: 'error', error: errorMessage(failure) })
+      return { nodeId, outcome: 'error' }
     }
 
     let evidence: BackendMessage[]
     try {
-      validateResponseIdentity(response, prepared, latest)
+      validateResponseIdentity(response, prepared, currentWorkspace())
       evidence = currentMessages(response, parent?.lastSequence ?? -1)
       parseTreeWorkspace(JSON.stringify({
-        ...latest,
-        nodes: latest.nodes.map((item: TreeNode) => item.id === nodeId ? {
+        ...currentWorkspace(),
+        nodes: currentWorkspace().nodes.map((item: TreeNode) => item.id === nodeId ? {
           ...item,
           status: 'error',
           error: 'Validating observed response',
@@ -543,12 +642,11 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
         } : item),
       }))
     } catch {
-      await persistTerminal(findNode(refreshLatest(latest, options.getLatest), nodeId), {
+      await persistTerminal(findNode(currentWorkspace(), nodeId), {
         status: 'error',
         error: `Backend returned inconsistent or malformed evidence. ${INSPECT_HISTORY}`,
       })
-      if (!frozenSettings.continueOnError) break
-      continue
+      return { nodeId, outcome: 'error' }
     }
 
     const lastSequence = evidence[evidence.length - 1].turn_number
@@ -559,21 +657,67 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
     } else {
       try {
         parseTreeWorkspace(JSON.stringify({
-          ...latest,
-          nodes: latest.nodes.map((item: TreeNode) => item.id === nodeId
+          ...currentWorkspace(),
+          nodes: currentWorkspace().nodes.map((item: TreeNode) => item.id === nodeId
             ? { ...item, status: 'completed', messages: evidence, lastSequence } : item),
         }))
       } catch {
         completionError = `The backend did not return a complete matching user/assistant turn. ${INSPECT_HISTORY}`
       }
     }
-    await persistTerminal(findNode(refreshLatest(latest, options.getLatest), nodeId), {
+    await persistTerminal(findNode(currentWorkspace(), nodeId), {
       status: completionError ? 'error' : 'completed',
       messages: evidence,
       lastSequence,
       error: completionError,
     })
-    if (completionError && !frozenSettings.continueOnError) break
+    return { nodeId, outcome: completionError ? 'error' : 'completed' }
   }
-  return refreshLatest(latest, options.getLatest)
+
+  async function trackNode(nodeId: string, frozen: FrozenNodeSignature): Promise<NodeOutcome> {
+    try {
+      return await executeNode(nodeId, frozen)
+    } catch (failure) {
+      if (failure instanceof TreePersistenceError) return { nodeId, outcome: 'persistence' }
+      if (unexpectedFailure === undefined) unexpectedFailure = failure
+      dispatchStopped = true
+      return { nodeId, outcome: 'error' }
+    }
+  }
+
+  function dispatchAvailable(): void {
+    if (dispatchStopped || options.isStopped() || persistenceFailure) {
+      dispatchStopped = true
+      return
+    }
+    for (const nodeId of nextReadyNodeIds()) {
+      if (inflight.size >= concurrency) break
+      const frozen = frozenNodes.get(nodeId)
+      if (!frozen) {
+        states.set(nodeId, 'skipped')
+        continue
+      }
+      states.set(nodeId, 'inflight')
+      const task = trackNode(nodeId, frozen).then((result: NodeOutcome) => {
+        inflight.delete(nodeId)
+        settleNodeState(nodeId, result.outcome)
+        if ((result.outcome === 'error' || result.outcome === 'stopped' || result.outcome === 'persistence') && !frozenSettings.continueOnError) {
+          dispatchStopped = true
+        }
+        if (result.outcome === 'persistence') dispatchStopped = true
+        return result
+      })
+      inflight.set(nodeId, task)
+    }
+  }
+
+  dispatchAvailable()
+  while (inflight.size > 0) {
+    await Promise.race(Array.from(inflight.values()))
+    dispatchAvailable()
+  }
+  await stateTail
+  if (persistenceFailure) throw new TreePersistenceError(latest, persistenceCause ?? persistenceFailure)
+  if (unexpectedFailure !== undefined) throw unexpectedFailure
+  return currentWorkspace()
 }

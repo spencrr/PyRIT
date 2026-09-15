@@ -1,7 +1,9 @@
+import { waitFor } from '@testing-library/react'
+
 import { attacksApi, convertersApi, targetsApi } from '@/services/api'
 import type {
   AddMessageRequest, AddMessageResponse, BackendMessage, ConverterInstance, CreateAttackRequest,
-  TargetInstance, TreeNode, TreeWorkspace,
+  TargetInstance, TreeNode, TreeScoreRun, TreeWorkspace,
 } from '@/types'
 
 import { recoverTreeNode, runTree, TreePersistenceError } from './treeExecution'
@@ -22,7 +24,7 @@ const CONFIGURATION = {
   labels: { operator: 'tester', campaign: 'tree' },
 }
 const TARGET: TargetInstance = {
-  target_registry_name: 'target', identifier: { class_name: 'Target', hash: 'hash' },
+  target_registry_name: 'target', identifier: { class_name: 'OpenAIChatTarget', class_module: 'pyrit.prompt_target.openai.openai_chat_target', hash: 'hash' },
   capabilities: {
     supports_multi_turn: true, supports_editable_history: true, supports_system_prompt: true,
     supports_json_schema: false, supports_json_output: false,
@@ -45,6 +47,13 @@ function workspace(nodes: TreeNode[]): TreeWorkspace {
   return { ...createTreeWorkspace(CONFIGURATION), nodes }
 }
 
+function configuredWorkspace(nodes: TreeNode[], settings: Partial<ReturnType<typeof getTreeSettings>>): TreeWorkspace {
+  return applyTreeCommand(workspace(nodes), {
+    type: 'settings',
+    settings: { ...getTreeSettings(workspace([])), ...settings },
+  })
+}
+
 function message(role: string, turn: number, content: string, prefix: string, error = 'none'): BackendMessage {
   return {
     role, turn_number: turn, created_at: TIME,
@@ -65,6 +74,35 @@ function response(attackId: string, conversationId: string, messages: BackendMes
     },
     messages: { conversation_id: conversationId, messages },
   }
+}
+
+function scoreRun(node: TreeNode): TreeScoreRun {
+  const pieceId = node.messages?.[node.messages.length - 1]?.message_pieces[0]?.id ?? `${node.id}-piece`
+  return {
+    id: `score-run-${node.id}`,
+    scorerId: 'judge',
+    scorerHash: 'judge-hash',
+    status: 'complete',
+    scores: [{
+      id: `score-${node.id}`,
+      message_piece_id: pieceId,
+      scorer_type: 'Judge',
+      score_type: 'float_scale',
+      score_value: '0.5',
+      timestamp: TIME,
+    }],
+  }
+}
+
+function withScore(tree: TreeWorkspace, nodeId: string): TreeWorkspace {
+  const current = tree.nodes.find((entry: TreeNode) => entry.id === nodeId)
+  if (!current) throw new Error('Missing score target')
+  return applyTreeCommand(tree, {
+    type: 'score',
+    nodeId,
+    attemptId: current.attemptId ?? '',
+    result: scoreRun(current),
+  })
 }
 
 describe('treeExecution', () => {
@@ -598,14 +636,35 @@ describe('treeExecution', () => {
     expect(addMessage).toHaveBeenCalledTimes(2)
   })
 
-  it('should ignore on-node-completed failures after the response is durably saved', async () => {
-    const onNodeCompleted = jest.fn(async () => Promise.reject(new Error('Scorer failed')))
-    const result = await runTree(workspace([node('root')]), {
-      ...options(['root']),
-      onNodeCompleted,
+  it('should surface unexpected on-node-completed failures without losing persisted responses', async () => {
+    let resolveSecond: ((value: AddMessageResponse) => void) | undefined
+    addMessage.mockImplementation(async (attackId: string, request: AddMessageRequest) => {
+      if (request.pieces[0].original_value === 'second') {
+        return new Promise<AddMessageResponse>((resolve) => { resolveSecond = resolve })
+      }
+      return response(attackId, request.target_conversation_id, [
+        message('system', 0, 'System prompt', attackId),
+        message('user', 1, request.pieces[0].original_value, attackId),
+        message('assistant', 2, 'observed response', attackId),
+      ])
     })
-    expect(result.nodes[0].status).toBe('completed')
-    expect(onNodeCompleted).toHaveBeenCalledTimes(1)
+    const failure = runTree(configuredWorkspace([node('first'), node('second')], { concurrency: 2 }), {
+      ...options(['first', 'second']),
+      onNodeCompleted: async (_saved: TreeWorkspace, nodeId: string): Promise<void> => {
+        if (nodeId === 'first') throw new Error('Unexpected scorer callback failure')
+      },
+    })
+    await waitFor(() => expect(addMessage).toHaveBeenCalledTimes(2))
+    resolveSecond?.(response('attack-2', 'conversation-2', [
+      message('system', 0, 'System prompt', 'attack-2'),
+      message('user', 1, 'second', 'attack-2'),
+      message('assistant', 2, 'observed response', 'attack-2'),
+    ]))
+    await expect(failure).rejects.toThrow('Unexpected scorer callback failure')
+    expect(snapshots[snapshots.length - 1].nodes.find((entry: TreeNode) => entry.id === 'first'))
+      .toMatchObject({ status: 'completed' })
+    expect(snapshots[snapshots.length - 1].nodes.find((entry: TreeNode) => entry.id === 'second'))
+      .toMatchObject({ status: 'completed' })
   })
 
   it('should retain received evidence on completion-save failure for save-only recovery', async () => {
@@ -625,6 +684,153 @@ describe('treeExecution', () => {
     const recovered = await save(failure.workspace)
     expect(recovered.nodes[0].status).toBe('completed')
     expect(addMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('should keep breadth-first depth boundaries even when concurrency allows multiple roots', async () => {
+    let releaseDepth: (() => void) | undefined
+    const depthBarrier = new Promise<void>((resolve) => { releaseDepth = resolve })
+    const promptsStarted: string[] = []
+    addMessage.mockImplementation(async (attackId: string, request: AddMessageRequest) => {
+      promptsStarted.push(request.pieces[0].original_value)
+      const index = Number(attackId.split('-')[1]) - 1
+      const turn = (requests[index].cutoff_index ?? 0) + 1
+      return response(attackId, request.target_conversation_id, [
+        message('system', 0, 'System prompt', attackId),
+        message('user', turn, request.pieces[0].original_value, attackId),
+        message('assistant', turn + 1, 'observed response', attackId),
+      ])
+    })
+    const tree = configuredWorkspace(
+      [node('left-root'), node('right-root'), node('left-child', 'left-root')],
+      { concurrency: 2, traversal: 'breadth-first' },
+    )
+    const run = runTree(tree, {
+      ...options(getRunNodeIds(tree)),
+      onNodeCompleted: async (_saved: TreeWorkspace, nodeId: string): Promise<void> => {
+        if (nodeId === 'right-root') await depthBarrier
+      },
+    })
+    await waitFor(() => expect(promptsStarted).toEqual(['left-root', 'right-root']))
+    expect(promptsStarted).not.toContain('left-child')
+    releaseDepth?.()
+    const result = await run
+    expect(promptsStarted).toEqual(['left-root', 'right-root', 'left-child'])
+    expect(result.nodes.map((entry: TreeNode) => entry.status)).toEqual(['completed', 'completed', 'completed'])
+  })
+
+  it('should stop dispatch after the first error while preserving other in-flight responses', async () => {
+    let resolveOther: ((value: AddMessageResponse) => void) | undefined
+    addMessage.mockImplementation(async (attackId: string, request: AddMessageRequest) => {
+      if (request.pieces[0].original_value === 'first') {
+        return response(attackId, request.target_conversation_id, [
+          message('system', 0, 'System prompt', attackId),
+          message('user', 1, 'first', attackId),
+          message('assistant', 2, 'blocked', attackId, 'blocked'),
+        ])
+      }
+      if (request.pieces[0].original_value === 'second') {
+        return new Promise<AddMessageResponse>((resolve) => {
+          resolveOther = resolve
+        })
+      }
+      return response(attackId, request.target_conversation_id, [
+        message('system', 0, 'System prompt', attackId),
+        message('user', 1, request.pieces[0].original_value, attackId),
+        message('assistant', 2, 'observed response', attackId),
+      ])
+    })
+    const tree = configuredWorkspace([node('first'), node('second'), node('third')], { concurrency: 2 })
+    const runningTree = runTree(tree, options(getRunNodeIds(tree)))
+    await waitFor(() => expect(addMessage).toHaveBeenCalledTimes(2))
+    resolveOther?.(response('attack-2', 'conversation-2', [
+      message('system', 0, 'System prompt', 'attack-2'),
+      message('user', 1, 'second', 'attack-2'),
+      message('assistant', 2, 'observed response', 'attack-2'),
+    ]))
+    const result = await runningTree
+    expect(result.nodes.find((entry: TreeNode) => entry.id === 'first')?.status).toBe('error')
+    expect(result.nodes.find((entry: TreeNode) => entry.id === 'second')?.status).toBe('completed')
+    expect(result.nodes.find((entry: TreeNode) => entry.id === 'third')?.status).toBe('draft')
+    expect(addMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('should merge later in-flight evidence into the recovery candidate after a save failure', async () => {
+    save.mockImplementation(async (tree: TreeWorkspace): Promise<TreeWorkspace> => {
+      const completed = tree.nodes.filter((entry: TreeNode) => entry.messages !== undefined).length
+      if (completed === 1) throw new Error('Quota exceeded')
+      const saved = parseTreeWorkspace(JSON.stringify({ ...tree, revision: tree.revision + 1 }))
+      snapshots.push(saved)
+      return saved
+    })
+    const tree = configuredWorkspace([node('first'), node('second')], { concurrency: 2 })
+    const failure = await runTree(tree, options(getRunNodeIds(tree))).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(TreePersistenceError)
+    if (!(failure instanceof TreePersistenceError)) throw new Error('Expected persistence failure')
+    expect(failure.workspace.nodes.map((entry: TreeNode) => entry.status)).toEqual(['completed', 'completed'])
+    expect(failure.workspace.nodes.every((entry: TreeNode) => entry.messages?.[1].message_pieces[0].converted_value === 'observed response')).toBe(true)
+    expect(addMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('should merge score recovery with later in-flight terminal evidence and stop further dispatch', async () => {
+    let resolveSecond: ((value: AddMessageResponse) => void) | undefined
+    addMessage.mockImplementation(async (attackId: string, request: AddMessageRequest) => {
+      if (request.pieces[0].original_value === 'second') {
+        return new Promise<AddMessageResponse>((resolve) => { resolveSecond = resolve })
+      }
+      return response(attackId, request.target_conversation_id, [
+        message('system', 0, 'System prompt', attackId),
+        message('user', 1, request.pieces[0].original_value, attackId),
+        message('assistant', 2, 'observed response', attackId),
+      ])
+    })
+    const onNodeCompleted = jest.fn(async (saved: TreeWorkspace, nodeId: string): Promise<void> => {
+      if (nodeId !== 'first') return
+      throw new TreePersistenceError(withScore(saved, nodeId), new Error('Quota exceeded while saving score'))
+    })
+    const failure = runTree(configuredWorkspace([node('first'), node('second'), node('third')], { concurrency: 2 }), {
+      ...options(['first', 'second', 'third']),
+      onNodeCompleted,
+    }).catch((error: unknown) => error)
+    await waitFor(() => expect(addMessage).toHaveBeenCalledTimes(2))
+    resolveSecond?.(response('attack-2', 'conversation-2', [
+      message('system', 0, 'System prompt', 'attack-2'),
+      message('user', 1, 'second', 'attack-2'),
+      message('assistant', 2, 'observed response', 'attack-2'),
+    ]))
+    const result = await failure
+    expect(result).toBeInstanceOf(TreePersistenceError)
+    if (!(result instanceof TreePersistenceError)) throw new Error('Expected score recovery failure')
+    expect(onNodeCompleted).toHaveBeenCalledTimes(1)
+    expect(addMessage).toHaveBeenCalledTimes(2)
+    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'first')?.scoreRuns).toEqual([scoreRun(result.workspace.nodes[0])])
+    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'second')).toMatchObject({ status: 'completed' })
+    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'third')).toMatchObject({ status: 'draft' })
+    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'second')?.messages?.[1].message_pieces[0].converted_value)
+      .toBe('observed response')
+  })
+
+  it('reports concurrency 1 for unsupported targets', async () => {
+    const concurrency = jest.fn()
+    getTarget.mockResolvedValue({
+      ...TARGET,
+      identifier: { ...TARGET.identifier, class_name: 'OtherTarget', class_module: 'pyrit.prompt_target.custom.other_target' },
+    })
+    const result = await runTree(configuredWorkspace([node('root'), node('other')], { concurrency: 2 }), {
+      ...options(['root', 'other']),
+      onConcurrencyResolved: concurrency,
+    })
+    expect(concurrency).toHaveBeenCalledWith(1)
+    expect(result.nodes.map((entry: TreeNode) => entry.status)).toEqual(['completed', 'completed'])
+  })
+
+  it('surfaces concurrency discovery errors before any send', async () => {
+    getTarget.mockRejectedValueOnce(new Error('Discovery failed'))
+    await expect(runTree(configuredWorkspace([node('root')], { concurrency: 2 }), {
+      ...options(['root']),
+      onConcurrencyResolved: jest.fn(),
+    })).rejects.toThrow('Discovery failed')
+    expect(createAttack).not.toHaveBeenCalled()
+    expect(addMessage).not.toHaveBeenCalled()
   })
 
   it.each(['missing', 'changed', 'system'])('should refuse %s cloned history before converter or target calls', async (kind: string) => {

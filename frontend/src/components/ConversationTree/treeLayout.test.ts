@@ -27,6 +27,16 @@ describe('layoutTree', () => {
     expect(positions.b.x).toBe(positions.c.x)
   })
 
+  it('uses the widest node at each depth so wide cards do not collide with deeper columns', () => {
+    const nodes = [node('root'), node('wide', 'root'), node('peer', 'root'), node('leaf', 'wide')]
+    const heights = { root: 180, wide: 220, peer: 180, leaf: 180 }
+    const widths = { root: 300, wide: 900, peer: 250, leaf: 250 }
+    const positions = layoutTree(nodes, heights, widths)
+    expect(positions.wide.x).toBe(350)
+    expect(positions.peer.x).toBe(positions.wide.x)
+    expect(positions.leaf.x).toBe(positions.wide.x + widths.wide + 50)
+  })
+
   it('lays out 300 nodes deterministically and handles empty forests', () => {
     const nodes = Array.from({ length: 300 }, (_, index: number) => node(`node-${index}`, index ? `node-${index - 1}` : null))
     expect(Object.keys(layoutTree(nodes))).toHaveLength(300)

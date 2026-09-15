@@ -885,6 +885,12 @@ export interface ScorerParameter extends Parameter {
   input_kind?: 'field' | 'multiline' | 'json' | 'unsupported'
   json_schema?: Record<string, unknown> | null
   example?: string | null
+  reference_kind?: 'scorer' | 'target' | null
+  accepts_inline?: boolean
+  accepted_types?: string[]
+  supports_yaml?: boolean
+  accepts_text?: boolean
+  presets?: Array<{ name: string; value: unknown }>
 }
 
 export interface ScorerCatalogEntry {
@@ -929,6 +935,9 @@ export interface TreeSettings {
   objective: string
   scorers: TreeScorerSelection[]
   primaryScorerId?: string
+  concurrency?: 1 | 2 | 4
+  edgeStyle?: 'bezier' | 'smoothstep' | 'straight'
+  nodeSize?: 'compact' | 'standard' | 'expanded'
 }
 
 export interface TreeAttempt {
@@ -972,6 +981,8 @@ export interface TreeNode {
   parentAttemptId?: string
   attempts?: TreeAttempt[]
   scoreRuns?: TreeScoreRun[]
+  size?: { width: number; height: number }
+  importedFromBackend?: boolean
 }
 
 export interface TreeWorkspace {
@@ -1005,3 +1016,13 @@ export type TreeCommand =
   | { type: 'settings'; settings: TreeSettings }
   | { type: 'group'; groupId: string; collapsed?: boolean; activeNodeId?: string }
   | { type: 'score'; nodeId: string; attemptId: string; result: TreeScoreRun }
+  | { type: 'resize'; nodeId: string; size?: { width: number; height: number }; position?: { x: number; y: number } }
+  | { type: 'importContinuation'; nodeId: string; nodes: TreeNode[] }
+
+export interface TreeContinuation {
+  workspaceId: string
+  nodeId: string
+  attemptId: string
+  nodes: TreeNode[]
+  pendingMessages: number
+}

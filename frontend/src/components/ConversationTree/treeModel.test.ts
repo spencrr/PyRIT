@@ -38,6 +38,17 @@ function failed(input: TreeNode, start = 1): TreeNode {
   return { ...complete(input, start), status: 'error', error: 'Inspect history' }
 }
 
+function imported(parent: TreeNode, id: string, prompt: string, start: number): TreeNode {
+  return {
+    ...complete({ ...node(id, parent.id), prompt }, start),
+    attackResultId: parent.attackResultId,
+    conversationId: parent.conversationId,
+    parentAttemptId: getCurrentAttemptId(parent),
+    attemptId: `${id}:observed`,
+    importedFromBackend: true,
+  }
+}
+
 describe('treeModel', () => {
   beforeEach(() => { jest.clearAllMocks() })
 
@@ -170,7 +181,12 @@ describe('treeModel', () => {
     const sampled = applyTreeCommand(original, { type: 'sample', nodeId: 'saved', count: 2 })
     const clones = sampled.nodes.slice(original.nodes.length)
     expect(clones).toHaveLength(2)
-    expect(sampled.groups?.[0]).toMatchObject({ kind: 'sample', collapsed: true, nodeIds: clones.map((clone: TreeNode) => clone.id) })
+    expect(sampled.groups?.[0]).toMatchObject({
+      kind: 'sample',
+      collapsed: true,
+      activeNodeId: 'saved',
+      nodeIds: ['saved', ...clones.map((clone: TreeNode) => clone.id)],
+    })
     for (const clone of clones) {
       expect(clone).toMatchObject({
         parentId: 'root',
@@ -347,10 +363,44 @@ describe('treeModel', () => {
   it('should keep collapsed groups purely presentational for queueing', () => {
     const sampled = applyTreeCommand(workspace([complete(node('root'))]), { type: 'sample', nodeId: 'root', count: 2 })
     expect(sampled.groups?.[0]).toMatchObject({ kind: 'sample', collapsed: true })
-    const created = sampled.groups?.[0].nodeIds ?? []
+    const created = (sampled.groups?.[0].nodeIds ?? []).filter((id: string) => id !== 'root')
+    expect(sampled.groups?.[0].nodeIds[0]).toBe('root')
+    expect(sampled.groups?.[0].activeNodeId).toBe('root')
     expect(created).toHaveLength(2)
     expect(getNewRunNodeIds(sampled, created)).toEqual(created)
     expect(created.every((id: string) => !isNodeHidden(sampled, id))).toBe(true)
+  })
+
+  it('should append repeated samples into the same stack and separate unrelated variants', () => {
+    let tree = workspace([complete(node('root'))])
+    tree = applyTreeCommand(tree, { type: 'sample', nodeId: 'root', count: 2 })
+    const firstGroup = tree.groups?.[0]
+    if (!firstGroup) throw new Error('Expected sample group')
+    const firstIds = [...firstGroup.nodeIds]
+    tree = applyTreeCommand(tree, { type: 'sample', nodeId: 'root', count: 1 })
+    expect(tree.groups).toHaveLength(1)
+    expect(tree.groups?.[0]).toMatchObject({ id: firstGroup.id, kind: 'sample', activeNodeId: 'root' })
+    expect(tree.groups?.[0].nodeIds.slice(0, firstIds.length)).toEqual(firstIds)
+    expect(tree.groups?.[0].nodeIds).toHaveLength(firstIds.length + 1)
+
+    let variantTree = workspace([complete(node('seed'))])
+    variantTree = applyTreeCommand(variantTree, {
+      type: 'fanOut',
+      nodeId: 'seed',
+      variants: [{ prompt: 'left', converters: [] }, { prompt: 'right', converters: [] }],
+    })
+    const variantGroup = variantTree.groups?.[0]
+    if (!variantGroup) throw new Error('Expected variant group')
+    const sampledVariant = applyTreeCommand(variantTree, {
+      type: 'sample',
+      nodeId: variantGroup.nodeIds[0] ?? '',
+      count: 1,
+    })
+    expect(sampledVariant.groups).toHaveLength(1)
+    expect(sampledVariant.groups?.[0]).toMatchObject({ kind: 'sample', activeNodeId: variantGroup.nodeIds[0] })
+    expect(sampledVariant.groups?.[0].nodeIds).toHaveLength(2)
+    expect(sampledVariant.groups?.[0].nodeIds).not.toContain(variantGroup.nodeIds[1])
+    expect(new Set(sampledVariant.groups?.[0].nodeIds).size).toBe(sampledVariant.groups?.[0].nodeIds.length)
   })
 
   it('should promote an unpruned member when the active stack member is pruned', () => {
@@ -481,5 +531,64 @@ describe('treeModel', () => {
       }]
     }
     expect(() => parseTreeWorkspace(JSON.stringify(workspace([root])))).toThrow('score evidence')
+  })
+
+  it('should validate presentation-only sizes and imported continuation lineage', () => {
+    const observedRoot = complete(node('root'))
+    const observedTree = workspace([observedRoot])
+    const resized = applyTreeCommand(observedTree, {
+      type: 'resize',
+      nodeId: 'root',
+      size: { width: 480, height: 440 },
+      position: { x: 12, y: 24 },
+    })
+    expect(resized.nodes[0].size).toEqual({ width: 480, height: 440 })
+    expect(resized.nodes[0].position).toEqual({ x: 12, y: 24 })
+    const reset = applyTreeCommand(resized, { type: 'resize', nodeId: 'root' })
+    expect(reset.nodes[0].size).toBeUndefined()
+    expect(() => parseTreeWorkspace(JSON.stringify(workspace([{ ...observedRoot, size: { width: 100, height: 440 } }])))).toThrow('width')
+    expect(() => applyTreeCommand(observedTree, {
+      type: 'resize',
+      nodeId: 'root',
+      position: { x: Number.NaN, y: 0 },
+    })).toThrow('position')
+
+    const importedChild = imported(observedRoot, 'import-child', 'follow-up', 3)
+    const importedLeaf = imported(importedChild, 'import-leaf', 'deeper', 5)
+    const importedTree = applyTreeCommand(observedTree, {
+      type: 'importContinuation',
+      nodeId: 'root',
+      nodes: [importedChild, importedLeaf],
+    })
+    expect(importedTree.nodes.map((entry: TreeNode) => entry.id)).toEqual(['root', 'import-child', 'import-leaf'])
+    expect(importedTree.nodes[1]).toMatchObject({
+      importedFromBackend: true,
+      attackResultId: observedRoot.attackResultId,
+      conversationId: observedRoot.conversationId,
+      parentAttemptId: importedTree.nodes[0].attemptId,
+    })
+    const repeated = applyTreeCommand(importedTree, {
+      type: 'importContinuation',
+      nodeId: 'root',
+      nodes: [importedChild, importedLeaf],
+    })
+    expect(repeated).toEqual(importedTree)
+    expect(() => applyTreeCommand(importedTree, {
+      type: 'importContinuation',
+      nodeId: 'root',
+      nodes: [{
+        ...importedChild,
+        messages: importedChild.messages?.map((entry: BackendMessage, index: number) => index === 1
+          ? { ...entry, message_pieces: [{ ...entry.message_pieces[0], converted_value: 'changed reply' }] }
+          : entry),
+      }],
+    })).toThrow('Reload before importing again')
+    expect(() => parseTreeWorkspace(JSON.stringify({
+      ...observedTree,
+      nodes: [observedRoot, { ...importedChild, id: 'sibling-import', parentId: null, parentAttemptId: undefined }],
+    }))).toThrow('contiguous imported continuations')
+    const retried = applyTreeCommand(importedTree, { type: 'retry', nodeId: 'import-child', scope: 'node' })
+    expect(() => parseTreeWorkspace(JSON.stringify(retried))).not.toThrow()
+    expect(retried.nodes.find((entry: TreeNode) => entry.id === 'import-child')).toMatchObject({ status: 'draft', importedFromBackend: true })
   })
 })

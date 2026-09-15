@@ -111,5 +111,11 @@ describe('treeStorage', () => {
     await expect(saveTreeWorkspace({ ...saved, nodes: [{ ...saved.nodes[0], prompt: 'rewrite' }] })).rejects.toThrow('immutable')
     const moved = await saveTreeWorkspace(applyTreeCommand(saved, { type: 'move', nodeId: saved.nodes[0].id, position: { x: 4, y: 5 } }))
     expect(moved.nodes[0].position).toEqual({ x: 4, y: 5 })
+    const resized = await saveTreeWorkspace(applyTreeCommand(moved, { type: 'resize', nodeId: moved.nodes[0].id, size: { width: 480, height: 440 } }))
+    expect(resized.nodes[0].size).toEqual({ width: 480, height: 440 })
+    await expect(saveTreeWorkspace({
+      ...resized,
+      nodes: [{ ...resized.nodes[0], importedFromBackend: true }],
+    })).rejects.toThrow('immutable')
   })
 })

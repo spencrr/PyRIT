@@ -25,7 +25,13 @@ const MAX_JSON_DEPTH = 30
 const MAX_JSON_VALUES = 100_000
 const MAX_IDENTIFIER_LENGTH = 256
 const MAX_OPERATION_BUDGET = 100_000
+const MIN_NODE_WIDTH = 220
+const MAX_NODE_WIDTH = 900
+const MIN_NODE_HEIGHT = 180
+const MAX_NODE_HEIGHT = 1000
 const RUN_PARENT_FIRST_MESSAGE = 'Run the parent first'
+const IMPORTED_NODE_ERROR = 'Imported history must remain an exact backend continuation'
+const SHARED_BACKEND_HISTORY_ERROR = 'shared backend IDs are reserved for contiguous imported continuations'
 const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 const CREDENTIAL_KEY = /^(?:.*(?:api[_-]?key|password|secret|credential|private[_-]?key)|authorization|access[_-]?token|refresh[_-]?token|bearer[_-]?token|token)$/i
 const WORKSPACE_KEYS = [
@@ -35,7 +41,7 @@ const WORKSPACE_KEYS = [
 const NODE_KEYS = [
   'id', 'parentId', 'prompt', 'converters', 'status', 'pruned', 'kept', 'forkedFrom',
   'position', 'attackResultId', 'conversationId', 'lastSequence', 'messages', 'error',
-  'attemptId', 'parentAttemptId', 'attempts', 'scoreRuns',
+  'attemptId', 'parentAttemptId', 'attempts', 'scoreRuns', 'size', 'importedFromBackend',
 ]
 const ATTEMPT_KEYS = [
   'attemptId', 'parentAttemptId', 'prompt', 'converters', 'status', 'attackResultId',
@@ -45,6 +51,7 @@ const GROUP_KEYS = ['id', 'kind', 'nodeIds', 'collapsed', 'activeNodeId']
 const SETTINGS_KEYS = [
   'traversal', 'operationBudget', 'confirmRuns', 'autoRun', 'continueOnError', 'markdown',
   'stackSamples', 'stackVariants', 'autoScore', 'objective', 'scorers', 'primaryScorerId',
+  'concurrency', 'edgeStyle', 'nodeSize',
 ]
 const SCORER_SELECTION_KEYS = ['scorer_id', 'scorer_type', 'identifier_hash', 'score_type', 'scope', 'highIsRisk']
 const SCORE_RUN_KEYS = ['id', 'scorerId', 'scorerHash', 'status', 'scores', 'error']
@@ -92,6 +99,9 @@ export const DEFAULT_TREE_SETTINGS: TreeSettings = {
   autoScore: false,
   objective: '',
   scorers: [],
+  concurrency: 1,
+  edgeStyle: 'bezier',
+  nodeSize: 'standard',
 }
 
 function requireValue(condition: unknown, message: string): asserts condition {
@@ -206,6 +216,9 @@ function normalizeSettings(settings?: Partial<TreeSettings>): TreeSettings {
     normalized.scorers.some((scorer: TreeScorerSelection) => scorer.scorer_id === settings.primaryScorerId)
     ? settings.primaryScorerId
     : normalized.scorers[0]?.scorer_id
+  normalized.concurrency = settings?.concurrency === 2 || settings?.concurrency === 4 ? settings.concurrency : 1
+  normalized.edgeStyle = settings?.edgeStyle === 'smoothstep' || settings?.edgeStyle === 'straight' ? settings.edgeStyle : 'bezier'
+  normalized.nodeSize = settings?.nodeSize === 'compact' || settings?.nodeSize === 'expanded' ? settings.nodeSize : 'standard'
   if (primary) normalized.primaryScorerId = primary
   else Reflect.deleteProperty(normalized, 'primaryScorerId')
   return normalized
@@ -238,6 +251,9 @@ function validateTreeSettings(value: unknown): asserts value is TreeSettings {
   ] as const) {
     requireValue(typeof settings[key] === 'boolean', `${key} must be boolean`)
   }
+  requireValue(settings.concurrency === 1 || settings.concurrency === 2 || settings.concurrency === 4, 'invalid concurrency')
+  requireValue(settings.edgeStyle === 'bezier' || settings.edgeStyle === 'smoothstep' || settings.edgeStyle === 'straight', 'invalid edge style')
+  requireValue(settings.nodeSize === 'compact' || settings.nodeSize === 'standard' || settings.nodeSize === 'expanded', 'invalid node size')
   text(settings.objective, 'objective', true)
   requireValue(Array.isArray(settings.scorers), 'scorers must be an array')
   const scorerIds = new Set<string>()
@@ -442,12 +458,9 @@ function validateNode(value: unknown): asserts value is TreeNode {
   requireValue(['draft', 'running', 'completed', 'error'].includes(String(node.status)), 'invalid node status')
   requireValue(typeof node.pruned === 'boolean' && typeof node.kept === 'boolean', 'invalid node flags')
   if (node.forkedFrom !== undefined) identifier(node.forkedFrom, 'fork source')
-  if (node.position !== undefined) {
-    const position = record(node.position, 'position')
-    onlyKeys(position, ['x', 'y'], 'position')
-    requireValue(typeof position.x === 'number' && Number.isFinite(position.x) &&
-      typeof position.y === 'number' && Number.isFinite(position.y), 'position must have finite coordinates')
-  }
+  if (node.position !== undefined) validateNodePosition(node.position, 'position')
+  if (node.size !== undefined) validateNodeSize(node.size, 'node size')
+  if (node.importedFromBackend !== undefined) requireValue(typeof node.importedFromBackend === 'boolean', 'invalid import flag')
   validateAttemptState({
     attemptId: typeof node.attemptId === 'string' ? node.attemptId : initialAttemptId(node.id),
     parentAttemptId: typeof node.parentAttemptId === 'string' ? node.parentAttemptId : undefined,
@@ -465,6 +478,24 @@ function validateNode(value: unknown): asserts value is TreeNode {
     requireValue(Array.isArray(node.attempts), 'attempt history must be an array')
     for (const attempt of node.attempts) validateTreeAttempt(attempt)
   }
+}
+
+function validateNodeSize(value: unknown, context: string): asserts value is { width: number; height: number } {
+  const size = record(value, context)
+  onlyKeys(size, ['width', 'height'], context)
+  requireValue(typeof size.width === 'number' && Number.isFinite(size.width) &&
+    size.width >= MIN_NODE_WIDTH && size.width <= MAX_NODE_WIDTH,
+  `${context} width must be ${MIN_NODE_WIDTH}-${MAX_NODE_WIDTH}`)
+  requireValue(typeof size.height === 'number' && Number.isFinite(size.height) &&
+    size.height >= MIN_NODE_HEIGHT && size.height <= MAX_NODE_HEIGHT,
+  `${context} height must be ${MIN_NODE_HEIGHT}-${MAX_NODE_HEIGHT}`)
+}
+
+function validateNodePosition(value: unknown, context: string): asserts value is { x: number; y: number } {
+  const position = record(value, context)
+  onlyKeys(position, ['x', 'y'], context)
+  requireValue(typeof position.x === 'number' && Number.isFinite(position.x) &&
+    typeof position.y === 'number' && Number.isFinite(position.y), `${context} must have finite coordinates`)
 }
 
 function validateTreeGroup(value: unknown): asserts value is TreeGroup {
@@ -570,8 +601,6 @@ function validateGraph(nodes: TreeNode[]): void {
   requireValue(nodes.length <= MAX_TREE_NODES, `maximum ${MAX_TREE_NODES} nodes`)
   const byId = new Map<string, TreeNode>()
   const attempts = new Set<string>()
-  const attacks = new Set<string>()
-  const conversations = new Set<string>()
   const evidencePieces = new Set<string>()
   for (const node of nodes) {
     requireValue(!byId.has(node.id), 'duplicate node IDs')
@@ -579,20 +608,9 @@ function validateGraph(nodes: TreeNode[]): void {
     const currentAttemptId = getCurrentAttemptId(node)
     requireValue(!attempts.has(currentAttemptId), 'duplicate current attempt IDs')
     attempts.add(currentAttemptId)
-    if (node.attackResultId && node.conversationId) {
-      requireValue(!attacks.has(node.attackResultId) && !conversations.has(node.conversationId), 'nodes must have independent backend IDs')
-      attacks.add(node.attackResultId)
-      conversations.add(node.conversationId)
-    }
     for (const attempt of node.attempts ?? []) {
       requireValue(!attempts.has(attempt.attemptId), 'duplicate attempt IDs')
       attempts.add(attempt.attemptId)
-      if (attempt.attackResultId && attempt.conversationId) {
-        requireValue(!attacks.has(attempt.attackResultId) && !conversations.has(attempt.conversationId),
-          'attempts must have independent backend IDs')
-        attacks.add(attempt.attackResultId)
-        conversations.add(attempt.conversationId)
-      }
     }
     for (const message of [...(node.messages ?? []), ...(node.attempts ?? []).flatMap((attempt: TreeAttempt) => attempt.messages ?? [])]) {
       for (const piece of message.message_pieces) {
@@ -623,6 +641,7 @@ function validateGraph(nodes: TreeNode[]): void {
       if (node.messages) requireValue(node.messages[0].turn_number > (parent.lastSequence ?? -1), 'child evidence overlaps parent history')
     }
   }
+  validateSharedBackendHistory(nodes)
 }
 
 function validateGroups(workspace: TreeWorkspace): void {
@@ -630,6 +649,7 @@ function validateGroups(workspace: TreeWorkspace): void {
   requireValue(Array.isArray(workspace.groups), 'groups must be an array')
   const byId = new Map(workspace.nodes.map((node: TreeNode) => [node.id, node]))
   const groupIds = new Set<string>()
+  const memberships = new Map<string, string>()
   for (const group of workspace.groups) {
     validateTreeGroup(group)
     requireValue(!groupIds.has(group.id), 'duplicate group IDs')
@@ -640,7 +660,80 @@ function validateGroups(workspace: TreeWorkspace): void {
       const node = byId.get(nodeId)
       requireValue(node, 'group references a missing node')
       requireValue(node.parentId === parentId, 'grouped nodes must share the same parent')
+      const owner = memberships.get(nodeId)
+      requireValue(owner === undefined || owner === group.id, 'groups cannot overlap')
+      memberships.set(nodeId, group.id)
     }
+  }
+}
+
+interface BackendConversationRecord {
+  readonly attackResultId: string
+  readonly conversationId: string
+  readonly nodeId: string
+  readonly parentId: string | null
+  readonly importedFromBackend: boolean
+}
+
+function validateSharedBackendHistory(nodes: TreeNode[]): void {
+  const grouped = new Map<string, BackendConversationRecord[]>()
+  const attackPairs = new Map<string, string>()
+  const conversationPairs = new Map<string, string>()
+  for (const node of nodes) {
+    if (node.attackResultId && node.conversationId) {
+      const key = `${node.attackResultId}\u0000${node.conversationId}`
+      const attackPair = attackPairs.get(node.attackResultId)
+      const conversationPair = conversationPairs.get(node.conversationId)
+      requireValue(attackPair === undefined || attackPair === key, SHARED_BACKEND_HISTORY_ERROR)
+      requireValue(conversationPair === undefined || conversationPair === key, SHARED_BACKEND_HISTORY_ERROR)
+      attackPairs.set(node.attackResultId, key)
+      conversationPairs.set(node.conversationId, key)
+      grouped.set(key, [...(grouped.get(key) ?? []), {
+        attackResultId: node.attackResultId,
+        conversationId: node.conversationId,
+        nodeId: node.id,
+        parentId: node.parentId,
+        importedFromBackend: node.importedFromBackend === true,
+      }])
+    }
+    for (const attempt of node.attempts ?? []) {
+      if (!attempt.attackResultId || !attempt.conversationId) continue
+      const key = `${attempt.attackResultId}\u0000${attempt.conversationId}`
+      const attackPair = attackPairs.get(attempt.attackResultId)
+      const conversationPair = conversationPairs.get(attempt.conversationId)
+      requireValue(attackPair === undefined || attackPair === key, SHARED_BACKEND_HISTORY_ERROR)
+      requireValue(conversationPair === undefined || conversationPair === key, SHARED_BACKEND_HISTORY_ERROR)
+      attackPairs.set(attempt.attackResultId, key)
+      conversationPairs.set(attempt.conversationId, key)
+      grouped.set(key, [...(grouped.get(key) ?? []), {
+        attackResultId: attempt.attackResultId,
+        conversationId: attempt.conversationId,
+        nodeId: node.id,
+        parentId: node.parentId,
+        importedFromBackend: node.importedFromBackend === true,
+      }])
+    }
+  }
+  for (const records of grouped.values()) {
+    if (records.length <= 1) continue
+    const byNodeId = new Map<string, BackendConversationRecord>()
+    const childCounts = new Map<string, number>()
+    let roots = 0
+    for (const record of records) {
+      requireValue(!byNodeId.has(record.nodeId), SHARED_BACKEND_HISTORY_ERROR)
+      byNodeId.set(record.nodeId, record)
+    }
+    for (const record of records) {
+      const parent = record.parentId === null ? undefined : byNodeId.get(record.parentId)
+      if (!parent) {
+        roots += 1
+        continue
+      }
+      requireValue(record.importedFromBackend, SHARED_BACKEND_HISTORY_ERROR)
+      childCounts.set(parent.nodeId, (childCounts.get(parent.nodeId) ?? 0) + 1)
+      requireValue((childCounts.get(parent.nodeId) ?? 0) <= 1, SHARED_BACKEND_HISTORY_ERROR)
+    }
+    requireValue(roots === 1, SHARED_BACKEND_HISTORY_ERROR)
   }
 }
 
@@ -718,9 +811,8 @@ function groupCollapsed(workspace: TreeWorkspace, kind: TreeGroup['kind']): bool
   return kind === 'sample' ? settings.stackSamples : settings.stackVariants
 }
 
-function appendGroup(workspace: TreeWorkspace, kind: TreeGroup['kind'], nodeIds: string[]): void {
+function appendGroup(workspace: TreeWorkspace, kind: TreeGroup['kind'], nodeIds: string[], activeNodeId = nodeIds[0]): void {
   requireValue(nodeIds.length > 0, 'groups require at least one node')
-  const activeNodeId = nodeIds[0]
   requireValue(activeNodeId !== undefined, 'groups require an active node')
   const groups = workspace.groups ? [...workspace.groups] : []
   groups.push({
@@ -731,6 +823,70 @@ function appendGroup(workspace: TreeWorkspace, kind: TreeGroup['kind'], nodeIds:
     activeNodeId,
   })
   workspace.groups = groups
+}
+
+function findGroupByNodeId(workspace: TreeWorkspace, nodeId: string): TreeGroup | undefined {
+  return workspace.groups?.find((group: TreeGroup) => group.nodeIds.includes(nodeId))
+}
+
+function appendSiblingGroupMembers(
+  workspace: TreeWorkspace,
+  anchorNodeId: string,
+  kind: TreeGroup['kind'],
+  createdNodeIds: string[],
+  includeAnchor: boolean,
+): void {
+  requireValue(createdNodeIds.length > 0, 'groups require at least one new node')
+  const existing = findGroupByNodeId(workspace, anchorNodeId)
+  if (existing && kind === 'sample' && existing.kind !== 'sample') {
+    existing.nodeIds = existing.nodeIds.filter((id) => id !== anchorNodeId)
+    if (existing.activeNodeId === anchorNodeId) existing.activeNodeId = existing.nodeIds[0]
+    workspace.groups = workspace.groups?.filter((group) => group.nodeIds.length >= 2)
+  } else if (existing) {
+    const anchorParentId = getNode(workspace, anchorNodeId).parentId
+    requireValue(existing.nodeIds.every((nodeId: string) => getNode(workspace, nodeId).parentId === anchorParentId),
+      'grouped nodes must share the same parent')
+    const appended = existing.nodeIds.slice()
+    for (const nodeId of createdNodeIds) if (!appended.includes(nodeId)) appended.push(nodeId)
+    existing.nodeIds = appended
+    return
+  }
+  appendGroup(workspace, kind, includeAnchor ? [anchorNodeId, ...createdNodeIds] : createdNodeIds, includeAnchor ? anchorNodeId : createdNodeIds[0])
+}
+
+function importedNodeSignature(node: TreeNode): string {
+  return JSON.stringify({
+    id: node.id,
+    parentId: node.parentId,
+    parentAttemptId: node.parentAttemptId,
+    attemptId: getCurrentAttemptId(node),
+    prompt: node.prompt,
+    converters: node.converters,
+    status: node.status,
+    attackResultId: node.attackResultId,
+    conversationId: node.conversationId,
+    lastSequence: node.lastSequence,
+    messages: node.messages,
+    error: node.error,
+    importedFromBackend: node.importedFromBackend === true,
+  })
+}
+
+function validateImportedNode(current: TreeNode, source: TreeNode): void {
+  requireValue(source.importedFromBackend === true, `${IMPORTED_NODE_ERROR}.`)
+  requireValue(source.status === 'completed' || source.status === 'error', `${IMPORTED_NODE_ERROR}.`)
+  requireValue(source.converters.length === 0 && source.forkedFrom === undefined, `${IMPORTED_NODE_ERROR}.`)
+  requireValue(source.messages !== undefined && source.attackResultId !== undefined &&
+    source.conversationId !== undefined && source.lastSequence !== undefined,
+  `${IMPORTED_NODE_ERROR}.`)
+  requireValue(importedNodeSignature(current) === importedNodeSignature(source),
+    'Imported history conflicts with existing nodes. Reload before importing again.')
+}
+
+function cloneValidatedNode(node: TreeNode): TreeNode {
+  const cloned = parseJson(JSON.stringify(node))
+  validateNode(cloned)
+  return cloned as TreeNode
 }
 
 function currentAttemptSnapshot(node: TreeNode): TreeAttempt | undefined {
@@ -935,7 +1091,7 @@ export function applyTreeCommand(workspace: TreeWorkspace, command: TreeCommand)
         next.nodes.push(createdNode)
         created.push(createdNode.id)
       }
-      appendGroup(next, 'variant', created)
+      appendSiblingGroupMembers(next, node.id, 'variant', created, false)
       break
     }
     case 'childVariants': {
@@ -964,7 +1120,7 @@ export function applyTreeCommand(workspace: TreeWorkspace, command: TreeCommand)
         next.nodes.push(createdNode)
         created.push(createdNode.id)
       }
-      appendGroup(next, 'sample', created)
+      appendSiblingGroupMembers(next, node.id, 'sample', created, true)
       break
     }
     case 'fork':
@@ -1006,13 +1162,54 @@ export function applyTreeCommand(workspace: TreeWorkspace, command: TreeCommand)
       break
     }
     case 'move':
+      validateNodePosition(command.position, 'position')
       node.position = command.position
+      break
+    case 'resize':
+      if (command.size === undefined) Reflect.deleteProperty(node, 'size')
+      else {
+        validateNodeSize(command.size, 'node size')
+        node.size = { ...command.size }
+      }
+      if (command.position !== undefined) {
+        validateNodePosition(command.position, 'position')
+        node.position = { ...command.position }
+      }
       break
     case 'score': {
       requireValue(getCurrentAttemptId(node) === command.attemptId, 'score runs can be attached only to the current attempt')
       requireValue(isObservedStatus(node.status) && node.messages !== undefined, 'only observed attempts can receive score runs')
       validateTreeScoreRun(command.result, evidencePieceIds(node.messages))
       node.scoreRuns = [...(node.scoreRuns ?? []), command.result]
+      break
+    }
+    case 'importContinuation': {
+      const source = getNode(next, command.nodeId)
+      requireValue(source.messages !== undefined && source.attackResultId !== undefined &&
+        source.conversationId !== undefined && source.lastSequence !== undefined,
+      `${IMPORTED_NODE_ERROR}.`)
+      const initialCount = next.nodes.length
+      const existing = new Map(next.nodes.map((entry: TreeNode) => [entry.id, entry]))
+      const added = new Map<string, TreeNode>()
+      for (const rawImported of command.nodes) {
+        const imported = cloneValidatedNode(rawImported)
+        const parent = added.get(imported.parentId ?? '') ?? existing.get(imported.parentId ?? '')
+        requireValue(parent !== undefined, `${IMPORTED_NODE_ERROR}; imported parents must exist.`)
+        requireValue(isDescendant(next, parent, command.nodeId), `${IMPORTED_NODE_ERROR}; imported nodes must extend the selected lineage.`)
+        requireValue(imported.parentAttemptId === getCurrentAttemptId(parent),
+          `${IMPORTED_NODE_ERROR}; imported nodes must reference the parent current attempt.`)
+        requireValue(imported.attackResultId === source.attackResultId && imported.conversationId === source.conversationId,
+          `${IMPORTED_NODE_ERROR}; imported nodes must keep the source backend IDs.`)
+        const conflict = existing.get(imported.id)
+        if (conflict) {
+          validateImportedNode(conflict, imported)
+          continue
+        }
+        added.set(imported.id, imported)
+        existing.set(imported.id, imported)
+        next.nodes.push(imported)
+      }
+      if (next.nodes.length === initialCount) return parseTreeWorkspace(JSON.stringify(next))
       break
     }
     default:

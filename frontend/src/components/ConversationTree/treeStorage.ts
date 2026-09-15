@@ -54,6 +54,7 @@ function nodeInputSignature(node: TreeNode): string {
     prompt: node.prompt,
     converters: node.converters,
     forkedFrom: node.forkedFrom,
+    importedFromBackend: node.importedFromBackend,
   })
 }
 
