@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import {
-  Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle,
+  Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field,
   Link, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarBody, Select, Text,
 } from '@fluentui/react-components'
 import { BranchForkRegular, MoreHorizontalRegular } from '@fluentui/react-icons'
@@ -13,9 +13,11 @@ import type {
 } from '@/types'
 import { downloadTextFile } from '@/utils/conversationExport'
 import { fetchAllPages } from '@/utils/fetchAllPages'
+import { useTreeContinuation } from '@/hooks/useTreeContinuation'
 
 import { useConversationTreeStyles } from './ConversationTree.styles'
 import TreeCanvas from './TreeCanvas'
+import { NODE_SIZES } from './treePresentation'
 import TreeNodeEditor from './TreeNodeEditor'
 import TreeWorkspaceDialog from './TreeWorkspaceDialog'
 import TreeSettingsDialog from './TreeSettingsDialog'
@@ -25,6 +27,8 @@ import {
   applyTreeCommand, exportTreePlan, getNewRunNodeIds, getRunNodeIds, getTreeSettings, isNodeHidden, TREE_WORKSPACE_LABEL,
 } from './treeModel'
 import { deleteTreeWorkspace, listTreeWorkspaces, loadTreeWorkspace, saveTreeWorkspace, TREE_STORAGE_PREFIX } from './treeStorage'
+import { captureTreeUndo, reverseTreeUndo, type TreeUndoEntry } from './treeUndo'
+import { discoverTreeContinuation } from './treeHistory'
 
 interface ConversationTreeProps {
   activeTarget: TargetInstance | null
@@ -44,10 +48,11 @@ interface RunRecord {
   id: string
   workspaceId: string
   nodeIds: string[]
+  effectiveConcurrency?: number
 }
 
 function executionSignature(node: TreeNode): string {
-  return JSON.stringify({ ...node, position: undefined, kept: undefined, pruned: undefined, scoreRuns: undefined })
+  return JSON.stringify({ ...node, position: undefined, size: undefined, kept: undefined, pruned: undefined, scoreRuns: undefined })
 }
 
 function scoreView(score: BackendScore): BackendScore {
@@ -100,16 +105,35 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   const pendingWrites = useRef(0)
   const transactionTail = useRef<Promise<void>>(Promise.resolve())
   const pendingCommands = useRef(new Set<string>())
+  const scoringTail = useRef<Promise<void>>(Promise.resolve())
+  const [focusedGroupId, setFocusedGroupId] = useState<string | null>(null)
+  const [activityOpen, setActivityOpen] = useState(false)
+  const [lastRun, setLastRun] = useState<RunRecord | null>(null)
+  const [undo, setUndo] = useState<TreeUndoEntry[]>([])
+  const [redo, setRedo] = useState<TreeUndoEntry[]>([])
+  const [importingHistory, setImportingHistory] = useState(false)
+  const importingHistoryRef = useRef(false)
   const [recovery, setRecovery] = useState<TreeWorkspace | null>(null)
   const recoveryRef = useRef<TreeWorkspace | null>(null)
   const [recovering, setRecovering] = useState(false)
   const recoveringRef = useRef(false)
+  const backend = useTreeContinuation(workspace, selectedId, active, run !== null || recovering)
 
   function publish(next: TreeWorkspace): void {
     current.current = next
     if (!mounted.current) return
     setWorkspace(next)
     setWorkspaces((previous) => [next, ...previous.filter((item) => item.id !== next.id)])
+  }
+
+  function activateWorkspace(next: TreeWorkspace | null): void {
+    if (next) publish(next)
+    else { current.current = null; setWorkspace(null) }
+    setSelectedId(next?.nodes[0]?.id ?? null)
+    setFocusedGroupId(null)
+    setUndo([]); setRedo([])
+    setNotice(''); setError('')
+    dirtyRef.current = false; setDirty(false)
   }
 
   function mutate(operation: (base: TreeWorkspace) => TreeWorkspace): Promise<TreeWorkspace> {
@@ -171,9 +195,10 @@ export default function ConversationTree({ activeTarget, labels, active = true }
     return () => { cancelled = true; stopped.current = true }
   }, [active])
 
-  async function scoreNode(nodeId: string, settings: TreeSettings): Promise<void> {
-    const node = current.current?.nodes.find((item) => item.id === nodeId)
-    if (!node?.attackResultId || !node.conversationId || !node.attemptId) return
+  async function scoreNodeNow(node: TreeNode, settings: TreeSettings): Promise<void> {
+    if (!node?.attackResultId || !node.conversationId || !node.attemptId) throw new Error('This node has no persisted response to score.')
+    const evidence = node.messages?.filter((message) => message.role === 'assistant').slice(-1)[0]
+    if (!evidence) throw new Error('No recorded response is available to score.')
     for (const scorer of settings.scorers) {
       if (stopped.current) break
       let result: TreeScoreRun
@@ -181,6 +206,11 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         const response = await scorersApi.score(scorer.scorer_id, {
           attack_result_id: node.attackResultId, conversation_id: node.conversationId,
           expected_scorer_hash: scorer.identifier_hash, objective: settings.objective, scope: scorer.scope,
+          evidence_sequence: evidence.turn_number,
+          evidence_message_piece_ids: evidence.message_pieces.map((piece) => piece.id),
+          expected_response: evidence.message_pieces.map((piece) => ({
+            id: piece.id, converted_value: piece.converted_value, converted_value_data_type: piece.converted_value_data_type,
+          })),
         })
         if (response.scorer_hash !== scorer.identifier_hash || response.scorer_id !== scorer.scorer_id) throw new Error('Scorer identity changed.')
         result = { id: crypto.randomUUID(), scorerId: scorer.scorer_id, scorerHash: scorer.identifier_hash, status: response.status, scores: response.scores.map(scoreView) }
@@ -188,7 +218,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         result = { id: crypto.randomUUID(), scorerId: scorer.scorer_id, scorerHash: scorer.identifier_hash,
           status: 'error', scores: [], error: toApiError(failure).detail }
       }
-      const command: TreeCommand = { type: 'score', nodeId, attemptId: node.attemptId, result }
+      const command: TreeCommand = { type: 'score', nodeId: node.id, attemptId: node.attemptId, result }
       try { await mutate((base) => applyTreeCommand(base, command)) }
       catch (failure) {
         const base = current.current
@@ -196,6 +226,14 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         throw failure
       }
     }
+  }
+
+  function scoreNode(nodeId: string, settings: TreeSettings): Promise<void> {
+    const node = current.current?.nodes.find((item) => item.id === nodeId)
+    if (!node) return Promise.reject(new Error('The selected response no longer exists.'))
+    const task = scoringTail.current.then(() => scoreNodeNow(node, settings))
+    scoringTail.current = task.then(() => undefined, () => undefined)
+    return task
   }
 
   function planned(snapshot: TreeWorkspace, nodeIds: string[], kind: Proposal['kind']): Proposal {
@@ -211,7 +249,9 @@ export default function ConversationTree({ activeTarget, labels, active = true }
     const snapshot = current.current
     if (snapshot.id !== approved.workspaceId || snapshot.revision !== approved.revision) { setError('Workspace changed. Review the run again.'); return }
     running.current = true; stopped.current = false
-    setRun({ id: crypto.randomUUID(), workspaceId: snapshot.id, nodeIds: approved.nodeIds })
+    const record = { id: crypto.randomUUID(), workspaceId: snapshot.id, nodeIds: approved.nodeIds }
+    setRun(record)
+    setLastRun(record)
     setError(''); setNotice('')
     const settings = getTreeSettings(snapshot)
     try {
@@ -225,6 +265,11 @@ export default function ConversationTree({ activeTarget, labels, active = true }
           nodeIds: approved.nodeIds, save: saveTreeWorkspace, onUpdate: publish,
           getLatest: () => current.current ?? snapshot,
           isStopped: () => stopped.current,
+          onConcurrencyResolved: (concurrency: number) => {
+            setRun((record) => record ? { ...record, effectiveConcurrency: concurrency } : record)
+            setLastRun((record) => record ? { ...record, effectiveConcurrency: concurrency } : record)
+            if (concurrency < (settings.concurrency ?? 1)) setNotice('This target has not been verified for shared parallel requests; this run uses one request at a time.')
+          },
           commitNodeUpdate: (nodeId: string, expected: TreeNode, update: Partial<TreeNode>) => mutate((base) => {
             const node = base.nodes.find((item) => item.id === nodeId)
             if (!node || executionSignature(node) !== executionSignature(expected)) throw new Error('Attempt changed before execution update; stopped without overwriting edits.')
@@ -233,7 +278,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
           onNodeCompleted: async (_snapshot: TreeWorkspace, nodeId: string) => { if (settings.autoScore) await scoreNode(nodeId, settings) },
         })
       }
-      if (mounted.current) setNotice(stopped.current ? 'Stopped after the current request.' : 'Run finished. Changed or blocked queued branches remain drafts.')
+      if (mounted.current) setNotice(stopped.current ? 'Stopped after all in-flight requests settled.' : 'Run finished. Changed or blocked queued branches remain drafts.')
     } catch (failure) { if (mounted.current) fail(failure) }
     finally { running.current = false; if (mounted.current) setRun(null) }
   }
@@ -255,12 +300,21 @@ export default function ConversationTree({ activeTarget, labels, active = true }
     if (!running.current && active) stopped.current = false
     setError('')
     try {
-      const before = current.current
-      const saved = await mutate((base) => applyTreeCommand(base, command))
+      let before = current.current
+      const relayout = command.type === 'autoLayout' || (command.type === 'group' && command.collapsed === false)
+      const saved = await mutate((base) => {
+        before = base
+        const next = applyTreeCommand(base, command)
+        return command.type === 'group' && command.collapsed === false ? applyTreeCommand(next, { type: 'autoLayout' }) : next
+      })
       const added = saved.nodes.filter((node) => !before.nodes.some((old) => old.id === node.id))
-      if (command.type === 'autoLayout') setLayoutVersion((value) => value + 1)
+      if (['edit', 'prune', 'keep', 'move', 'resize', 'autoLayout'].includes(command.type) || (command.type === 'group' && command.collapsed !== undefined)) {
+        const entry = captureTreeUndo(before, saved)
+        if (entry.nodes.length || entry.groups) { setUndo((history) => [...history.slice(-19), entry]); setRedo([]) }
+      }
+      if (relayout) setLayoutVersion((value) => value + 1)
       if (command.type === 'group' && command.activeNodeId) setSelectedId(command.activeNodeId)
-      if (command.type === 'retry') setSelectedId(command.nodeId)
+      if (command.type === 'retry' || command.type === 'sample') setSelectedId(command.nodeId)
       else if (added[0]) setSelectedId(added.find((node) => !('nodeId' in command) || node.forkedFrom === command.nodeId)?.id ?? added[0].id)
       if (command.type === 'edit' || command.type === 'retry' || added.length) { dirtyRef.current = false; setDirty(false) }
       if (run && command.type === 'edit') {
@@ -272,7 +326,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         if (command.type === 'retry') {
           const ids = command.scope === 'node' ? [command.nodeId] : getRunNodeIds(saved, command.nodeId)
           requestRun(saved, ids, 'run')
-        } else if (added.length && getTreeSettings(saved).autoRun) {
+        } else if (added.length && command.type !== 'importContinuation' && getTreeSettings(saved).autoRun) {
           try { requestRun(saved, getNewRunNodeIds(saved, added.map((node) => node.id)), 'run', true) }
           catch (failure) { fail(failure); setNotice('Branches saved. Run their parent first.') }
         }
@@ -280,6 +334,31 @@ export default function ConversationTree({ activeTarget, labels, active = true }
       return true
     } catch (failure) { fail(failure); return false }
     finally { pendingCommands.current.delete(commandKey) }
+  }
+
+  async function undoEdit(forward: boolean): Promise<void> {
+    const history = forward ? redo : undo
+    const entry = history[history.length - 1]
+    if (!entry || dirtyRef.current || running.current || pendingWrites.current || recoveryRef.current) return
+    try {
+      await mutate((base) => reverseTreeUndo(base, entry, forward))
+      if (forward) { setRedo(history.slice(0, -1)); setUndo((items) => [...items, entry]) }
+      else { setUndo(history.slice(0, -1)); setRedo((items) => [...items, entry]) }
+    } catch (failure) { fail(failure) }
+  }
+
+  async function importHistory(nodeId: string): Promise<void> {
+    const snapshot = current.current
+    if (!snapshot || importingHistoryRef.current || running.current || dirtyRef.current || pendingWrites.current || recoveryRef.current) return
+    importingHistoryRef.current = true
+    setImportingHistory(true)
+    try {
+      const continuation = await discoverTreeContinuation(snapshot, nodeId)
+      if (continuation.nodes.length) await commitCommand({ type: 'importContinuation', nodeId, nodes: continuation.nodes })
+      else setNotice('No new complete exchanges to import.')
+      backend.refresh()
+    } catch (failure) { fail(failure) }
+    finally { importingHistoryRef.current = false; setImportingHistory(false) }
   }
 
   async function selectNode(id: string): Promise<void> {
@@ -309,7 +388,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
             throw new Error('Attempt changed while recovering. Reload its recorded result.')
           }
           return { ...base, nodes: base.nodes.map((node) => node.id === nodeId ? {
-            ...restored, position: node.position, pruned: node.pruned, kept: node.kept, scoreRuns: node.scoreRuns,
+            ...restored, position: node.position, size: node.size, pruned: node.pruned, kept: node.kept, scoreRuns: node.scoreRuns,
           } : node) }
         }))
       publish(saved); recoveryRef.current = null; setRecovery(null); setError('')
@@ -321,7 +400,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   function openWorkspace(id: string): void {
     try {
       const loaded = loadTreeWorkspace(id)
-      publish(loaded); setSelectedId(loaded.nodes[0]?.id ?? null); setNotice(''); setError('')
+      activateWorkspace(loaded)
     } catch (failure) { fail(failure) }
   }
 
@@ -333,11 +412,13 @@ export default function ConversationTree({ activeTarget, labels, active = true }
 
   const selected = (recovery ?? workspace)?.nodes.find((node) => node.id === selectedId)
   const settings = workspace ? getTreeSettings(workspace) : null
-  const locked = recovery !== null || recovering || writes > 0
+  const locked = recovery !== null || recovering || writes > 0 || importingHistory
   const viewLocked = locked || run !== null || dirty
-  const selectedLocked = recovery !== null || recovering
+  const selectedLocked = recovery !== null || recovering || importingHistory
   const group = workspace?.groups?.find((entry) => selected && entry.nodeIds.includes(selected.id))
   const visible = workspace?.nodes.filter((node) => showPruned || !isNodeHidden(workspace, node.id)) ?? []
+  const continuation = backend.continuation
+  const activity = lastRun?.workspaceId === workspace?.id ? lastRun : null
 
   function askScore(rootId?: string, subtree = false): void {
     if (!workspace || !settings) return
@@ -358,10 +439,10 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         <Button className={styles.button} disabled={!workspace || viewLocked} onClick={() => { download(true) }}>Export plan</Button>
         <Button className={styles.button} disabled={!workspace || viewLocked} onClick={() => { download(false) }}>Export evidence</Button>
       </header>
-      {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
-      {notice && <MessageBar><MessageBarBody>{notice}</MessageBarBody></MessageBar>}
-      {dirty && <MessageBar><MessageBarBody>Unsaved edits. Current requests continue; apply edits to remove that branch from their queue.</MessageBarBody></MessageBar>}
-      {recovery && <MessageBar intent="warning"><MessageBarBody>
+      {error && <MessageBar layout="multiline" intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
+      {notice && <MessageBar layout="multiline"><MessageBarBody>{notice}</MessageBarBody></MessageBar>}
+      {dirty && <MessageBar layout="multiline"><MessageBarBody>Unsaved edits. Current requests continue; apply edits to remove that branch from their queue.</MessageBarBody></MessageBar>}
+      {recovery && <MessageBar layout="multiline" intent="warning"><MessageBarBody>
         Unsaved execution evidence retained. Save or export before leaving; a revision conflict will not overwrite another tab.
         <Button className={styles.button} disabled={recovering} onClick={() => { void recover() }}>Retry saving only</Button>
         <Button className={styles.button} onClick={() => { download(false, recovery) }}>Export unsaved snapshot</Button>
@@ -381,9 +462,12 @@ export default function ConversationTree({ activeTarget, labels, active = true }
               <MenuItem disabled={viewLocked} onClick={() => { setDialog('delete') }}>Delete local tree</MenuItem>
             </MenuList></MenuPopover>
           </Menu>
-          <Text className={styles.muted}>{settings.traversal === 'breadth-first' ? 'BFS' : 'DFS'} · 1 at a time · Budget {settings.operationBudget} · {settings.confirmRuns ? 'Ask before runs' : 'Confirmations off'}{settings.autoRun ? ' · Auto-run' : ''}</Text>
+          <Text className={styles.muted}>{settings.traversal === 'breadth-first' ? 'BFS' : 'DFS'} · Up to {settings.concurrency ?? 1} at a time · Budget {settings.operationBudget} · {settings.confirmRuns ? 'Ask before runs' : 'Confirmations off'}{settings.autoRun ? ' · Auto-run' : ''}</Text>
           <Checkbox label="Show pruned" checked={showPruned} onChange={(_, data) => { setShowPruned(data.checked === true) }} />
           <Button className={styles.button} disabled={locked} onClick={() => { void commitCommand({ type: 'autoLayout' }) }}>Auto layout</Button>
+          <Button className={styles.button} disabled={viewLocked || !undo.length} onClick={() => { void undoEdit(false) }}>Undo edit</Button>
+          <Button className={styles.button} disabled={viewLocked || !redo.length} onClick={() => { void undoEdit(true) }}>Redo edit</Button>
+          <Button className={styles.button} aria-pressed={activityOpen} onClick={() => { setActivityOpen(!activityOpen) }}>Activity</Button>
           <Button className={styles.button} onClick={() => { setDialog('scoring') }}>Scoring</Button>
           <Button className={styles.button} disabled={viewLocked || !settings.scorers.length} onClick={() => { askScore() }}>Score existing responses</Button>
           <div className={styles.spacer} />
@@ -392,23 +476,66 @@ export default function ConversationTree({ activeTarget, labels, active = true }
               try { requestRun(workspace, getRunNodeIds(workspace)) } catch (failure) { fail(failure) }
             }}>{settings.confirmRuns ? 'Review & run drafts' : 'Run drafts'}</Button>}
         </div>
+        {focusedGroupId && <div className={styles.groupHeader}>
+          <Button className={styles.button} onClick={() => { setFocusedGroupId(null) }}>Back to workspace</Button>
+          <Text>Group comparison · unrelated branches hidden, not pruned</Text>
+        </div>}
+        {activityOpen && <section aria-label="Run activity" className={styles.toolbar}>
+          {!activity ? <Text>No run in this session.</Text> : <>
+            <Text>{run ? 'Running' : 'Last run'}: {activity.nodeIds.length} planned nodes</Text>
+            {activity.effectiveConcurrency !== undefined && <Text>Concurrency: {activity.effectiveConcurrency}</Text>}
+            {['running', 'completed', 'error', 'draft'].map((status) => <Text key={status}>
+              {status === 'draft' ? run ? 'Queued / blocked' : 'Skipped / blocked' : status}: {workspace.nodes.filter((node) => activity.nodeIds.includes(node.id) && node.status === status).length}
+            </Text>)}
+            <Text className={styles.muted}>Changed inputs and failed-parent branches are not dispatched. Stop waits for in-flight evidence.</Text>
+          </>}
+        </section>}
         <div className={styles.body}>
           <aside className={styles.outline} aria-label="Tree outline"><div className={styles.stack}>
             <Text weight="semibold">Branches</Text>
             {visible.map((node) => <Button key={node.id} className={styles.outlineButton}
               appearance={selectedId === node.id ? 'primary' : 'subtle'} aria-pressed={selectedId === node.id}
-              onClick={() => { void selectNode(node.id) }}>{node.prompt.slice(0, 55)} ({node.status})</Button>)}
+              onClick={() => {
+                if (!dirtyRef.current) setFocusedGroupId(null)
+                void selectNode(node.id)
+              }}>{node.prompt.slice(0, 55)} ({node.status}){isNodeHidden(workspace, node.id) ? ' · Pruned' : node.kept ? ' · Kept' : ''}</Button>)}
             <Text className={styles.muted}>Graph saved in this browser. Responses and scores persist in backend history.</Text>
             <Link href={`/history/attacks?${new URLSearchParams({ label: `${TREE_WORKSPACE_LABEL}:${workspace.id}` })}`}>Workspace history</Link>
           </div></aside>
           {active && <TreeCanvas workspace={workspace} key={workspace.id} selectedId={selectedId} showPruned={showPruned}
             disabled={false} layoutVersion={layoutVersion} queuedIds={run?.nodeIds}
+            focusedGroupId={focusedGroupId} onFocusGroup={setFocusedGroupId}
             onSelect={(id) => { void selectNode(id) }} onMove={(nodeId, position) => { void commitCommand({ type: 'move', nodeId, position }) }}
             onGroup={(command) => { void commitCommand(command) }} />}
           <aside className={styles.inspector} aria-label="Turn inspector">
-            {group && <Button className={styles.button} onClick={() => { void commitCommand({ type: 'group', groupId: group.id, collapsed: !group.collapsed }) }}>
-              {group.collapsed ? 'Expand group' : 'Stack group'} ({group.nodeIds.length})
-            </Button>}
+            {group && <div className={styles.row}>
+              <Button className={styles.button} onClick={() => { setFocusedGroupId(group.id) }}>Focus group ({group.nodeIds.length})</Button>
+              <Button className={styles.button} onClick={() => { void commitCommand({ type: 'group', groupId: group.id, collapsed: !group.collapsed }) }}>
+                {group.collapsed ? 'Expand & auto layout' : 'Stack group'} ({group.nodeIds.length})
+              </Button>
+            </div>}
+            {selected && <Field label="Node size">
+              <Select value={selected.size ? 'custom' : 'default'} onChange={(_, data) => {
+                const key = data.value
+                if (key === 'default') void commitCommand({ type: 'resize', nodeId: selected.id })
+                else if (key === 'compact' || key === 'standard' || key === 'expanded') void commitCommand({ type: 'resize', nodeId: selected.id, size: { ...NODE_SIZES[key] } })
+              }}>
+                <option value="default">Workspace default</option><option value="compact">Compact</option><option value="standard">Standard</option><option value="expanded">Expanded preview</option>
+                {selected.size && <option value="custom">Custom ({Math.round(selected.size.width)} × {Math.round(selected.size.height)})</option>}
+              </Select>
+            </Field>}
+            {selected?.conversationId && <div className={styles.stack}>
+              <Button className={styles.button} disabled={!!run || recovering} onClick={backend.refresh}>Check backend history</Button>
+              {backend.error && <MessageBar layout="multiline" intent="warning"><MessageBarBody>{backend.error}</MessageBarBody></MessageBar>}
+              {continuation && (continuation.nodes.length > 0 || continuation.pendingMessages > 0) && <MessageBar layout="multiline"><MessageBarBody>
+                {continuation.nodes.length} new complete turns; {continuation.pendingMessages} pending messages.
+                {!!continuation.nodes.length && <details><summary>Preview continuation</summary>
+                  <ol>{continuation.nodes.map((node) => <li key={node.id}>{node.prompt.slice(0, 240)}</li>)}</ol>
+                </details>}
+                <Button className={styles.button} disabled={viewLocked || !continuation.nodes.length}
+                  onClick={() => { void importHistory(continuation.nodeId) }}>Import continuation</Button>
+              </MessageBarBody></MessageBar>}
+            </div>}
             {selected && <TreeNodeEditor key={`${selected.id}:${selected.attemptId}:${selected.prompt}:${JSON.stringify(selected.converters)}`}
               node={selected} hidden={isNodeHidden(workspace, selected.id)} catalog={catalog} targets={targets}
               disabled={selectedLocked} hasChildren={workspace.nodes.some((node) => node.parentId === selected.id)}
@@ -426,7 +553,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
       </section>}
       {(dialog === 'new' || dialog === 'import') && <TreeWorkspaceDialog targets={targets} activeTarget={activeTarget} labels={labels}
         importing={dialog === 'import'} open={active} onClose={() => { setDialog(null) }} onCreate={async (next) => {
-          const saved = await saveTreeWorkspace(next); publish(saved); setSelectedId(saved.nodes[0]?.id ?? null); stopped.current = false
+          const saved = await saveTreeWorkspace(next); activateWorkspace(saved); stopped.current = false
         }} />}
       {settings && dialog === 'settings' && <TreeSettingsDialog settings={settings} open={active} onClose={() => { setDialog(null) }}
         onSave={(next) => commitCommand({ type: 'settings', settings: next })} />}
@@ -463,7 +590,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
               void (async () => {
                 if (dialog === 'delete' && current.current) {
                   await deleteTreeWorkspace(current.current)
-                  const remaining = listTreeWorkspaces(); setWorkspaces(remaining); current.current = remaining[0] ?? null; setWorkspace(current.current); setSelectedId(current.current?.nodes[0]?.id ?? null)
+                  const remaining = listTreeWorkspaces(); setWorkspaces(remaining); activateWorkspace(remaining[0] ?? null)
                 } else { recoveryRef.current = null; setRecovery(null); if (current.current) openWorkspace(current.current.id) }
                 setDialog(null)
               })().catch(fail)

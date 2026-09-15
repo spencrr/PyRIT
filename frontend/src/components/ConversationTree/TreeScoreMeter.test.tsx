@@ -19,6 +19,11 @@ function run(value: string | null, status = 'complete'): TreeScoreRun {
   }] }
 }
 describe('TreeScoreMeter', () => {
+  it('renders nothing when the workspace has no scorer', () => {
+    render(<FluentProvider theme={webLightTheme}><TreeScoreMeter node={{}} settings={DEFAULT_TREE_SETTINGS} /></FluentProvider>)
+    expect(screen.queryByText(/scor/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('meter')).not.toBeInTheDocument()
+  })
   it('shows a read-only value scale, not a human-input slider', () => {
     show([run('0.8')])
     expect(screen.getByRole('meter')).toHaveAttribute('aria-valuenow', '0.8')

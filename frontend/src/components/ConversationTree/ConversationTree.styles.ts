@@ -100,8 +100,10 @@ export const useConversationTreeStyles = makeStyles({
     gap: tokens.spacingVerticalL,
   },
   card: {
-    width: '280px',
-    height: '240px',
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column',
     boxSizing: 'border-box',
     overflow: 'hidden',
     border: `1px solid ${tokens.colorNeutralStroke1}`,
@@ -115,7 +117,12 @@ export const useConversationTreeStyles = makeStyles({
       outline: `2px solid ${tokens.colorBrandStroke1}`,
       boxShadow: tokens.shadow8,
     },
-    '&[data-pruned="true"]': { opacity: 0.6 },
+    '&[data-kept="true"]': { borderLeft: `4px solid ${tokens.colorBrandStroke1}` },
+    '&[data-pruned="true"]': {
+      opacity: 0.6,
+      border: `1px dashed ${tokens.colorNeutralStrokeAccessible}`,
+      backgroundColor: tokens.colorNeutralBackground3,
+    },
   },
   preview: {
     display: '-webkit-box',
@@ -130,6 +137,30 @@ export const useConversationTreeStyles = makeStyles({
   responsePreview: {
     borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
     paddingTop: tokens.spacingVerticalS,
+  },
+  expandedPrompt: {
+    fontSize: tokens.fontSizeBase300,
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+    maxHeight: '30%',
+    overflowY: 'auto',
+    paddingTop: tokens.spacingVerticalS,
+  },
+  expandedResponse: {
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+    fontSize: tokens.fontSizeBase300,
+  },
+  groupHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: tokens.spacingHorizontalM,
+    padding: tokens.spacingVerticalS,
+    backgroundColor: tokens.colorNeutralBackground3,
+    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   button: { ...mobileTouchTarget },
   pipelinePreview: {

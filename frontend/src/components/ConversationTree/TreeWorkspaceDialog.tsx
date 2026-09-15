@@ -87,7 +87,7 @@ export default function TreeWorkspaceDialog({
                 {targets.map((entry) => <option key={entry.target_registry_name} value={entry.target_registry_name}>{entry.target_registry_name}</option>)}
               </Select>
             </Field>
-            {target && !supported && <MessageBar intent="warning"><MessageBarBody>This target does not advertise the capabilities required for safe history branching.</MessageBarBody></MessageBar>}
+            {target && !supported && <MessageBar layout="multiline" intent="warning"><MessageBarBody>This target does not advertise the capabilities required for safe history branching.</MessageBarBody></MessageBar>}
             <Field label="System prompt (optional)" hint="Fixed for this workspace; create a new tree to change it.">
               <Textarea value={systemPrompt} disabled={saving || !target?.capabilities?.supports_system_prompt}
                 onChange={(_, data) => { setSystemPrompt(data.value) }} rows={2} />
@@ -99,7 +99,7 @@ export default function TreeWorkspaceDialog({
               : <Field label="First prompt" required>
                 <Textarea value={prompt} disabled={saving} rows={4} onChange={(_, data) => { setPrompt(data.value) }} />
               </Field>}
-            {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
+            {error && <MessageBar layout="multiline" intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
           </DialogContent>
           <DialogActions>
             <Button className={styles.button} disabled={saving} onClick={onClose}>Cancel</Button>

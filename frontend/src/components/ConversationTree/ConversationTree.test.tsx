@@ -4,13 +4,14 @@ import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { convertersApi, targetsApi } from '@/services/api'
+import { convertersApi, scorersApi, targetsApi } from '@/services/api'
 import type { TreeWorkspace } from '@/types'
 
 import ConversationTree from './ConversationTree'
 import { runTree, TreePersistenceError } from './treeExecution'
 import { applyTreeCommand, createTreeWorkspace, getTreeSettings } from './treeModel'
 import { listTreeWorkspaces, saveTreeWorkspace } from './treeStorage'
+import { discoverTreeContinuation } from './treeHistory'
 
 jest.mock('@/services/api', () => ({
   targetsApi: { listTargets: jest.fn() },
@@ -25,6 +26,7 @@ jest.mock('./treeStorage', () => ({
   TREE_STORAGE_PREFIX: 'pyrit:conversation-tree:v1:',
 }))
 jest.mock('./TreeCanvas', () => ({ __esModule: true, default: () => <section aria-label="Conversation graph" /> }))
+jest.mock('./treeHistory', () => ({ discoverTreeContinuation: jest.fn() }))
 
 function TestWrapper({ children }: { children: ReactNode }) {
   return <FluentProvider theme={webLightTheme}>{children}</FluentProvider>
@@ -43,6 +45,9 @@ describe('ConversationTree', () => {
     jest.mocked(listTreeWorkspaces).mockReturnValue([fixture()])
     jest.mocked(saveTreeWorkspace).mockImplementation(async (workspace: TreeWorkspace) => ({ ...workspace, revision: workspace.revision + 1 }))
     jest.mocked(runTree).mockImplementation(async (workspace: TreeWorkspace) => workspace)
+    jest.mocked(discoverTreeContinuation).mockImplementation(async (workspace, nodeId) => ({
+      workspaceId: workspace.id, nodeId, attemptId: workspace.nodes.find((node) => node.id === nodeId)?.attemptId ?? '', nodes: [], pendingMessages: 0,
+    }))
   })
 
   it('keeps confirmations independent from auto-run and supports workspace opt-out in the modal', async () => {
@@ -183,5 +188,39 @@ describe('ConversationTree', () => {
     expect(screen.getByRole('button', { name: 'Add 1 child' })).toBeDisabled()
     await act(async () => { finish?.() })
     expect(within(screen.getByRole('complementary', { name: 'Tree outline' })).getAllByRole('button', { name: 'One batch (draft)' })).toHaveLength(1)
+  })
+  it('undoes a local draft edit and redoes it through persistence', async () => {
+    const user = userEvent.setup()
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.clear(screen.getByLabelText('Prompt'))
+    await user.type(screen.getByLabelText('Prompt'), 'Reversible edit')
+    await user.click(screen.getByRole('button', { name: 'Save draft' }))
+    await user.click(screen.getByRole('button', { name: 'Undo edit' }))
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Describe your limitations.')
+    await user.click(screen.getByRole('button', { name: 'Redo edit' }))
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Reversible edit')
+    expect(saveTreeWorkspace).toHaveBeenCalledTimes(3)
+  })
+  it('scores the exact recorded response rather than the latest backend append', async () => {
+    const user = userEvent.setup()
+    const tree = fixture()
+    tree.settings = { ...getTreeSettings(tree), confirmRuns: false, scorers: [{
+      scorer_id: 'judge', scorer_type: 'Scale', identifier_hash: 'hash', score_type: 'float_scale', scope: 'response', highIsRisk: true,
+    }] }
+    tree.nodes[0] = { ...tree.nodes[0], status: 'completed', attackResultId: 'attack', conversationId: 'conversation', attemptId: 'attempt', lastSequence: 7,
+      messages: [{ turn_number: 7, role: 'assistant', created_at: '2026-01-01', message_pieces: [{
+        id: 'recorded', original_value_data_type: 'text', converted_value_data_type: 'text', converted_value: 'Earlier evidence', response_error: 'none', scores: [],
+      }] }],
+    }
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    jest.mocked(scorersApi.score).mockResolvedValue({ scorer_id: 'judge', scorer_hash: 'hash', status: 'complete', scores: [] })
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.click(screen.getByRole('button', { name: 'Score response', exact: true }))
+    await waitFor(() => expect(scorersApi.score).toHaveBeenCalledWith('judge', expect.objectContaining({
+      evidence_sequence: 7, evidence_message_piece_ids: ['recorded'], expected_response: [{
+        id: 'recorded', converted_value: 'Earlier evidence', converted_value_data_type: 'text',
+      }],
+    })))
+    expect(runTree).not.toHaveBeenCalled()
   })
 })

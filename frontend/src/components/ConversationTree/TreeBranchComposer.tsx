@@ -159,7 +159,7 @@ export default function TreeBranchComposer({
         </>
       )}
       {!canContinue && <Text className={styles.muted}>Retry or recover this response before continuing.</Text>}
-      {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
+      {error && <MessageBar layout="multiline" intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
       <div className={styles.row}>
         <Button className={styles.button} appearance="primary" disabled={disabled || editingPipeline !== null || !canContinue}
           onClick={() => { void submit() }}>

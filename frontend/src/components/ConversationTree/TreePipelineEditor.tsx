@@ -98,7 +98,7 @@ function ConverterForm({ catalog, targets, value, disabled, onSave, onCancel, on
             onDirtyChange(true)
           }} />
       ))}
-      {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
+      {error && <MessageBar layout="multiline" intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
       <div className={styles.row}>
         <Button className={styles.button} appearance="primary" disabled={disabled || !selected} onClick={save}>
           {value ? 'Apply converter changes' : 'Add converter'}

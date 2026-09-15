@@ -68,7 +68,7 @@ export default function TreeNodeEditor({
 
   return (
     <div className={styles.stack}>
-      {hidden && <MessageBar><MessageBarBody>Pruned branch. Restore it or its pruned ancestor to continue.</MessageBarBody></MessageBar>}
+      {hidden && <MessageBar layout="multiline"><MessageBarBody>Pruned branch. Restore it or its pruned ancestor to continue.</MessageBarBody></MessageBar>}
       {(node.attempts?.length ?? 0) > 0 && <Field label="Attempt">
         <Select value={historical ? attempt : 'current'} disabled={pendingEdits} onChange={(_, data) => { setAttempt(data.value) }}>
           {node.attempts?.map((item, index) => <option key={item.attemptId} value={item.attemptId}>Attempt {index + 1}: {item.status}</option>)}
@@ -110,7 +110,7 @@ export default function TreeNodeEditor({
           <Badge appearance="tint" color={viewed.status === 'error' ? 'danger' : viewed.status === 'draft' ? 'subtle' : 'brand'}>{viewed.status}</Badge>
           <Switch label="Markdown" checked={settings.markdown} onChange={(_, data) => { onMarkdownChange(data.checked) }} />
         </div>
-        {viewed.error && <MessageBar intent="error"><MessageBarBody>{viewed.error}</MessageBarBody></MessageBar>}
+        {viewed.error && <MessageBar layout="multiline" intent="error"><MessageBarBody>{viewed.error}</MessageBarBody></MessageBar>}
         {node.status === 'running' && <Text className={styles.muted}>Running or interrupted. Recover the recorded result before starting a new attempt.</Text>}
         {active && responses.length > 0
           ? <div className={styles.transcript}><MessageList messages={backendMessagesToFrontend(responses)} autoScroll={false} globalMarkdown={settings.markdown} /></div>

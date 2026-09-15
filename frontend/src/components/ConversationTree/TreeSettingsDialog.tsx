@@ -45,7 +45,28 @@ export default function TreeSettingsDialog({ settings, open, onClose, onSave }: 
               <option value="depth-first">Depth-first: pursue each branch</option>
             </Select>
           </Field>
-          <Text>Execution: one request at a time. Other subtrees remain editable.</Text>
+          <Field label="Maximum concurrent requests" hint="BFS finishes each level before advancing. Shared judges are serialized. Targets not verified for parallel use run sequentially.">
+            <Select value={String(draft.concurrency ?? 1)} onChange={(_, data) => {
+              const concurrency = Number(data.value)
+              if (concurrency === 1 || concurrency === 2 || concurrency === 4) setDraft({ ...draft, concurrency })
+            }}>
+              <option value="1">1 (sequential)</option><option value="2">2</option><option value="4">4</option>
+            </Select>
+          </Field>
+          <Field label="Edge style">
+            <Select value={draft.edgeStyle ?? 'bezier'} onChange={(_, data) => {
+              if (data.value === 'bezier' || data.value === 'smoothstep' || data.value === 'straight') setDraft({ ...draft, edgeStyle: data.value })
+            }}>
+              <option value="bezier">Curved (Bezier)</option><option value="smoothstep">Rounded step</option><option value="straight">Straight</option>
+            </Select>
+          </Field>
+          <Field label="Default node size">
+            <Select value={draft.nodeSize ?? 'standard'} onChange={(_, data) => {
+              if (data.value === 'compact' || data.value === 'standard' || data.value === 'expanded') setDraft({ ...draft, nodeSize: data.value })
+            }}>
+              <option value="compact">Compact</option><option value="standard">Standard</option><option value="expanded">Expanded preview</option>
+            </Select>
+          </Field>
           <Field label="Per-run operation budget" hint="Target sends + converter applications + automatic scoring requests. Provider retries, per-message scoring and composites may cost more.">
             <Input type="number" min={1} max={100000} value={budget} onChange={(_, data) => { setBudget(data.value) }} />
           </Field>
@@ -57,7 +78,7 @@ export default function TreeSettingsDialog({ settings, open, onClose, onSave }: 
           <Checkbox label="Stack new sample groups" checked={draft.stackSamples} onChange={(_, data) => { setDraft({ ...draft, stackSamples: data.checked === true }) }} />
           <Checkbox label="Stack new prompt/pipeline variant groups" checked={draft.stackVariants} onChange={(_, data) => { setDraft({ ...draft, stackVariants: data.checked === true }) }} />
           <Text className={styles.muted}>Changes apply to future runs. Imported plans do not change these preferences. Stacking is a view, not pruning.</Text>
-          {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
+          {error && <MessageBar layout="multiline" intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
         </DialogContent>
         <DialogActions>
           <Button className={styles.button} disabled={saving} onClick={onClose}>Cancel</Button>
