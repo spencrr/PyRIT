@@ -84,13 +84,13 @@ export default function TreeScoringDialog({ settings, targets, open, onClose, on
   }
 
   function add(instance: ScorerInstance): void {
-    if (draft.scorers.some((scorer) => scorer.scorer_id === instance.scorer_id)) {
-      return
-    }
-    setDraft({
-      ...draft,
-      primaryScorerId: draft.primaryScorerId ?? instance.scorer_id,
-      scorers: [...draft.scorers, { ...instance, scope: 'response', highIsRisk: true }],
+    setDraft((current) => {
+      if (current.scorers.some((scorer) => scorer.scorer_id === instance.scorer_id)) return current
+      return {
+        ...current,
+        primaryScorerId: current.primaryScorerId ?? instance.scorer_id,
+        scorers: [...current.scorers, { ...instance, scope: 'response', highIsRisk: true }],
+      }
     })
   }
 

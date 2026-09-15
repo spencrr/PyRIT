@@ -93,7 +93,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   const [dirty, setDirty] = useState(false)
   const dirtyRef = useRef(false)
   const [showPruned, setShowPruned] = useState(false)
-  const [layoutVersion, setLayoutVersion] = useState(0)
+  const [layoutVersions, setLayoutVersions] = useState<Record<string, number>>({})
   const [dialog, setDialog] = useState<'new' | 'import' | 'settings' | 'scoring' | 'delete' | 'discard-recovery' | null>(null)
   const [proposal, setProposal] = useState<Proposal | null>(null)
   const [skipConfirm, setSkipConfirm] = useState(false)
@@ -270,6 +270,11 @@ export default function ConversationTree({ activeTarget, labels, active = true }
             setLastRun((record) => record ? { ...record, effectiveConcurrency: concurrency } : record)
             if (concurrency < (settings.concurrency ?? 1)) setNotice('This target has not been verified for shared parallel requests; this run uses one request at a time.')
           },
+          onPersistenceFailure: (candidate: TreeWorkspace) => {
+            recoveryRef.current = candidate
+            setRecovery(candidate)
+            setNotice('A save failed. Settling in-flight responses before recovery.')
+          },
           commitNodeUpdate: (nodeId: string, expected: TreeNode, update: Partial<TreeNode>) => mutate((base) => {
             const node = base.nodes.find((item) => item.id === nodeId)
             if (!node || executionSignature(node) !== executionSignature(expected)) throw new Error('Attempt changed before execution update; stopped without overwriting edits.')
@@ -308,11 +313,12 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         return command.type === 'group' && command.collapsed === false ? applyTreeCommand(next, { type: 'autoLayout' }) : next
       })
       const added = saved.nodes.filter((node) => !before.nodes.some((old) => old.id === node.id))
+      setFocusedGroupId((groupId) => groupId && !saved.groups?.some((group) => group.id === groupId) ? null : groupId)
       if (['edit', 'prune', 'keep', 'move', 'resize', 'autoLayout'].includes(command.type) || (command.type === 'group' && command.collapsed !== undefined)) {
         const entry = captureTreeUndo(before, saved)
         if (entry.nodes.length || entry.groups) { setUndo((history) => [...history.slice(-19), entry]); setRedo([]) }
       }
-      if (relayout) setLayoutVersion((value) => value + 1)
+      if (relayout) setLayoutVersions((versions) => ({ ...versions, [saved.id]: (versions[saved.id] ?? 0) + 1 }))
       if (command.type === 'group' && command.activeNodeId) setSelectedId(command.activeNodeId)
       if (command.type === 'retry' || command.type === 'sample') setSelectedId(command.nodeId)
       else if (added[0]) setSelectedId(added.find((node) => !('nodeId' in command) || node.forkedFrom === command.nodeId)?.id ?? added[0].id)
@@ -425,6 +431,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
     const included = rootId && subtree ? subtreeIds(workspace, rootId) : undefined
     const ids = workspace.nodes.filter((node) => !isNodeHidden(workspace, node.id) && node.conversationId
       && (node.status === 'completed' || node.status === 'error')
+      && node.messages?.some((message) => message.role === 'assistant')
       && (!rootId || included?.has(node.id) || node.id === rootId)).map((node) => node.id)
     requestRun(workspace, ids, 'score')
   }
@@ -444,9 +451,9 @@ export default function ConversationTree({ activeTarget, labels, active = true }
       {dirty && <MessageBar layout="multiline"><MessageBarBody>Unsaved edits. Current requests continue; apply edits to remove that branch from their queue.</MessageBarBody></MessageBar>}
       {recovery && <MessageBar layout="multiline" intent="warning"><MessageBarBody>
         Unsaved execution evidence retained. Save or export before leaving; a revision conflict will not overwrite another tab.
-        <Button className={styles.button} disabled={recovering} onClick={() => { void recover() }}>Retry saving only</Button>
+        <Button className={styles.button} disabled={recovering || !!run} onClick={() => { void recover() }}>Retry saving only</Button>
         <Button className={styles.button} onClick={() => { download(false, recovery) }}>Export unsaved snapshot</Button>
-        <Button className={styles.button} onClick={() => { setDialog('discard-recovery') }}>Discard unsaved snapshot</Button>
+        <Button className={styles.button} disabled={!!run} onClick={() => { setDialog('discard-recovery') }}>Discard unsaved snapshot</Button>
       </MessageBarBody></MessageBar>}
       {workspace && settings ? <>
         <div className={styles.toolbar}>
@@ -471,7 +478,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
           <Button className={styles.button} onClick={() => { setDialog('scoring') }}>Scoring</Button>
           <Button className={styles.button} disabled={viewLocked || !settings.scorers.length} onClick={() => { askScore() }}>Score existing responses</Button>
           <div className={styles.spacer} />
-          {run ? <Button className={styles.button} onClick={() => { stopped.current = true }}>Stop after current request</Button>
+          {run ? <Button className={styles.button} onClick={() => { stopped.current = true }}>Stop after in-flight requests</Button>
             : <Button className={styles.button} appearance="primary" disabled={locked || dirty} onClick={() => {
               try { requestRun(workspace, getRunNodeIds(workspace)) } catch (failure) { fail(failure) }
             }}>{settings.confirmRuns ? 'Review & run drafts' : 'Run drafts'}</Button>}
@@ -503,19 +510,19 @@ export default function ConversationTree({ activeTarget, labels, active = true }
             <Link href={`/history/attacks?${new URLSearchParams({ label: `${TREE_WORKSPACE_LABEL}:${workspace.id}` })}`}>Workspace history</Link>
           </div></aside>
           {active && <TreeCanvas workspace={workspace} key={workspace.id} selectedId={selectedId} showPruned={showPruned}
-            disabled={false} layoutVersion={layoutVersion} queuedIds={run?.nodeIds}
+            disabled={recovery !== null || recovering} layoutVersion={layoutVersions[workspace.id] ?? 0} queuedIds={run?.nodeIds}
             focusedGroupId={focusedGroupId} onFocusGroup={setFocusedGroupId}
             onSelect={(id) => { void selectNode(id) }} onMove={(nodeId, position) => { void commitCommand({ type: 'move', nodeId, position }) }}
             onGroup={(command) => { void commitCommand(command) }} />}
           <aside className={styles.inspector} aria-label="Turn inspector">
             {group && <div className={styles.row}>
               <Button className={styles.button} onClick={() => { setFocusedGroupId(group.id) }}>Focus group ({group.nodeIds.length})</Button>
-              <Button className={styles.button} onClick={() => { void commitCommand({ type: 'group', groupId: group.id, collapsed: !group.collapsed }) }}>
+              <Button className={styles.button} disabled={locked} onClick={() => { void commitCommand({ type: 'group', groupId: group.id, collapsed: !group.collapsed }) }}>
                 {group.collapsed ? 'Expand & auto layout' : 'Stack group'} ({group.nodeIds.length})
               </Button>
             </div>}
             {selected && <Field label="Node size">
-              <Select value={selected.size ? 'custom' : 'default'} onChange={(_, data) => {
+              <Select disabled={selectedLocked} value={selected.size ? 'custom' : 'default'} onChange={(_, data) => {
                 const key = data.value
                 if (key === 'default') void commitCommand({ type: 'resize', nodeId: selected.id })
                 else if (key === 'compact' || key === 'standard' || key === 'expanded') void commitCommand({ type: 'resize', nodeId: selected.id, size: { ...NODE_SIZES[key] } })
@@ -525,7 +532,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
               </Select>
             </Field>}
             {selected?.conversationId && <div className={styles.stack}>
-              <Button className={styles.button} disabled={!!run || recovering} onClick={backend.refresh}>Check backend history</Button>
+              <Button className={styles.button} disabled={!!run || locked} onClick={backend.refresh}>Check backend history</Button>
               {backend.error && <MessageBar layout="multiline" intent="warning"><MessageBarBody>{backend.error}</MessageBarBody></MessageBar>}
               {continuation && (continuation.nodes.length > 0 || continuation.pendingMessages > 0) && <MessageBar layout="multiline"><MessageBarBody>
                 {continuation.nodes.length} new complete turns; {continuation.pendingMessages} pending messages.

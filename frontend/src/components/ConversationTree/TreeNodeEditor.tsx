@@ -135,7 +135,7 @@ export default function TreeNodeEditor({
       </section>
       <TreeScoreMeter node={viewed} settings={settings} />
       <div className={styles.row}>
-        <Button className={styles.button} disabled={!canRun || blocked || pendingEdits || !node.conversationId || settings.scorers.length === 0}
+        <Button className={styles.button} disabled={!canRun || blocked || pendingEdits || !node.conversationId || !responses.some((message) => message.role === 'assistant') || settings.scorers.length === 0}
           onClick={() => { onScore(node.id, false) }}>Score response</Button>
         {hasChildren && <Button className={styles.button} disabled={!canRun || blocked || pendingEdits || settings.scorers.length === 0}
           onClick={() => { onScore(node.id, true) }}>Score subtree</Button>}

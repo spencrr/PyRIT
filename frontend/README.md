@@ -225,7 +225,8 @@ history. It reuses the existing attack, converter, message, and history APIs.
   attempt. Scoring reads persisted backend evidence and never resends target prompts.
   Each scoring pass appends results anchored to that attempt and scorer identity,
   with exact response IDs and sequence bounds so later backend appends cannot change
-  which response is evaluated.
+  which response is evaluated. Nested scorers receive the same checked, in-memory
+  snapshot instead of re-reading mutable message content during resolution.
   A primary metric drives an output-only red/green meter, with explicit polarity
   and numeric labels. Unscored, inapplicable, undetermined, and failed evaluations
   stay neutral; multiple scores are not silently averaged.
@@ -251,13 +252,15 @@ history. It reuses the existing attack, converter, message, and history APIs.
 - **Interruption:** keep the page open while running. Stop or navigation prevents
   subsequent requests but cannot cancel an in-flight provider call. Uncertain
   sends are not automatically retried: inspect their backend conversation and
-  explicitly fork a new variant. **Recover recorded result** can reconcile a
+  determine the outcome before retrying. **Recover recorded result** can reconcile a
   `running`/interrupted turn from backend history without another send. Target
   identity and cloned ancestor history are checked before execution, so a
   browser workspace cannot silently continue against a reset backend database.
 - **Save failures:** received evidence remains available for inspection and
   export if its browser write fails. **Retry saving only** writes the retained
-  snapshot without calling a model. Revision conflicts remain conflicts;
+  snapshot without calling a model. Editing locks immediately while in-flight
+  requests settle; recovery retains their responses and scores alongside any
+  already-saved same-session edits. Revision conflicts remain conflicts;
   recovery never overwrites another tab. Export before discarding an unsaved
   snapshot. Unsaved inspector edits block both subtree and global run approval.
   Sidebar navigation and browser Back retain the tree's unsaved editor and

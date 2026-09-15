@@ -124,7 +124,7 @@ function assertImmutableEvidence(stored: TreeWorkspace, next: TreeWorkspace): vo
       if (current.status === 'draft' ||
         (previous.attackResultId !== undefined && previous.attackResultId !== current.attackResultId) ||
         (previous.conversationId !== undefined && previous.conversationId !== current.conversationId)) {
-        throw new Error('Running execution evidence cannot be reset. Inspect backend history and create a new variant.')
+        throw new Error('Running execution evidence cannot be reset. Recover or inspect the recorded result before retrying.')
       }
       continue
     }

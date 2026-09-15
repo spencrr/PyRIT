@@ -316,4 +316,21 @@ test.describe('Conversation tree @seeded', () => {
       return tree.nodes[0].position?.x
     }, workspaceId)).toBeGreaterThan(0)
   })
+
+  test('invalidates an inactive overview after auto layout inside a focused group', async ({ page, request }) => {
+    await createDraftTree(page, request)
+    await page.getByRole('button', { name: 'Sample again', exact: true }).click()
+    await page.getByRole('button', { name: 'Add 10 samples', exact: true }).click()
+    const root = page.getByRole('application').getByLabel('Prompt: Describe your limitations. (draft)', { exact: true })
+    await root.focus()
+    await page.keyboard.press('ArrowRight')
+    await expect.poll(async () => (await savedTree(page)).nodes[0].position?.x).toBeGreaterThan(0)
+    await page.getByRole('button', { name: 'Focus group (11)', exact: true }).click()
+    await page.getByRole('button', { name: 'Auto layout', exact: true }).click()
+    await expect.poll(async () => (await savedTree(page)).nodes.every((node) => node.position === undefined)).toBe(true)
+    await page.getByRole('button', { name: 'Back to workspace', exact: true }).click()
+    await expect.poll(async () => root.evaluate((node) => new DOMMatrixReadOnly(getComputedStyle(node).transform).m41)).toBe(0)
+    await page.reload()
+    await expect.poll(async () => root.evaluate((node) => new DOMMatrixReadOnly(getComputedStyle(node).transform).m41)).toBe(0)
+  })
 })

@@ -264,7 +264,7 @@ describe('treeExecution', () => {
     getTarget.mockResolvedValue(target)
     const result = await runTree(workspace([node('root')]), options(['root']))
     expect(result.nodes[0].status).toBe('error')
-    expect(result.nodes[0].error).toContain('create a new variant')
+    expect(result.nodes[0].error).toContain('Inspect backend history before retrying')
     expect(createAttack).not.toHaveBeenCalled()
     expect(addMessage).not.toHaveBeenCalled()
   })
@@ -313,7 +313,7 @@ describe('treeExecution', () => {
     const result = await runTree(workspace([node('root'), node('other')]), options(['root', 'other']))
     expect(result.nodes[0]).toMatchObject({
       status: 'error', attackResultId: 'attack-1', conversationId: 'conversation-1',
-      error: expect.stringContaining('Inspect backend history before retry; create a new variant'),
+      error: expect.stringContaining('Inspect backend history before retrying'),
     })
     expect(JSON.stringify(result)).not.toContain('do-not-save')
     expect(result.nodes[1].status).toBe('draft')
@@ -667,6 +667,36 @@ describe('treeExecution', () => {
       .toMatchObject({ status: 'completed' })
   })
 
+  it('should skip completion callbacks for preparation failures without assistant evidence and continue other four-way branches', async () => {
+    let failedCreate = false
+    createAttack.mockImplementation(async (request: CreateAttackRequest) => {
+      if (!failedCreate) {
+        failedCreate = true
+        throw new Error('Create failed')
+      }
+      requests.push(request)
+      return { attack_result_id: `attack-${requests.length}`, conversation_id: `conversation-${requests.length}`, created_at: TIME }
+    })
+    const onNodeCompleted = jest.fn(async (saved: TreeWorkspace, nodeId: string): Promise<void> => {
+      const current = saved.nodes.find((entry: TreeNode) => entry.id === nodeId)
+      if (!current?.messages?.some((entry: BackendMessage) => entry.role === 'assistant')) {
+        throw new Error('No assistant evidence')
+      }
+    })
+    const tree = configuredWorkspace([node('first'), node('second'), node('third'), node('fourth')], {
+      concurrency: 4,
+      continueOnError: true,
+    })
+    const result = await runTree(tree, {
+      ...options(['first', 'second', 'third', 'fourth']),
+      onNodeCompleted,
+    })
+    expect(result.nodes.filter((entry: TreeNode) => entry.status === 'completed')).toHaveLength(3)
+    expect(result.nodes.filter((entry: TreeNode) => entry.status === 'error')).toHaveLength(1)
+    expect(onNodeCompleted).toHaveBeenCalledTimes(3)
+    expect(addMessage).toHaveBeenCalledTimes(3)
+  })
+
   it('should retain received evidence on completion-save failure for save-only recovery', async () => {
     save.mockImplementationOnce(async (tree: TreeWorkspace) => {
       const saved = { ...tree, revision: tree.revision + 1 }; snapshots.push(saved); return saved
@@ -684,6 +714,68 @@ describe('treeExecution', () => {
     const recovered = await save(failure.workspace)
     expect(recovered.nodes[0].status).toBe('completed')
     expect(addMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('should retain all four terminal responses after the first terminal save failure', async () => {
+    let releaseFirst: ((value: AddMessageResponse) => void) | undefined
+    let releaseSecond: ((value: AddMessageResponse) => void) | undefined
+    let releaseThird: ((value: AddMessageResponse) => void) | undefined
+    let releaseFourth: ((value: AddMessageResponse) => void) | undefined
+    let terminalSaveFailed = false
+    addMessage.mockImplementation(async (attackId: string, request: AddMessageRequest) => {
+      const reply = response(attackId, request.target_conversation_id, [
+        message('system', 0, 'System prompt', attackId),
+        message('user', 1, request.pieces[0].original_value, attackId),
+        message('assistant', 2, `${request.pieces[0].original_value}-reply`, attackId),
+      ])
+      if (request.pieces[0].original_value === 'first') return new Promise<AddMessageResponse>((resolve) => { releaseFirst = resolve })
+      if (request.pieces[0].original_value === 'second') return new Promise<AddMessageResponse>((resolve) => { releaseSecond = resolve })
+      if (request.pieces[0].original_value === 'third') return new Promise<AddMessageResponse>((resolve) => { releaseThird = resolve })
+      if (request.pieces[0].original_value === 'fourth') return new Promise<AddMessageResponse>((resolve) => { releaseFourth = resolve })
+      return reply
+    })
+    save.mockImplementation(async (tree: TreeWorkspace): Promise<TreeWorkspace> => {
+      const completed = tree.nodes.filter((entry: TreeNode) => entry.messages?.some((message) => message.role === 'assistant')).length
+      if (completed === 1 && !terminalSaveFailed) {
+        terminalSaveFailed = true
+        throw new Error('Quota exceeded')
+      }
+      const saved = parseTreeWorkspace(JSON.stringify({ ...tree, revision: tree.revision + 1 }))
+      snapshots.push(saved)
+      return saved
+    })
+    const failure = runTree(configuredWorkspace([node('first'), node('second'), node('third'), node('fourth')], { concurrency: 4 }), {
+      ...options(['first', 'second', 'third', 'fourth']),
+      onPersistenceFailure: () => {
+        releaseSecond?.(response('attack-2', 'conversation-2', [
+          message('system', 0, 'System prompt', 'attack-2'),
+          message('user', 1, 'second', 'attack-2'),
+          message('assistant', 2, 'second-reply', 'attack-2'),
+        ]))
+        releaseThird?.(response('attack-3', 'conversation-3', [
+          message('system', 0, 'System prompt', 'attack-3'),
+          message('user', 1, 'third', 'attack-3'),
+          message('assistant', 2, 'third-reply', 'attack-3'),
+        ]))
+        releaseFourth?.(response('attack-4', 'conversation-4', [
+          message('system', 0, 'System prompt', 'attack-4'),
+          message('user', 1, 'fourth', 'attack-4'),
+          message('assistant', 2, 'fourth-reply', 'attack-4'),
+        ]))
+      },
+    }).catch((error: unknown) => error)
+    await waitFor(() => expect(addMessage).toHaveBeenCalledTimes(4))
+    releaseFirst?.(response('attack-1', 'conversation-1', [
+      message('system', 0, 'System prompt', 'attack-1'),
+      message('user', 1, 'first', 'attack-1'),
+      message('assistant', 2, 'first-reply', 'attack-1'),
+    ]))
+    const result = await failure
+    expect(result).toBeInstanceOf(TreePersistenceError)
+    if (!(result instanceof TreePersistenceError)) throw new Error('Expected persistence failure')
+    expect(result.workspace.nodes.map((entry: TreeNode) => entry.status)).toEqual(['completed', 'completed', 'completed', 'completed'])
+    expect(result.workspace.nodes.map((entry: TreeNode) => entry.messages?.[1].message_pieces[0].converted_value))
+      .toEqual(['first-reply', 'second-reply', 'third-reply', 'fourth-reply'])
   })
 
   it('should keep breadth-first depth boundaries even when concurrency allows multiple roots', async () => {
@@ -771,11 +863,35 @@ describe('treeExecution', () => {
     expect(addMessage).toHaveBeenCalledTimes(2)
   })
 
-  it('should merge score recovery with later in-flight terminal evidence and stop further dispatch', async () => {
+  it('should merge score recovery with a newer durable edit and later four-way terminal evidence', async () => {
+    let latest = parseTreeWorkspace(JSON.stringify(workspace([
+      node('first'),
+      node('second'),
+      node('third'),
+      node('fourth'),
+      node('draft'),
+    ])))
+    let resolveFirst: ((value: AddMessageResponse) => void) | undefined
     let resolveSecond: ((value: AddMessageResponse) => void) | undefined
+    let resolveThird: ((value: AddMessageResponse) => void) | undefined
+    let resolveFourth: ((value: AddMessageResponse) => void) | undefined
+    const saveLatest = jest.fn(async (tree: TreeWorkspace): Promise<TreeWorkspace> => {
+      latest = parseTreeWorkspace(JSON.stringify({ ...tree, revision: tree.revision + 1 }))
+      snapshots.push(latest)
+      return latest
+    })
     addMessage.mockImplementation(async (attackId: string, request: AddMessageRequest) => {
+      if (request.pieces[0].original_value === 'first') {
+        return new Promise<AddMessageResponse>((resolve) => { resolveFirst = resolve })
+      }
       if (request.pieces[0].original_value === 'second') {
         return new Promise<AddMessageResponse>((resolve) => { resolveSecond = resolve })
+      }
+      if (request.pieces[0].original_value === 'third') {
+        return new Promise<AddMessageResponse>((resolve) => { resolveThird = resolve })
+      }
+      if (request.pieces[0].original_value === 'fourth') {
+        return new Promise<AddMessageResponse>((resolve) => { resolveFourth = resolve })
       }
       return response(attackId, request.target_conversation_id, [
         message('system', 0, 'System prompt', attackId),
@@ -787,26 +903,54 @@ describe('treeExecution', () => {
       if (nodeId !== 'first') return
       throw new TreePersistenceError(withScore(saved, nodeId), new Error('Quota exceeded while saving score'))
     })
-    const failure = runTree(configuredWorkspace([node('first'), node('second'), node('third')], { concurrency: 2 }), {
-      ...options(['first', 'second', 'third']),
+    const failure = runTree(configuredWorkspace([node('first'), node('second'), node('third'), node('fourth'), node('draft')], { concurrency: 4 }), {
+      nodeIds: ['first', 'second', 'third', 'fourth'],
+      save: saveLatest,
+      onUpdate,
+      getLatest: (): TreeWorkspace => latest,
+      isStopped: (): boolean => false,
       onNodeCompleted,
+      onPersistenceFailure: () => {
+        latest = parseTreeWorkspace(JSON.stringify({
+          ...latest,
+          revision: latest.revision + 1,
+          nodes: latest.nodes.map((entry: TreeNode) => entry.id === 'draft' ? { ...entry, prompt: 'edited draft' } : entry),
+        }))
+        resolveSecond?.(response('attack-2', 'conversation-2', [
+          message('system', 0, 'System prompt', 'attack-2'),
+          message('user', 1, 'second', 'attack-2'),
+          message('assistant', 2, 'observed response', 'attack-2'),
+        ]))
+        resolveThird?.(response('attack-3', 'conversation-3', [
+          message('system', 0, 'System prompt', 'attack-3'),
+          message('user', 1, 'third', 'attack-3'),
+          message('assistant', 2, 'observed response', 'attack-3'),
+        ]))
+        resolveFourth?.(response('attack-4', 'conversation-4', [
+          message('system', 0, 'System prompt', 'attack-4'),
+          message('user', 1, 'fourth', 'attack-4'),
+          message('assistant', 2, 'observed response', 'attack-4'),
+        ]))
+      },
     }).catch((error: unknown) => error)
-    await waitFor(() => expect(addMessage).toHaveBeenCalledTimes(2))
-    resolveSecond?.(response('attack-2', 'conversation-2', [
-      message('system', 0, 'System prompt', 'attack-2'),
-      message('user', 1, 'second', 'attack-2'),
-      message('assistant', 2, 'observed response', 'attack-2'),
+    await waitFor(() => expect(addMessage).toHaveBeenCalledTimes(4))
+    resolveFirst?.(response('attack-1', 'conversation-1', [
+      message('system', 0, 'System prompt', 'attack-1'),
+      message('user', 1, 'first', 'attack-1'),
+      message('assistant', 2, 'observed response', 'attack-1'),
     ]))
     const result = await failure
     expect(result).toBeInstanceOf(TreePersistenceError)
     if (!(result instanceof TreePersistenceError)) throw new Error('Expected score recovery failure')
     expect(onNodeCompleted).toHaveBeenCalledTimes(1)
-    expect(addMessage).toHaveBeenCalledTimes(2)
+    expect(addMessage).toHaveBeenCalledTimes(4)
+    expect(result.workspace.revision).toBe(latest.revision)
     expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'first')?.scoreRuns).toEqual([scoreRun(result.workspace.nodes[0])])
     expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'second')).toMatchObject({ status: 'completed' })
-    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'third')).toMatchObject({ status: 'draft' })
-    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'second')?.messages?.[1].message_pieces[0].converted_value)
-      .toBe('observed response')
+    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'third')).toMatchObject({ status: 'completed' })
+    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'fourth')).toMatchObject({ status: 'completed' })
+    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'draft')?.prompt).toBe('edited draft')
+    expect(result.workspace.nodes.find((entry: TreeNode) => entry.id === 'second')?.messages?.[1].message_pieces[0].converted_value).toBe('observed response')
   })
 
   it('reports concurrency 1 for unsupported targets', async () => {

@@ -75,9 +75,31 @@ describe('TreeCanvas', () => {
     expect(group).toBeDefined()
     view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} focusedGroupId={group?.id} /></FluentProvider>)
     expect(mockNodes.map((node) => node.id).sort()).toEqual(group?.nodeIds.slice().sort())
+    view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} focusedGroupId={group?.id}
+      workspace={{ ...tree, nodes: tree.nodes.map((node) => group?.nodeIds.includes(node.id) ? { ...node, pruned: true } : node) }} /></FluentProvider>)
+    expect(mockNodes).toHaveLength(0)
     view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} /></FluentProvider>)
     expect(mockNodes.map((node) => ({ id: node.id, position: node.position }))).toEqual(overview)
     expect(mockSetViewport).toHaveBeenLastCalledWith({ x: 20, y: 30, zoom: 0.8 })
+  })
+  it.each([0, 1])('does not resurrect cleared overview overrides after focus (generation %i)', (generation: number) => {
+    let tree = applyTreeCommand(createTreeWorkspace({
+      name: 'Generation', targetRegistryName: 'target', targetIdentifierHash: 'hash', systemPrompt: '', labels: {},
+    }), { type: 'add', parentId: null, prompt: 'Original' })
+    tree = applyTreeCommand(tree, { type: 'sample', nodeId: tree.nodes[0].id, count: 2 })
+    tree = applyTreeCommand(tree, { type: 'move', nodeId: tree.nodes[0].id, position: { x: 777, y: 888 } })
+    const props = { workspace: tree, selectedId: tree.nodes[0].id, showPruned: false, disabled: false, onSelect: jest.fn(), onMove: jest.fn(), onGroup: jest.fn() }
+    const view = render(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} layoutVersion={0} /></FluentProvider>)
+    expect(mockNodes[0].position).toEqual({ x: 777, y: 888 })
+    view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} workspace={applyTreeCommand(tree, { type: 'autoLayout' })} layoutVersion={0} /></FluentProvider>)
+    expect(mockNodes[0].position).not.toEqual({ x: 777, y: 888 })
+    view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} layoutVersion={0} /></FluentProvider>)
+    view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} focusedGroupId={tree.groups?.[0].id} layoutVersion={0} /></FluentProvider>)
+    tree = applyTreeCommand(tree, { type: 'autoLayout' })
+    view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} workspace={tree} focusedGroupId={tree.groups?.[0].id} layoutVersion={generation} /></FluentProvider>)
+    view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} workspace={tree} layoutVersion={generation} /></FluentProvider>)
+    expect(mockNodes[0].position).not.toEqual({ x: 777, y: 888 })
+    expect(tree.nodes.every((node) => node.position === undefined)).toBe(true)
   })
   it('uses node sizes, curved edges and explicit inherited pruning', () => {
     let tree = applyTreeCommand(createTreeWorkspace({

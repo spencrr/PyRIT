@@ -1,5 +1,5 @@
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { scorersApi } from '@/services/api'
@@ -109,7 +109,22 @@ describe('TreeScoringDialog', () => {
     jest.mocked(scorersApi.validateScorer).mockResolvedValue({ valid: true })
     jest.mocked(scorersApi.listCatalog).mockResolvedValue({ items: [SUBSTRING_ENTRY] })
     jest.mocked(scorersApi.listScorers).mockResolvedValue({ items: [REGISTERED_SUBSTRING] })
-    jest.mocked(scorersApi.createScorer).mockResolvedValue(REGISTERED_SUBSTRING)
+    jest.mocked(scorersApi.createScorer).mockReset().mockResolvedValue(REGISTERED_SUBSTRING)
+  })
+
+  it('preserves objective edits made while scorer creation is in flight', async () => {
+    const user = userEvent.setup()
+    let finish: ((instance: ScorerInstance) => void) | undefined
+    jest.mocked(scorersApi.createScorer).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const { save } = renderDialog()
+    await openBuilder(user, 'SubStringScorer')
+    await user.type(within(screen.getByRole('region', { name: 'SubStringScorer configuration' })).getByLabelText(/substring/i), 'marker')
+    await user.click(screen.getByRole('button', { name: 'Create and select scorer' }))
+    await user.type(screen.getByLabelText('Evaluation objective or rubric'), 'Keep this newer objective')
+    await act(async () => { finish?.(REGISTERED_SUBSTRING) })
+    await user.click(screen.getByRole('button', { name: 'Save scoring settings' }))
+    await waitFor(() => expect(save).toHaveBeenCalled())
+    expect(save.mock.calls[0][0]).toMatchObject({ objective: 'Keep this newer objective', scorers: [expect.objectContaining({ scorer_id: REGISTERED_SUBSTRING.scorer_id })] })
   })
 
   it('configures a local scorer, objective, and automatic scoring without scoring any response', async () => {

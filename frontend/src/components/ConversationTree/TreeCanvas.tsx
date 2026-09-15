@@ -29,6 +29,7 @@ type TurnFlowNode = Node<{
   onFocusGroup: (groupId: string) => void
   onResizeState: (resizing: boolean) => void
   focused: boolean
+  readOnly: boolean
 }, 'turn'>
 
 function responsePreview(turn: TreeNode): string {
@@ -59,7 +60,7 @@ const TurnCard = memo(function TurnCard({ data, selected }: NodeProps<TurnFlowNo
   const activeIndex = group?.nodeIds.indexOf(turn.id) ?? 0
   return (
     <>
-    <NodeResizer isVisible={selected} minWidth={220} minHeight={180} maxWidth={900} maxHeight={1000}
+    <NodeResizer isVisible={selected && !data.readOnly} minWidth={220} minHeight={180} maxWidth={900} maxHeight={1000}
       onResizeStart={() => { data.onResizeState(true) }}
       onResizeEnd={(_, size) => {
         data.onGroup({ type: 'resize', nodeId: turn.id, size: { width: size.width, height: size.height },
@@ -86,10 +87,10 @@ const TurnCard = memo(function TurnCard({ data, selected }: NodeProps<TurnFlowNo
       </div>
       <TreeScoreMeter node={turn} settings={data.settings} />
       {group?.collapsed && <div className={mergeClasses(styles.row, 'nodrag', 'nopan')}>
-        <Button size="small" className={styles.button} aria-label="Previous stack member" disabled={activeIndex <= 0}
+        <Button size="small" className={styles.button} aria-label="Previous stack member" disabled={data.readOnly || activeIndex <= 0}
           onClick={() => { data.onGroup({ type: 'group', groupId: group.id, activeNodeId: group.nodeIds[activeIndex - 1] }) }}>&lt;</Button>
         <Text size={200}>{group.kind === 'sample' ? 'Samples' : 'Variants'} {activeIndex + 1}/{group.nodeIds.length}</Text>
-        <Button size="small" className={styles.button} aria-label="Next stack member" disabled={activeIndex >= group.nodeIds.length - 1}
+        <Button size="small" className={styles.button} aria-label="Next stack member" disabled={data.readOnly || activeIndex >= group.nodeIds.length - 1}
           onClick={() => { data.onGroup({ type: 'group', groupId: group.id, activeNodeId: group.nodeIds[activeIndex + 1] }) }}>&gt;</Button>
         <Button size="small" className={styles.button} onClick={() => { data.onFocusGroup(group.id) }}>Focus group</Button>
       </div>}
@@ -102,8 +103,10 @@ const NODE_TYPES = { turn: TurnCard }
 const EMPTY_NODE_IDS: string[] = []
 const MIN_ZOOM = 0.01
 const CANVAS_MEMORY = new Map<string, {
-  viewport: { x: number; y: number; zoom: number }
+  layoutVersion: number
+  viewport: Viewport
   positions: Map<string, { x: number; y: number }>
+  overrides: Map<string, string>
 }>()
 
 function visibleGroups(workspace: TreeWorkspace, showPruned: boolean): TreeGroup[] {
@@ -119,7 +122,7 @@ function visibleNodes(workspace: TreeWorkspace, showPruned: boolean, groups: Tre
     if (group.collapsed) for (const id of group.nodeIds) if (id !== group.activeNodeId) hidden.add(id)
   }
   const byId = new Map(workspace.nodes.map((node) => [node.id, node]))
-  const focused = groups.find((group) => group.id === focusedGroupId)
+  const focused = workspace.groups?.find((group) => group.id === focusedGroupId)
   const included = focused ? new Set(focused.nodeIds) : null
   if (included) {
     for (let changed = true; changed;) {
@@ -151,7 +154,7 @@ interface GraphSyncProps extends TreeCanvasProps {
   onResizeStable: (resizing: boolean) => void
 }
 
-function GraphSync({ workspace, selectedId, showPruned, layoutVersion = 0, queuedIds = EMPTY_NODE_IDS, onGroupStable, onFocusStable, onResizeStable, focusedGroupId }: GraphSyncProps) {
+function GraphSync({ workspace, selectedId, showPruned, disabled, layoutVersion = 0, queuedIds = EMPTY_NODE_IDS, onGroupStable, onFocusStable, onResizeStable, focusedGroupId }: GraphSyncProps) {
   const { setNodes, setEdges, getNodes, getNodesBounds, getViewport, setViewport, viewportInitialized } = useReactFlow<TurnFlowNode>()
   const initialized = useNodesInitialized()
   const didFit = useRef(false)
@@ -168,15 +171,17 @@ function GraphSync({ workspace, selectedId, showPruned, layoutVersion = 0, queue
   const nodes = useMemo(() => visibleNodes(workspace, showPruned, groups, focusedGroupId), [workspace, showPruned, groups, focusedGroupId])
   const memoryKey = `${workspace.id}:${focusedGroupId ?? 'overview'}`
   useEffect(() => {
-    positions.current = new Map(CANVAS_MEMORY.get(memoryKey)?.positions)
+    const remembered = CANVAS_MEMORY.get(memoryKey)
+    positions.current = new Map(remembered?.layoutVersion === layoutVersion ? remembered.positions : undefined)
+    persisted.current = new Map(remembered?.layoutVersion === layoutVersion ? remembered.overrides : undefined)
     return () => {
       if (!didFit.current) return
       const latest = new Map(positions.current)
       for (const node of getNodes()) latest.set(node.id, node.position)
       // The Flow store can reset before child cleanup; retain the last live viewport.
-      CANVAS_MEMORY.set(memoryKey, { viewport: lastViewport.current ?? getViewport(), positions: latest })
+      CANVAS_MEMORY.set(memoryKey, { layoutVersion, viewport: lastViewport.current ?? getViewport(), positions: latest, overrides: new Map(persisted.current) })
     }
-  }, [memoryKey, getNodes, getViewport])
+  }, [memoryKey, layoutVersion, getNodes, getViewport])
 
   const fit = useCallback(() => {
     const bounds = getNodesBounds(getNodes())
@@ -231,7 +236,7 @@ function GraphSync({ workspace, selectedId, showPruned, layoutVersion = 0, queue
         position = old.position
       }
       if (group) {
-        if (changedPosition || old?.dragging || old?.resizing) groupPositions.current.set(group.id, position)
+        if (changedPosition || clearedPosition || old?.dragging || old?.resizing) groupPositions.current.set(group.id, position)
         position = groupPositions.current.get(group.id) ?? position
         groupPositions.current.set(group.id, position)
       }
@@ -241,7 +246,7 @@ function GraphSync({ workspace, selectedId, showPruned, layoutVersion = 0, queue
       const size = turn.size ?? defaultSize
       const renderKey = JSON.stringify([turn.prompt.slice(0, 2000), turn.converters.map((converter) => converter.type), turn.status, responsePreview(turn),
         turn.scoreRuns?.map((result) => [result.id, result.status, result.scores.map((score) => [score.score_type, score.score_value, score.status])]),
-        turn.kept, pruned, size, turn.attempts?.length, group, queued, settings.scorers, settings.primaryScorerId])
+        turn.kept, pruned, size, turn.attempts?.length, group, queued, disabled, settings.scorers, settings.primaryScorerId])
       if (old && old.data.renderKey === renderKey && old.selected === (turn.id === selectedId) &&
         old.position.x === position.x && old.position.y === position.y) return old
       return {
@@ -250,7 +255,7 @@ function GraphSync({ workspace, selectedId, showPruned, layoutVersion = 0, queue
         height: old?.resizing ? old.height : size.height,
         style: { width: old?.resizing ? old.width : size.width, height: old?.resizing ? old.height : size.height },
         data: { turn, settings, group, queued, pruned, size, renderKey, onGroup: onGroupStable, onFocusGroup: onFocusStable,
-          onResizeState: onResizeStable, focused: !!focusedGroupId },
+          onResizeState: onResizeStable, focused: !!focusedGroupId, readOnly: disabled },
         ariaLabel: `Prompt: ${turn.prompt.slice(0, 80)} (${queued ? 'queued' : turn.status})`,
       }
     })
@@ -263,7 +268,7 @@ function GraphSync({ workspace, selectedId, showPruned, layoutVersion = 0, queue
     setNodes(nextNodes)
     setEdges(edges)
     if (reset) requestAnimationFrame(fit)
-  }, [nodes, groups, workspace, selectedId, layoutVersion, queuedIds, getNodes, setNodes, setEdges, fit, onGroupStable, onFocusStable, onResizeStable, focusedGroupId])
+  }, [nodes, groups, workspace, selectedId, disabled, layoutVersion, queuedIds, getNodes, setNodes, setEdges, fit, onGroupStable, onFocusStable, onResizeStable, focusedGroupId])
 
   useEffect(() => {
     if (!initialized || !viewportInitialized) return
@@ -271,7 +276,7 @@ function GraphSync({ workspace, selectedId, showPruned, layoutVersion = 0, queue
       didFit.current = true
       selection.current = selectedId
       const remembered = CANVAS_MEMORY.get(memoryKey)
-      if (remembered) void setViewport(remembered.viewport)
+      if (remembered?.layoutVersion === layoutVersion) void setViewport(remembered.viewport)
       else fit()
       return
     }
@@ -289,7 +294,7 @@ function GraphSync({ workspace, selectedId, showPruned, layoutVersion = 0, queue
       x: viewportSize.width / 2 - (bounds.x + bounds.width / 2) * view.zoom,
       y: viewportSize.height / 2 - (bounds.y + bounds.height / 2) * view.zoom, zoom: view.zoom,
     })
-  }, [initialized, viewportInitialized, selectedId, nodes, fit, getNodes, getNodesBounds, getViewport, setViewport, memoryKey])
+  }, [initialized, viewportInitialized, selectedId, nodes, fit, getNodes, getNodesBounds, getViewport, setViewport, memoryKey, layoutVersion])
 
   function focusSelected(): void {
     const node = getNodes().find((item) => item.id === selectedId)
@@ -324,7 +329,7 @@ export default function TreeCanvas(props: TreeCanvasProps) {
   const onChange = useCallback((changes: NodeChange<TurnFlowNode>[]) => {
     for (const change of changes) {
       if (change.type === 'position' && change.position && change.dragging === false) {
-        if (!resizing.current && !callbacks.current.focusedGroupId) callbacks.current.onMove(change.id, change.position)
+        if (!callbacks.current.disabled && !resizing.current && !callbacks.current.focusedGroupId) callbacks.current.onMove(change.id, change.position)
       }
       if (change.type === 'select' && change.selected) callbacks.current.onSelect(change.id)
     }
@@ -333,7 +338,7 @@ export default function TreeCanvas(props: TreeCanvasProps) {
     <section className={styles.canvas} aria-label="Conversation graph" data-testid="conversation-graph">
       <ReactFlow<TurnFlowNode> key={`${props.workspace.id}:${props.focusedGroupId ?? 'overview'}`}
         defaultNodes={EMPTY_NODES} defaultEdges={EMPTY_EDGES} nodeTypes={NODE_TYPES} colorMode={resolved === 'light' ? 'light' : 'dark'}
-        minZoom={MIN_ZOOM} maxZoom={1.5} nodesConnectable={false} edgesReconnectable={false}
+        minZoom={MIN_ZOOM} maxZoom={1.5} nodesDraggable={!props.disabled} nodesConnectable={false} edgesReconnectable={false}
         multiSelectionKeyCode={null} selectionKeyCode={null} deleteKeyCode={null} autoPanOnNodeFocus={false}
         onNodeClick={onClick} onNodesChange={onChange}>
         <Background />

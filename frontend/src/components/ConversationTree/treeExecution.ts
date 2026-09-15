@@ -12,7 +12,7 @@ import type {
 
 import { getCurrentAttemptId, getNewRunNodeIds, getTreeLabels, getTreeSettings, isNodeHidden, parseTreeWorkspace } from './treeModel'
 
-const INSPECT_HISTORY = 'Inspect backend history before retry; create a new variant.'
+const INSPECT_HISTORY = 'Inspect backend history before retrying.'
 const STOPPED_MESSAGE = `Stopped between requests; an in-flight request was not cancelled. ${INSPECT_HISTORY}`
 const PIECE_FIELDS = [
   'id', 'original_value_data_type', 'converted_value_data_type', 'original_value',
@@ -25,6 +25,7 @@ const SCORE_FIELDS = [
   'is_objective_score', 'score_category', 'score_rationale', 'timestamp',
 ] as const
 const EXECUTION_UPDATE_KEYS = ['status', 'attackResultId', 'conversationId', 'lastSequence', 'messages', 'error'] as const
+const RETAINED_UPDATE_KEYS = [...EXECUTION_UPDATE_KEYS, 'scoreRuns'] as const
 const NODE_UPDATE_CONFLICT_MESSAGE = 'Attempt changed before execution update; stopped without overwriting edits.'
 const PARALLEL_SAFE_TARGET_CLASSES = new Set([
   'pyrit.prompt_target.openai.openai_chat_target.OpenAIChatTarget',
@@ -54,6 +55,7 @@ export interface RunOptions {
   readonly onNodeCompleted?: (workspace: TreeWorkspace, nodeId: string) => Promise<void>
   readonly commitNodeUpdate?: (nodeId: string, expected: TreeNode, update: Partial<TreeNode>) => Promise<TreeWorkspace>
   readonly onConcurrencyResolved?: (concurrency: number) => void
+  readonly onPersistenceFailure?: (candidate: TreeWorkspace) => void
 }
 
 interface FrozenNodeSignature {
@@ -254,6 +256,24 @@ async function notifyNodeCompleted(options: RunOptions, latest: TreeWorkspace, n
   return refreshLatest(latest, options.getLatest)
 }
 
+function mergeRetainedWorkspace(base: TreeWorkspace, retained: TreeWorkspace): TreeWorkspace {
+  const merged = parseTreeWorkspace(JSON.stringify(base))
+  const retainedById = new Map(retained.nodes.map((node: TreeNode) => [node.id, node]))
+  merged.nodes = merged.nodes.map((node: TreeNode) => {
+    const overlay = retainedById.get(node.id)
+    if (!overlay || mutableExecutionSignature(node) !== mutableExecutionSignature(overlay)) return node
+    const next = { ...node }
+    for (const key of RETAINED_UPDATE_KEYS) {
+      if (!(key in overlay)) continue
+      const value = overlay[key]
+      if (value === undefined) Reflect.deleteProperty(next, key)
+      else Object.assign(next, { [key]: value })
+    }
+    return next
+  })
+  return parseTreeWorkspace(JSON.stringify(merged))
+}
+
 function validateResponseIdentity(response: AddMessageResponse, node: TreeNode, workspace: TreeWorkspace): void {
   requireCondition(response.attack?.attack_result_id === node.attackResultId &&
     response.messages?.conversation_id === node.conversationId &&
@@ -382,6 +402,7 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
   let persistenceCause: unknown
   let unexpectedFailure: unknown
   let dispatchStopped = options.isStopped()
+  let persistenceReported = false
 
   type NodeState = 'pending' | 'inflight' | 'completed' | 'error' | 'skipped'
   type NodeOutcome = { readonly nodeId: string; readonly outcome: 'completed' | 'error' | 'skipped' | 'stopped' | 'persistence' }
@@ -389,8 +410,8 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
   const inflight = new Map<string, Promise<NodeOutcome>>()
 
   function currentWorkspace(): TreeWorkspace {
-    latest = persistenceFailure ? parseTreeWorkspace(JSON.stringify(latest)) : refreshLatest(latest, options.getLatest)
-    return latest
+    const base = refreshLatest(latest, options.getLatest)
+    return persistenceFailure ? mergeRetainedWorkspace(base, latest) : base
   }
 
   function queueStateTask<T>(task: () => Promise<T>): Promise<T> {
@@ -404,12 +425,16 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
     persistenceCause = (failure as Error & { cause?: unknown }).cause ?? failure
     latest = failure.workspace
     dispatchStopped = true
+    if (!persistenceReported) {
+      persistenceReported = true
+      options.onPersistenceFailure?.(failure.workspace)
+    }
   }
 
   async function persist(expected: TreeNode, update: Partial<TreeNode>): Promise<TreeWorkspace> {
     return queueStateTask(async () => {
       if (persistenceFailure) {
-        latest = buildNodeUpdateCandidate(latest, expected, update)
+        latest = buildNodeUpdateCandidate(currentWorkspace(), expected, update)
         return latest
       }
       try {
@@ -422,10 +447,10 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
     })
   }
 
-  async function persistTerminal(expected: TreeNode, update: Partial<TreeNode>): Promise<TreeWorkspace> {
-    latest = await persist(expected, update)
-    latest = await queueStateTask(async () => {
-      if (persistenceFailure || !options.onNodeCompleted) return latest
+  async function persistTerminal(expected: TreeNode, update: Partial<TreeNode>, notifyCompletion = false): Promise<TreeWorkspace> {
+    await persist(expected, update)
+    await queueStateTask(async () => {
+      if (persistenceFailure || !notifyCompletion || !options.onNodeCompleted) return latest
       try {
         latest = await notifyNodeCompleted(options, latest, expected.id)
         return latest
@@ -434,7 +459,7 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
         throw failure
       }
     })
-    return latest
+    return currentWorkspace()
   }
 
   async function stopBeforeSend(nodeId: string): Promise<boolean> {
@@ -665,12 +690,13 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
         completionError = `The backend did not return a complete matching user/assistant turn. ${INSPECT_HISTORY}`
       }
     }
+    const hasAssistantEvidence = evidence.some((message: BackendMessage) => message.role === 'assistant')
     await persistTerminal(findNode(currentWorkspace(), nodeId), {
       status: completionError ? 'error' : 'completed',
       messages: evidence,
       lastSequence,
       error: completionError,
-    })
+    }, hasAssistantEvidence)
     return { nodeId, outcome: completionError ? 'error' : 'completed' }
   }
 
@@ -717,7 +743,7 @@ export async function runTree(workspace: TreeWorkspace, options: RunOptions): Pr
     dispatchAvailable()
   }
   await stateTail
-  if (persistenceFailure) throw new TreePersistenceError(latest, persistenceCause ?? persistenceFailure)
+  if (persistenceFailure) throw new TreePersistenceError(currentWorkspace(), persistenceCause ?? persistenceFailure)
   if (unexpectedFailure !== undefined) throw unexpectedFailure
   return currentWorkspace()
 }

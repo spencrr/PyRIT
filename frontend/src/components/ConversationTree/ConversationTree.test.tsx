@@ -135,6 +135,25 @@ describe('ConversationTree', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry saving only' })).not.toBeInTheDocument())
     expect(runTree).toHaveBeenCalledTimes(1)
   })
+  it('locks editing and recovery actions immediately while failed-save requests settle', async () => {
+    const user = userEvent.setup()
+    let finish: (() => void) | undefined
+    jest.mocked(runTree).mockImplementation(async (tree, options) => {
+      options.onPersistenceFailure?.(tree)
+      await new Promise<void>((resolve) => { finish = resolve })
+      throw new TreePersistenceError(tree, new Error('Quota exceeded'))
+    })
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.click(screen.getByRole('button', { name: 'Review & run drafts' }))
+    await user.click(screen.getByRole('button', { name: 'Run approved drafts' }))
+    await waitFor(() => expect(finish).toBeDefined())
+    expect(screen.getByRole('button', { name: 'Retry saving only' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Discard unsaved snapshot' })).toBeDisabled()
+    expect(screen.getByLabelText('Prompt')).toBeDisabled()
+    expect(screen.getByLabelText('Node size')).toBeDisabled()
+    await act(async () => { finish?.() })
+    expect(screen.getByRole('button', { name: 'Retry saving only' })).toBeEnabled()
+  })
 
   it('allows recorded-result recovery after reload while keeping interrupted input read-only', async () => {
     const tree = fixture()
@@ -208,7 +227,10 @@ describe('ConversationTree', () => {
       scorer_id: 'judge', scorer_type: 'Scale', identifier_hash: 'hash', score_type: 'float_scale', scope: 'response', highIsRisk: true,
     }] }
     tree.nodes[0] = { ...tree.nodes[0], status: 'completed', attackResultId: 'attack', conversationId: 'conversation', attemptId: 'attempt', lastSequence: 7,
-      messages: [{ turn_number: 7, role: 'assistant', created_at: '2026-01-01', message_pieces: [{
+      messages: [{ turn_number: 6, role: 'user', created_at: '2026-01-01T00:00:00.000Z', message_pieces: [{
+        id: 'prompt-piece', original_value_data_type: 'text', converted_value_data_type: 'text',
+        original_value: tree.nodes[0].prompt, converted_value: tree.nodes[0].prompt, response_error: 'none', scores: [],
+      }] }, { turn_number: 7, role: 'assistant', created_at: '2026-01-01T00:00:00.000Z', message_pieces: [{
         id: 'recorded', original_value_data_type: 'text', converted_value_data_type: 'text', converted_value: 'Earlier evidence', response_error: 'none', scores: [],
       }] }],
     }
@@ -222,5 +244,20 @@ describe('ConversationTree', () => {
       }],
     })))
     expect(runTree).not.toHaveBeenCalled()
+    await waitFor(() => expect(jest.mocked(saveTreeWorkspace).mock.calls.some(([saved]) => saved.nodes[0].scoreRuns?.length === 1)).toBe(true))
+  })
+  it('does not offer response scoring for a failure that has no assistant evidence', async () => {
+    const user = userEvent.setup()
+    const tree = fixture()
+    tree.settings = { ...getTreeSettings(tree), confirmRuns: false, scorers: [{
+      scorer_id: 'judge', scorer_type: 'Scale', identifier_hash: 'hash', score_type: 'float_scale', scope: 'response', highIsRisk: true,
+    }] }
+    tree.nodes[0] = { ...tree.nodes[0], status: 'error', error: 'Preparation failed', conversationId: 'conversation', attackResultId: 'attack' }
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    expect(screen.getByRole('button', { name: 'Score response', exact: true })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Score existing responses', exact: true }))
+    expect(await screen.findByText('No eligible nodes in this selection.')).toBeVisible()
+    expect(scorersApi.score).not.toHaveBeenCalled()
   })
 })
