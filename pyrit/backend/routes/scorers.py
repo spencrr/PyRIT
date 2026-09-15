@@ -14,6 +14,7 @@ from pyrit.backend.models.scorers import (
     ScorerCatalogResponse,
     ScorerInstance,
     ScorerListResponse,
+    ScorerValidationResponse,
 )
 from pyrit.backend.services.scorer_service import ScorerConflictError, get_scorer_service
 
@@ -68,6 +69,25 @@ async def create_scorer(request: CreateScorerRequest) -> ScorerInstance:  # pyri
     """
     service = get_scorer_service()
     return await service.create_scorer_async(request=request)
+
+
+@router.post(
+    "/validate",
+    response_model=ScorerValidationResponse,
+    responses={
+        400: {"model": ProblemDetail, "description": "Invalid scorer type or parameters"},
+        422: {"model": ProblemDetail, "description": "Request validation failed"},
+    },
+)
+async def validate_scorer(request: CreateScorerRequest) -> ScorerValidationResponse:  # pyrit-async-suffix-exempt
+    """
+    Validate a scorer configuration without registering it.
+
+    Returns:
+        ScorerValidationResponse: ``{"valid": true}`` when the configuration is constructible.
+    """
+    service = get_scorer_service()
+    return await service.validate_scorer_request_async(request=request)
 
 
 @router.get(

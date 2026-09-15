@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,11 +20,15 @@ from pyrit.backend.models.scorers import (
     ScorerCatalogResponse,
     ScorerInstance,
     ScorerListResponse,
+    ScorerValidationResponse,
 )
 from pyrit.backend.services.scorer_service import ScorerConflictError, get_scorer_service
 from pyrit.memory import CentralMemory
 from pyrit.models import AttackResult, ComponentIdentifier, Conversation, Message, MessagePiece, Score
 from pyrit.registry import ScorerRegistry, TargetRegistry
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @pytest.fixture
@@ -33,7 +38,7 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def reset_scorer_state() -> None:
+def reset_scorer_state() -> Iterator[None]:
     """Reset scorer registries and service cache between route tests."""
     get_scorer_service.cache_clear()
     ScorerRegistry.reset_registry_singleton()
@@ -125,6 +130,37 @@ def test_create_scorer_returns_created_instance(client: TestClient) -> None:
         data = response.json()
         assert data["scorer_type"] == "SubStringScorer"
         assert data["identifier_hash"] == "a" * 64
+
+
+def test_validate_scorer_returns_valid_payload(client: TestClient) -> None:
+    """Validate route should preflight scorer construction without registration side effects."""
+    with patch("pyrit.backend.routes.scorers.get_scorer_service") as mock_get_service:
+        mock_service = MagicMock()
+        mock_service.validate_scorer_request_async = AsyncMock(return_value=ScorerValidationResponse())
+        mock_get_service.return_value = mock_service
+
+        response = client.post(
+            "/api/scorers/validate",
+            json={"type": "SubStringScorer", "params": {"substring": "WIN"}},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"valid": True}
+
+
+def test_validate_route_does_not_register_real_scorer(client: TestClient) -> None:
+    """Validate route should not add a scorer instance to the registry."""
+    response = client.post(
+        "/api/scorers/validate",
+        json={"type": "SubStringScorer", "params": {"substring": "WIN"}},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"valid": True}
+
+    list_response = client.get("/api/scorers")
+    assert list_response.status_code == status.HTTP_200_OK
+    assert list_response.json()["items"] == []
 
 
 def test_get_scorer_not_found_returns_problem_detail(client: TestClient) -> None:
@@ -222,7 +258,8 @@ def test_score_route_returns_score_payload_shape(client: TestClient) -> None:
 
 
 @pytest.mark.usefixtures("patch_central_database")
-def test_score_route_round_trips_real_substring_scorer(client: TestClient, sqlite_instance) -> None:
+@pytest.mark.parametrize("anchored", [False, True])
+def test_score_route_round_trips_real_substring_scorer(client: TestClient, sqlite_instance, anchored: bool) -> None:
     """Real app route flow supports create/list/score for a local deterministic scorer."""
     memory = CentralMemory.get_memory_instance()
     conversation_id = "route-conv"
@@ -235,9 +272,10 @@ def test_score_route_round_trips_real_substring_scorer(client: TestClient, sqlit
     memory.add_message_to_memory(
         request=_message(role="user", value="Say WIN", conversation_id=conversation_id, sequence=0)
     )
-    memory.add_message_to_memory(
-        request=_message(role="assistant", value="WIN is present", conversation_id=conversation_id, sequence=1)
+    response_message = _message(
+        role="assistant", value="\n WIN is present \t", conversation_id=conversation_id, sequence=1
     )
+    memory.add_message_to_memory(request=response_message)
     attack_result = AttackResult(
         conversation_id=conversation_id,
         objective="Find WIN",
@@ -267,6 +305,21 @@ def test_score_route_round_trips_real_substring_scorer(client: TestClient, sqlit
             "expected_scorer_hash": created["identifier_hash"],
             "objective": attack_result.objective,
             "scope": "response",
+            **(
+                {
+                    "evidence_sequence": 1,
+                    "evidence_message_piece_ids": [str(response_message.message_pieces[0].id)],
+                    "expected_response": [
+                        {
+                            "id": str(response_message.message_pieces[0].id),
+                            "converted_value": "\n WIN is present \t",
+                            "converted_value_data_type": "text",
+                        }
+                    ],
+                }
+                if anchored
+                else {}
+            ),
         },
     )
 

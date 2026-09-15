@@ -1,24 +1,19 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
-"""Service for backend scorer discovery, instantiation, and scoring."""
+"""Service for backend scorer discovery, validation, instantiation, and scoring."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import types
 import uuid
-from collections.abc import Sequence
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin
-
-from pydantic import BaseModel, ValidationError
+from typing import TYPE_CHECKING
 
 from pyrit.backend.models.attacks import ScoreView
-from pyrit.backend.models.common import SENSITIVE_FIELD_PATTERNS
 from pyrit.backend.models.scorers import (
     CreateScorerRequest,
+    ExpectedResponsePiece,
     ScoreAttackRequest,
     ScoreAttackResponse,
     ScorerCatalogEntry,
@@ -26,13 +21,16 @@ from pyrit.backend.models.scorers import (
     ScorerInstance,
     ScorerListResponse,
     ScorerParameter,
+    ScorerValidationResponse,
 )
-from pyrit.common.apply_defaults import REQUIRED_VALUE
+from pyrit.backend.services.scorer_configuration import ScorerConfigurationManager
 from pyrit.memory import CentralMemory
-from pyrit.models import ComponentType, Message, MessageScorable, Parameter, Score, ScoreType, ScoringExpectation
+from pyrit.models import Message, MessageScorable, Parameter, Score, ScoreType, ScoringExpectation
 from pyrit.registry import ScorerRegistry, TargetRegistry
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from pyrit.score import Scorer
 
 __all__ = [
@@ -43,17 +41,21 @@ __all__ = [
 
 
 class ScorerConflictError(Exception):
-    """Raised when scorer identity or attack conversation identity does not match the request."""
+    """Raised when scorer identity or stored evidence does not match the request."""
 
 
 class ScorerService:
-    """Service for scorer catalog, instance management, and persisted-evidence scoring."""
+    """Service for scorer catalog, validation, instance management, and persisted-evidence scoring."""
 
     def __init__(self) -> None:
         """Initialize the scorer service."""
         self._registry = ScorerRegistry.get_registry_singleton()
         self._target_registry = TargetRegistry.get_registry_singleton()
         self._memory = CentralMemory.get_memory_instance()
+        self._configuration_manager = ScorerConfigurationManager(
+            scorer_registry=self._registry,
+            target_registry=self._target_registry,
+        )
 
     async def list_scorers_async(self) -> ScorerListResponse:
         """
@@ -97,17 +99,35 @@ class ScorerService:
             ScorerCatalogResponse: Catalog of constructible scorer classes.
         """
         metadata_items = await asyncio.to_thread(self._registry.get_all_registered_class_metadata)
-        items = [
-            ScorerCatalogEntry(
-                scorer_type=metadata.class_name,
-                score_type=self._score_type_for_class_name(class_name=metadata.class_name),
-                is_llm_based=metadata.is_llm_based,
-                parameters=self._catalog_parameters(parameters=metadata.parameters),
-                description=metadata.class_description or None,
+        items = []
+        for metadata in metadata_items:
+            owner_cls = self._registry.get_class(metadata.class_name)
+            items.append(
+                ScorerCatalogEntry(
+                    scorer_type=metadata.class_name,
+                    score_type=self._score_type_for_class_name(class_name=metadata.class_name),
+                    is_llm_based=metadata.is_llm_based,
+                    parameters=self._catalog_parameters(parameters=metadata.parameters, owner_cls=owner_cls),
+                    description=metadata.class_description or None,
+                )
             )
-            for metadata in metadata_items
-        ]
         return ScorerCatalogResponse(items=items)
+
+    async def validate_scorer_request_async(self, *, request: CreateScorerRequest) -> ScorerValidationResponse:
+        """
+        Validate a scorer configuration without registering it or calling provider models.
+
+        Returns:
+            ScorerValidationResponse: ``{"valid": true}`` when the scorer can be constructed safely.
+
+        Raises:
+            ValueError: If the scorer type or parameters are invalid.
+        """
+        try:
+            await asyncio.to_thread(self._configuration_manager.build_scorer, request=request)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError(str(exc)) from None
+        return ScorerValidationResponse()
 
     async def create_scorer_async(self, *, request: CreateScorerRequest) -> ScorerInstance:
         """
@@ -128,21 +148,7 @@ class ScorerService:
             )
 
         try:
-            metadata = await asyncio.to_thread(self._registry.get_registered_class_metadata, request.type)
-            if metadata is None:
-                raise ValueError(f"Scorer type '{request.type}' is unavailable.")
-            params: dict[str, object] = dict(request.params)
-            for parameter in metadata.parameters:
-                if parameter.name not in params:
-                    continue
-                value = params[parameter.name]
-                model = self._structured_parameter_model(parameter)
-                if model is not None and (value is not None or parameter.required):
-                    try:
-                        params[parameter.name] = model.model_validate(value)
-                    except ValidationError as exc:
-                        raise ValueError(f"Invalid scorer parameter '{parameter.name}': {exc}") from None
-            scorer = await asyncio.to_thread(self._registry.create_instance, request.type, **params)
+            scorer = await asyncio.to_thread(self._configuration_manager.build_scorer, request=request)
         except (TypeError, ValueError, KeyError) as exc:
             raise ValueError(str(exc)) from None
 
@@ -154,9 +160,10 @@ class ScorerService:
         """
         Score persisted attack evidence with a registered scorer.
 
-        Response scope scores the latest non-simulated assistant message only. Conversation
-        scope scores each stored message in sequence, allowing the scorer's own role and
-        evidence applicability contract to decide which turns matter.
+        Response scope scores the latest non-simulated assistant message only unless an
+        anchored evidence sequence/piece-id pair is supplied, in which case the stored
+        anchored message is scored exactly. Conversation scope scores each stored message
+        in sequence, optionally truncating at the anchored sequence.
 
         Args:
             scorer_id: Registered scorer instance ID or alias.
@@ -168,7 +175,8 @@ class ScorerService:
         Raises:
             FileNotFoundError: If the scorer or attack result does not exist.
             ValueError: If the conversation has no stored messages to score.
-            ScorerConflictError: If the expected scorer hash or attack conversation identity does not match.
+            ScorerConflictError: If the expected scorer hash, attack conversation identity, or
+                anchored evidence does not match the request.
         """
         scorer = self.get_scorer_object(scorer_id=scorer_id)
         if scorer is None:
@@ -202,9 +210,10 @@ class ScorerService:
         if not messages:
             raise ValueError(f"Conversation '{request.conversation_id}' has no stored messages to score.")
 
+        anchored_message = self._resolve_anchored_message(messages=messages, request=request)
         expectation = ScoringExpectation(objective=request.objective)
         if request.scope == "response":
-            response_message = self._select_latest_response_message(messages=messages)
+            response_message = anchored_message or self._select_latest_response_message(messages=messages)
             if response_message is None:
                 return ScoreAttackResponse(
                     scorer_id=scorer_id,
@@ -217,9 +226,10 @@ class ScorerService:
                 expectation=expectation,
             )
         else:
+            scoped_messages = self._conversation_scope_messages(messages=messages, request=request)
             scores = await self._score_conversation_messages_async(
                 scorer=scorer,
-                messages=messages,
+                messages=scoped_messages,
                 expectation=expectation,
             )
 
@@ -229,6 +239,20 @@ class ScorerService:
             scores=[ScoreView.from_domain(score) for score in scores],
             status="complete" if scores else "not_applicable",
         )
+
+    def _catalog_parameters(
+        self,
+        *,
+        parameters: Sequence[Parameter],
+        owner_cls: type | None = None,
+    ) -> list[ScorerParameter]:
+        """
+        Project registry parameters into API-safe catalog parameters.
+
+        Returns:
+            list[ScorerParameter]: Complete constructor contract, including nested component metadata.
+        """
+        return self._configuration_manager.project_catalog_parameters(parameters=parameters, owner_cls=owner_cls)
 
     def _build_instance_from_object(self, *, scorer_id: str, scorer_obj: Scorer) -> ScorerInstance:
         """
@@ -267,6 +291,69 @@ class ScorerService:
             scores.extend(message_scores)
         return scores
 
+    def _resolve_anchored_message(self, *, messages: list[Message], request: ScoreAttackRequest) -> Message | None:
+        """
+        Resolve and validate the anchored persisted message selected by the request.
+
+        Returns:
+            Message | None: The anchored message, or None when the request uses legacy latest-response semantics.
+
+        Raises:
+            ScorerConflictError: If the anchored sequence, piece IDs, or expected content do not
+                match the persisted conversation state.
+        """
+        if request.evidence_sequence is None or request.evidence_message_piece_ids is None:
+            return None
+
+        anchored_candidates = [message for message in messages if message.sequence == request.evidence_sequence]
+        if not anchored_candidates:
+            raise ScorerConflictError(
+                f"Conversation '{request.conversation_id}' no longer contains sequence {request.evidence_sequence}."
+            )
+
+        anchored_message = next(
+            (
+                message
+                for message in anchored_candidates
+                if [piece.id for piece in message.message_pieces] == request.evidence_message_piece_ids
+            ),
+            None,
+        )
+        if anchored_message is None:
+            raise ScorerConflictError(
+                "The stored response at the requested evidence anchor no longer matches the selected message pieces."
+            )
+
+        self._validate_expected_response(anchored_message=anchored_message, expected_response=request.expected_response)
+        return anchored_message
+
+    @staticmethod
+    def _validate_expected_response(
+        *,
+        anchored_message: Message,
+        expected_response: list[ExpectedResponsePiece] | None,
+    ) -> None:
+        """Reject stale anchored-response payloads whose stored converted content changed."""
+        if expected_response is None:
+            return
+        actual_response = [
+            ExpectedResponsePiece(
+                id=piece.id,
+                converted_value=piece.converted_value,
+                converted_value_data_type=piece.converted_value_data_type,
+            )
+            for piece in anchored_message.message_pieces
+        ]
+        if actual_response != expected_response:
+            raise ScorerConflictError("The stored response at the requested evidence anchor no longer matches.")
+
+    @staticmethod
+    def _conversation_scope_messages(*, messages: list[Message], request: ScoreAttackRequest) -> list[Message]:
+        """Return the messages visible to the requested conversation-scoring scope."""
+        if request.evidence_sequence is None:
+            return messages
+        return [message for message in messages if message.sequence <= request.evidence_sequence]
+
     @staticmethod
     def _select_latest_response_message(*, messages: list[Message]) -> Message | None:
         """
@@ -282,185 +369,6 @@ class ScorerService:
             if message.api_role == "assistant" and not message.is_simulated:
                 return message
         return None
-
-    def _catalog_parameters(self, *, parameters: Sequence[Parameter]) -> list[ScorerParameter]:
-        """
-        Project registry parameters into API-safe catalog parameters.
-
-        Returns:
-            list[ScorerParameter]: Complete constructor contract, including unsupported object inputs.
-        """
-        projected: list[ScorerParameter] = []
-        for parameter in parameters:
-            base = self._sanitize_parameter(parameter=parameter)
-            if parameter.reference is not None:
-                projected.append(self._project_reference_parameter(parameter=parameter))
-                continue
-            if parameter.is_string_coercible:
-                projected.append(base)
-                continue
-            annotation = self._parameter_annotation(parameter)
-            sequence_type = self._sequence_parameter_type(annotation)
-            if sequence_type is not None:
-                projected.append(base.model_copy(update={"param_type": sequence_type}))
-                continue
-            if get_origin(annotation) in (Union, types.UnionType) and str in get_args(annotation):
-                projected.append(base.model_copy(update={"param_type": str, "input_kind": "multiline"}))
-                continue
-            model = self._structured_parameter_model(parameter)
-            if model is not None:
-                example: dict[str, object] = {"minimum_value": 0, "maximum_value": 1}
-                if "category" in model.model_fields and model.model_fields["category"].is_required():
-                    example["category"] = "custom"
-                projected.append(
-                    base.model_copy(
-                        update={
-                            "input_kind": "json",
-                            "json_schema": model.model_json_schema(),
-                            "example": json.dumps(example, indent=2),
-                        }
-                    )
-                )
-                continue
-            projected.append(
-                base.model_copy(
-                    update={
-                        "input_kind": "unsupported",
-                        "default": parameter.default if parameter.required else None,
-                    }
-                )
-            )
-        return projected
-
-    def _project_reference_parameter(self, *, parameter: Parameter) -> ScorerParameter:
-        """
-        Render a registry-reference parameter as a selectable string or string-list field.
-
-        Returns:
-            Parameter: A wire-safe parameter whose choices mirror currently registered instances.
-        """
-        reference = parameter.reference
-        if reference is None:
-            raise ValueError(f"Parameter '{parameter.name}' is not a registry reference.")
-
-        choices = self._reference_choices(component_type=reference.component_type)
-        is_list = self._annotation_is_list(reference.annotation)
-        param_type = self._choice_param_type(choices=choices, is_list=is_list)
-
-        return ScorerParameter(
-            name=parameter.name,
-            description=parameter.description,
-            default=self._sanitize_default(name=parameter.name, value=parameter.default),
-            param_type=param_type,
-        )
-
-    def _reference_choices(self, *, component_type: ComponentType) -> list[str]:
-        """
-        Return the currently registered instance names for a reference parameter.
-
-        Returns:
-            list[str]: Sorted instance names that can satisfy the reference.
-        """
-        if component_type is ComponentType.TARGET:
-            return self._target_registry.instances.get_names()
-        if component_type is ComponentType.SCORER:
-            return self._registry.instances.get_names()
-        return []
-
-    @staticmethod
-    def _annotation_is_list(annotation: Any) -> bool:
-        """
-        Determine whether a reference annotation accepts a list of registry names.
-
-        Returns:
-            bool: True when the annotation is list-shaped.
-        """
-        if annotation is None:
-            return False
-        origin = get_origin(annotation)
-        if origin is list:
-            return True
-        if origin in {types.UnionType, getattr(types, "UnionType", types.UnionType)} or str(origin) == "typing.Union":
-            non_none = [arg for arg in get_args(annotation) if arg is not type(None)]
-            return len(non_none) == 1 and ScorerService._annotation_is_list(non_none[0])
-        return False
-
-    @staticmethod
-    def _choice_param_type(*, choices: list[str], is_list: bool) -> Any:
-        """
-        Build a display param type that surfaces current choices on the wire.
-
-        Returns:
-            Any: ``str`` / ``list[str]`` when unconstrained, otherwise a Literal-based equivalent.
-        """
-        scalar_type = Literal.__getitem__(tuple(choices)) if choices else str
-        return types.GenericAlias(list, scalar_type) if is_list else scalar_type
-
-    @staticmethod
-    def _sanitize_parameter(*, parameter: Parameter) -> ScorerParameter:
-        """
-        Clone a catalog parameter with sensitive defaults removed.
-
-        Returns:
-            Parameter: A parameter safe to serialize to the API.
-        """
-        return ScorerParameter(
-            name=parameter.name,
-            description=parameter.description,
-            default=ScorerService._sanitize_default(name=parameter.name, value=parameter.default),
-            param_type=parameter.param_type,
-        )
-
-    @staticmethod
-    def _parameter_annotation(parameter: Parameter) -> Any:
-        """Return the non-null type of an optional constructor parameter."""
-        annotation = parameter.param_type
-        if get_origin(annotation) in (Union, types.UnionType):
-            members = [member for member in get_args(annotation) if member is not type(None)]
-            if len(members) == 1:
-                return members[0]
-        return annotation
-
-    @staticmethod
-    def _sequence_parameter_type(annotation: Any) -> Any | None:
-        """
-        Preserve sequence input in list/string unions instead of reducing it to scalar text.
-
-        Returns:
-            Any | None: A list annotation suitable for the form, or None for non-sequence inputs.
-        """
-        members = get_args(annotation) if get_origin(annotation) in (Union, types.UnionType) else (annotation,)
-        for member in members:
-            if get_origin(member) not in (list, Sequence):
-                continue
-            arguments = get_args(member)
-            element = arguments[0] if arguments else str
-            if Parameter(name="item", description="", param_type=element).is_string_coercible:
-                return types.GenericAlias(list, element)
-        return None
-
-    @staticmethod
-    def _structured_parameter_model(parameter: Parameter) -> type[BaseModel] | None:
-        """Return an allowlisted data-only numeric model accepted over the scorer API."""
-        from pyrit.score.float_scale.numeric_scale import NumericRange, NumericRubric
-
-        annotation = ScorerService._parameter_annotation(parameter)
-        return annotation if annotation in (NumericRange, NumericRubric) else None
-
-    @staticmethod
-    def _sanitize_default(*, name: str, value: Any) -> Any:
-        """
-        Remove secret-bearing defaults from catalog parameters.
-
-        Returns:
-            Any: The original default when safe, otherwise None.
-        """
-        if value is REQUIRED_VALUE:
-            return value
-        lower_name = name.lower()
-        if any(pattern in lower_name for pattern in SENSITIVE_FIELD_PATTERNS):
-            return None
-        return value
 
     def _score_type_for_class_name(self, *, class_name: str) -> ScoreType:
         """

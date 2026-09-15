@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from pyrit.backend.models.scorers import CreateScorerRequest, ScoreAttackRequest
+from pyrit.backend.models.scorers import CreateScorerRequest, ExpectedResponsePiece, ScoreAttackRequest
 from pyrit.backend.services.scorer_service import ScorerConflictError, ScorerService
 from pyrit.memory import CentralMemory
 from pyrit.models import AttackResult, Conversation, Message, MessagePiece, Parameter
@@ -18,11 +19,14 @@ from pyrit.registry import ScorerRegistry, TargetRegistry
 from pyrit.score import PlagiarismScorer, SelfAskScaleScorer, SubStringScorer, SystemPromptExtractionScorer
 from unit.mocks import MockPromptTarget, get_mock_target_identifier
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 pytestmark = pytest.mark.usefixtures("patch_central_database")
 
 
 @pytest.fixture(autouse=True)
-def reset_registries() -> None:
+def reset_registries() -> Iterator[None]:
     """Reset scorer and target registries between tests."""
     ScorerRegistry.reset_registry_singleton()
     TargetRegistry.reset_registry_singleton()
@@ -133,7 +137,9 @@ async def test_scale_scorer_catalog_exposes_required_prompt_and_structured_rubri
     assert parameters["scale"].input_kind == "json"
     assert parameters["scale"].json_schema is not None
     assert "minimum_value" in parameters["scale"].json_schema["properties"]
-    assert parameters["response_handler"].input_kind == "unsupported"
+    assert parameters["response_handler"].input_kind == "json"
+    assert parameters["response_handler"].json_schema is not None
+    assert parameters["response_handler"].supports_yaml is True
     assert not parameters["response_handler"].required
 
 
@@ -477,3 +483,153 @@ async def test_score_attack_result_conversation_scope_not_applicable_for_unread_
 
     assert result.status == "not_applicable"
     assert result.scores == []
+
+
+async def test_create_scorer_invalid_nested_target_does_not_leak_registered_instances() -> None:
+    """Failed nested target validation must not leave behind partial scorer or target registrations."""
+    service = ScorerService()
+
+    with pytest.raises(ValueError, match="API key is required"):
+        await service.create_scorer_async(
+            request=CreateScorerRequest(
+                type="PromptShieldScorer",
+                params={
+                    "prompt_shield_target": {
+                        "type": "PromptShieldTarget",
+                        "params": {"endpoint": "https://example.test"},
+                    }
+                },
+            )
+        )
+
+    assert service._registry.instances.get_names() == []
+    assert TargetRegistry.get_registry_singleton().instances.get_names() == []
+
+
+async def test_score_attack_result_response_scope_uses_anchored_response_instead_of_latest() -> None:
+    """Anchored response scoring must remain stable even after later assistant turns are appended."""
+    conversation_id = "conv-anchored-response"
+    first_response = _message(role="assistant", value="WIN achieved.", conversation_id=conversation_id, sequence=1)
+    latest_response = _message(role="assistant", value="LOSE achieved.", conversation_id=conversation_id, sequence=3)
+    attack_result = _persist_conversation(
+        conversation_id=conversation_id,
+        objective="Find WIN",
+        messages=[
+            _message(role="user", value="Say WIN now.", conversation_id=conversation_id, sequence=0),
+            first_response,
+            _message(role="user", value="New request", conversation_id=conversation_id, sequence=2),
+            latest_response,
+        ],
+    )
+    scorer = SubStringScorer(substring="WIN")
+    service = ScorerService()
+    service._registry.instances.register(scorer, name="substring")
+
+    anchored_result = await service.score_attack_result_async(
+        scorer_id="substring",
+        request=ScoreAttackRequest(
+            attack_result_id=attack_result.attack_result_id,
+            conversation_id=conversation_id,
+            expected_scorer_hash=scorer.get_identifier().hash,
+            evidence_sequence=1,
+            evidence_message_piece_ids=[first_response.get_piece().id],
+            expected_response=[
+                ExpectedResponsePiece(
+                    id=first_response.get_piece().id,
+                    converted_value="WIN achieved.",
+                    converted_value_data_type="text",
+                )
+            ],
+        ),
+    )
+    latest_result = await service.score_attack_result_async(
+        scorer_id="substring",
+        request=ScoreAttackRequest(
+            attack_result_id=attack_result.attack_result_id,
+            conversation_id=conversation_id,
+            expected_scorer_hash=scorer.get_identifier().hash,
+        ),
+    )
+
+    assert str(anchored_result.scores[0].score_value).lower() == "true"
+    assert str(latest_result.scores[0].score_value).lower() == "false"
+
+
+async def test_score_attack_result_rejects_modified_expected_anchor_before_scoring() -> None:
+    """Changed stored anchored content must be rejected before the scorer is invoked."""
+    conversation_id = "conv-anchor-mismatch"
+    anchored_response = _message(role="assistant", value="WIN achieved.", conversation_id=conversation_id, sequence=1)
+    attack_result = _persist_conversation(
+        conversation_id=conversation_id,
+        objective="Find WIN",
+        messages=[
+            _message(role="user", value="Say WIN now.", conversation_id=conversation_id, sequence=0),
+            anchored_response,
+        ],
+    )
+    scorer = SubStringScorer(substring="WIN")
+    scorer.score_async = AsyncMock(return_value=[])
+    service = ScorerService()
+    service._registry.instances.register(scorer, name="substring")
+
+    with pytest.raises(ScorerConflictError, match="no longer matches"):
+        await service.score_attack_result_async(
+            scorer_id="substring",
+            request=ScoreAttackRequest(
+                attack_result_id=attack_result.attack_result_id,
+                conversation_id=conversation_id,
+                expected_scorer_hash=scorer.get_identifier().hash,
+                evidence_sequence=1,
+                evidence_message_piece_ids=[anchored_response.get_piece().id],
+                expected_response=[
+                    ExpectedResponsePiece(
+                        id=anchored_response.get_piece().id,
+                        converted_value="tampered",
+                        converted_value_data_type="text",
+                    )
+                ],
+            ),
+        )
+
+    scorer.score_async.assert_not_awaited()
+
+
+async def test_score_attack_result_conversation_scope_honors_anchor_cutoff() -> None:
+    """Conversation scoring should not include messages after the anchored evidence sequence."""
+    conversation_id = "conv-anchor-cutoff"
+    first_user_message = _message(role="user", value="Say WIN now.", conversation_id=conversation_id, sequence=0)
+    anchored_response = _message(role="assistant", value="WIN achieved.", conversation_id=conversation_id, sequence=1)
+    attack_result = _persist_conversation(
+        conversation_id=conversation_id,
+        objective="Find WIN",
+        messages=[
+            first_user_message,
+            anchored_response,
+            _message(role="user", value="Later user turn", conversation_id=conversation_id, sequence=2),
+            _message(role="assistant", value="Later assistant turn", conversation_id=conversation_id, sequence=3),
+        ],
+    )
+    scorer = SubStringScorer(substring="WIN")
+    scorer.score_async = AsyncMock(return_value=[])
+    service = ScorerService()
+    service._registry.instances.register(scorer, name="substring")
+
+    result = await service.score_attack_result_async(
+        scorer_id="substring",
+        request=ScoreAttackRequest(
+            attack_result_id=attack_result.attack_result_id,
+            conversation_id=conversation_id,
+            expected_scorer_hash=scorer.get_identifier().hash,
+            scope="conversation",
+            evidence_sequence=1,
+            evidence_message_piece_ids=[anchored_response.get_piece().id],
+        ),
+    )
+
+    assert result.status == "not_applicable"
+    assert scorer.score_async.await_count == 2
+    scored_piece_ids = [list(call.kwargs["scorable"].message_piece_ids) for call in scorer.score_async.await_args_list]
+    assert scored_piece_ids == [
+        [first_user_message.get_piece().id],
+        [anchored_response.get_piece().id],
+    ]
