@@ -31,6 +31,21 @@ def test_resolver_reads_message_reference_from_memory(sqlite_instance: MemoryInt
     assert resolved.get_value() == "stored response"
 
 
+def test_resolver_prefers_snapshot_over_later_memory_reads():
+    message = _stored_message("checked response")
+    scorable = MessageScorable.from_message(message, use_snapshot=True)
+    message.get_piece().converted_value = "mutated response"
+    memory = MagicMock(spec=MemoryInterface)
+
+    resolved = MessageScorableResolver().resolve(
+        scorable=scorable,
+        memory=memory,
+    )
+
+    assert resolved.get_value() == "checked response"
+    memory.get_message_pieces.assert_not_called()
+
+
 def test_resolver_reports_missing_piece_ids(sqlite_instance: MemoryInterface):
     stored = _stored_message()
     sqlite_instance.add_message_to_memory(request=stored)

@@ -124,7 +124,11 @@ class ScorerService:
             ValueError: If the scorer type or parameters are invalid.
         """
         try:
-            await asyncio.to_thread(self._configuration_manager.build_scorer, request=request)
+            await asyncio.to_thread(
+                self._configuration_manager.build_scorer_instance,
+                request=request,
+                scorer_id="validation",
+            )
         except (TypeError, ValueError, KeyError) as exc:
             raise ValueError(str(exc)) from None
         return ScorerValidationResponse()
@@ -147,14 +151,18 @@ class ScorerService:
                 f"Scorer type '{request.type}' not found. Available types: {self._registry.get_class_names()}"
             )
 
+        scorer_id = str(uuid.uuid4())
         try:
-            scorer = await asyncio.to_thread(self._configuration_manager.build_scorer, request=request)
+            scorer, scorer_instance = await asyncio.to_thread(
+                self._configuration_manager.build_scorer_instance,
+                request=request,
+                scorer_id=scorer_id,
+            )
         except (TypeError, ValueError, KeyError) as exc:
             raise ValueError(str(exc)) from None
 
-        scorer_id = str(uuid.uuid4())
         self._registry.instances.register(scorer, name=scorer_id)
-        return self._build_instance_from_object(scorer_id=scorer_id, scorer_obj=scorer)
+        return scorer_instance
 
     async def score_attack_result_async(self, *, scorer_id: str, request: ScoreAttackRequest) -> ScoreAttackResponse:
         """
@@ -222,7 +230,7 @@ class ScorerService:
                     status="not_applicable",
                 )
             scores = await scorer.score_async(
-                scorable=MessageScorable.from_message(response_message),
+                scorable=MessageScorable.from_message(response_message, use_snapshot=True),
                 expectation=expectation,
             )
         else:
@@ -285,7 +293,7 @@ class ScorerService:
         scores: list[Score] = []
         for message in messages:
             message_scores = await scorer.score_async(
-                scorable=MessageScorable.from_message(message),
+                scorable=MessageScorable.from_message(message, use_snapshot=True),
                 expectation=expectation,
             )
             scores.extend(message_scores)

@@ -41,6 +41,7 @@ class MessageScorable(Scorable):
 
     scorable_type: Literal["message"] = "message"
     message_piece_ids: tuple[uuid.UUID, ...]
+    message_pieces_snapshot: tuple[dict[str, Any], ...] | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def _validate_message_piece_ids(self) -> MessageScorable:
@@ -58,23 +59,36 @@ class MessageScorable(Scorable):
         seen = [str(piece_id) for piece_id in self.message_piece_ids]
         if len(set(seen)) != len(seen):
             raise ValueError(f"A MessageScorable must name each message piece once, got {seen}.")
+        if self.message_pieces_snapshot is not None:
+            snapshot_ids = tuple(piece["id"] for piece in self.message_pieces_snapshot)
+            if snapshot_ids != self.message_piece_ids:
+                raise ValueError("A MessageScorable snapshot must match message_piece_ids in the same order.")
         return self
 
     @classmethod
     def from_message(
         cls,
         message: Message,
+        *,
+        use_snapshot: bool = False,
     ) -> MessageScorable:
         """
         Name the pieces of a persisted message.
 
         Args:
             message (Message): The message whose pieces to name.
+            use_snapshot (bool): When True, capture an in-memory copy of the message pieces so
+                later scorer resolution reads the checked snapshot instead of re-fetching from
+                memory. Defaults to False.
 
         Returns:
             MessageScorable: A scorable naming the message's pieces.
         """
-        return cls(message_piece_ids=tuple(piece.id for piece in message.message_pieces))
+        snapshot = tuple(piece.model_dump(mode="python") for piece in message.message_pieces) if use_snapshot else None
+        return cls(
+            message_piece_ids=tuple(piece.id for piece in message.message_pieces),
+            message_pieces_snapshot=snapshot,
+        )
 
 
 class ContentScorable(Scorable):

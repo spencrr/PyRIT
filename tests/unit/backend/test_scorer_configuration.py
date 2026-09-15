@@ -126,6 +126,47 @@ def test_catalog_callable_defaults_use_stable_named_presets() -> None:
     assert threshold_projected.model_dump(mode="json")["default"] == "FloatScaleScoreAggregator.MAX"
 
 
+def test_catalog_required_callable_parameter_preserves_required_flag() -> None:
+    """Required callable parameters should remain required even though defaults serialize as null."""
+    manager = _configuration_manager()
+    scorer_registry = ScorerRegistry.get_registry_singleton()
+
+    metadata = scorer_registry.get_registered_class_metadata("TrueFalseCompositeScorer")
+    assert metadata is not None
+    parameter = next(item for item in metadata.parameters if item.name == "aggregator")
+    projected = manager.project_catalog_parameter(
+        parameter=parameter,
+        owner_cls=scorer_registry.get_class("TrueFalseCompositeScorer"),
+    )
+
+    dumped = projected.model_dump(mode="json")
+    assert projected.required is True
+    assert dumped["required"] is True
+    assert dumped["default"] is None
+
+
+def test_catalog_component_list_filters_true_false_composite_scorers() -> None:
+    """Component list parameters should retain the declared scorer subtype for catalog choices."""
+    scorer_registry = ScorerRegistry.get_registry_singleton()
+    scorer_registry.instances.register(SubStringScorer(substring="WIN"), name="substring")
+    scorer_registry.instances.register(PlagiarismScorer(reference_text="hello"), name="plagiarism")
+
+    manager = _configuration_manager()
+    metadata = scorer_registry.get_registered_class_metadata("TrueFalseCompositeScorer")
+    assert metadata is not None
+    parameter = next(item for item in metadata.parameters if item.name == "scorers")
+    projected = manager.project_catalog_parameter(
+        parameter=parameter,
+        owner_cls=scorer_registry.get_class("TrueFalseCompositeScorer"),
+    )
+
+    assert projected.reference_kind == "scorer"
+    assert projected.is_list is True
+    assert "SubStringScorer" in projected.accepted_types
+    assert "PlagiarismScorer" not in projected.accepted_types
+    assert projected.choices == ["substring"]
+
+
 def test_build_audio_true_false_scorer_accepts_inline_nested_scorer() -> None:
     """Inline nested scorer specs should be canonicalized before constructing the parent scorer."""
     TargetRegistry.get_registry_singleton().instances.register(MockPromptTarget(), name="judge")
@@ -182,6 +223,27 @@ def test_build_scorer_rejects_incompatible_inline_scorer_type() -> None:
                         "type": "PlagiarismScorer",
                         "params": {"reference_text": "hello"},
                     }
+                },
+            )
+        )
+
+
+def test_build_true_false_composite_rejects_incompatible_inline_scorer_type() -> None:
+    """Component-list builds must enforce the declared nested scorer subtype."""
+    manager = _configuration_manager()
+
+    with pytest.raises(ValueError, match="TrueFalseScorer"):
+        manager.build_scorer(
+            request=CreateScorerRequest(
+                type="TrueFalseCompositeScorer",
+                params={
+                    "aggregator": "TrueFalseScoreAggregator.OR",
+                    "scorers": [
+                        {
+                            "type": "PlagiarismScorer",
+                            "params": {"reference_text": "hello"},
+                        }
+                    ],
                 },
             )
         )

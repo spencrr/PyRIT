@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 from pyrit.analytics.text_matching import ApproximateTextMatching, ExactTextMatching, TextMatching
 from pyrit.backend.models.common import SENSITIVE_FIELD_PATTERNS
-from pyrit.backend.models.scorers import CreateScorerRequest, ParameterPreset, ScorerParameter
+from pyrit.backend.models.scorers import CreateScorerRequest, ParameterPreset, ScorerInstance, ScorerParameter
 from pyrit.common.apply_defaults import REQUIRED_VALUE
 from pyrit.models import (
     COMMON_JSON_SCHEMAS,
@@ -61,6 +61,7 @@ _MAX_COMPONENT_COUNT = 32
 _MAX_STRUCTURED_DEPTH = 20
 _MAX_YAML_CHARS = 64 * 1024
 _INLINE_SPEC_KEYS = frozenset({"type", "params"})
+_JSON_SCHEMA_PARAMETER_KEYWORDS = ("schema",)
 _SEED_PROMPT_KEYS = ("value", "response_json_schema", "response_json_schema_name", "parameters", "metadata", "name")
 _JSON_SCHEMA_KEYWORDS = ("type", "properties", "oneOf", "anyOf", "allOf", "enum", "items", "$ref")
 _JSON_SCHEMA_PARAMETER_SCHEMA: dict[str, Any] = {
@@ -290,7 +291,7 @@ class ScorerConfigurationManager:
             )
             return base.model_copy(
                 update={
-                    "default": callable_default,
+                    "default": resolved.default if resolved.required else callable_default,
                     "param_type": self._choice_param_type(choices=callable_choices, is_list=False),
                     "accepts_text": False,
                     "presets": [ParameterPreset(name=name, value=name) for name in callable_choices],
@@ -343,7 +344,7 @@ class ScorerConfigurationManager:
                 }
             )
 
-        if self._is_json_schema_annotation(annotation):
+        if self._is_json_schema_parameter(parameter=resolved):
             return base.model_copy(
                 update={
                     "input_kind": "json",
@@ -351,6 +352,19 @@ class ScorerConfigurationManager:
                     "supports_yaml": True,
                     "accepts_text": False,
                     "presets": self._json_schema_presets(),
+                }
+            )
+
+        if self._is_generic_json_mapping_annotation(annotation):
+            return base.model_copy(
+                update={
+                    "input_kind": "json",
+                    "json_schema": {
+                        "type": "object",
+                        "additionalProperties": True,
+                    },
+                    "supports_yaml": True,
+                    "accepts_text": False,
                 }
             )
 
@@ -452,6 +466,16 @@ class ScorerConfigurationManager:
             raise TypeError("Expected a scorer instance.")
         return built
 
+    def build_scorer_instance(self, *, request: CreateScorerRequest, scorer_id: str) -> tuple[Scorer, ScorerInstance]:
+        """
+        Build a scorer and its response-safe instance metadata without registering it.
+
+        Returns:
+            tuple[Scorer, ScorerInstance]: The constructed scorer and the validated response payload.
+        """
+        scorer = self.build_scorer(request=request)
+        return scorer, self._build_scorer_instance(scorer_id=scorer_id, scorer=scorer)
+
     def _build_component_from_spec(
         self,
         *,
@@ -511,7 +535,9 @@ class ScorerConfigurationManager:
         if value is None:
             if parameter.required:
                 raise ValueError(f"Parameter '{parameter.name}' of '{owner_cls.__name__}' is required.")
-            return None
+            if self._annotation_allows_none(annotation):
+                return None
+            raise ValueError(f"Parameter '{parameter.name}' of '{owner_cls.__name__}' does not accept null.")
 
         component_info = self._component_parameter_info(parameter=parameter)
         if component_info is not None:
@@ -563,8 +589,11 @@ class ScorerConfigurationManager:
         if self._is_seed_prompt_annotation(annotation):
             return self._build_seed_prompt(value=value, state=state, parameter_name=parameter.name)
 
-        if self._is_json_schema_annotation(annotation):
+        if self._is_json_schema_parameter(parameter=parameter):
             return self._coerce_json_schema(value=value, state=state)
+
+        if self._is_generic_json_mapping_annotation(annotation):
+            return self._coerce_generic_json_mapping(value=value, state=state, parameter_name=parameter.name)
 
         model_type = self._base_model_annotation(annotation)
         if model_type is not None:
@@ -818,6 +847,27 @@ class ScorerConfigurationManager:
             raise ValueError("JSON schema 'additionalProperties' must be a boolean or object.")
         return copy.deepcopy(schema)
 
+    def _coerce_generic_json_mapping(
+        self,
+        *,
+        value: Any,
+        state: _BuildState,
+        parameter_name: str,
+    ) -> dict[str, Any]:
+        """
+        Validate a generic JSON object mapping without applying schema-specific rules.
+
+        Returns:
+            dict[str, Any]: The validated JSON object mapping.
+        """
+        loaded = self._load_yaml_wrapper(value=value, state=state, param_name=parameter_name)
+        try:
+            mapping = _JSON_OBJECT_ADAPTER.validate_python(loaded)
+        except ValidationError as exc:
+            raise ValueError(f"Invalid scorer parameter '{parameter_name}': {exc}") from None
+        self._validate_structure(value=mapping, state=state, depth=0)
+        return copy.deepcopy(mapping)
+
     def _coerce_scalar_sequence_union(self, *, parameter: Parameter, value: Any, owner_name: str) -> Any:
         annotation = parameter.param_type
         scalar_member = next(
@@ -973,6 +1023,12 @@ class ScorerConfigurationManager:
         members = ScorerConfigurationManager._non_none_union_members(annotation)
         if len(members) == 1:
             member = members[0]
+            component_element_type = ScorerConfigurationManager._component_sequence_element_type(member)
+            if component_element_type is not None:
+                component_kind = ScorerConfigurationManager._component_kind_for_type(component_element_type)
+                if component_kind is not None:
+                    kind, base_type = component_kind
+                    return _ComponentParameterInfo(kind=kind, accepted_base=base_type, is_list=True)
             element_type = ScorerConfigurationManager._sequence_element_type(member)
             if element_type is not None:
                 component_kind = ScorerConfigurationManager._component_kind_for_type(element_type)
@@ -1024,13 +1080,23 @@ class ScorerConfigurationManager:
         return SeedPrompt in members and str in members
 
     @staticmethod
-    def _is_json_schema_annotation(annotation: Any) -> bool:
-        """Return True when the annotation is the shared JSON-schema mapping alias."""
+    def _is_json_schema_parameter(*, parameter: Parameter) -> bool:
+        """Return True when a parameter is a JSON schema rather than a generic JSON mapping."""
+        if not ScorerConfigurationManager._is_generic_json_mapping_annotation(parameter.param_type):
+            return False
+        lower_name = parameter.name.lower()
+        return any(keyword in lower_name for keyword in _JSON_SCHEMA_PARAMETER_KEYWORDS)
+
+    @staticmethod
+    def _is_generic_json_mapping_annotation(annotation: Any) -> bool:
+        """Return True when the annotation accepts an arbitrary ``dict[str, Any]``-style object."""
         for member in ScorerConfigurationManager._union_members(annotation):
-            if get_origin(member) is dict:
-                key_type, value_type = get_args(member) or (None, None)
-                if key_type is str and value_type is Any:
-                    return True
+            origin = get_origin(member)
+            if origin not in {dict, Mapping}:
+                continue
+            key_type, value_type = get_args(member) or (None, None)
+            if key_type is str and value_type is Any:
+                return True
         return False
 
     @staticmethod
@@ -1074,6 +1140,11 @@ class ScorerConfigurationManager:
     def _is_path_annotation(annotation: Any) -> bool:
         """Return True when the annotation accepts a filesystem path object."""
         return any(member is pathlib.Path for member in ScorerConfigurationManager._union_members(annotation))
+
+    @staticmethod
+    def _annotation_allows_none(annotation: Any) -> bool:
+        """Return True when the annotation explicitly accepts ``None`` or is unconstrained."""
+        return annotation in {Any, None} or type(None) in ScorerConfigurationManager._union_members(annotation)
 
     @staticmethod
     def _is_scalar_sequence_union(annotation: Any) -> bool:
@@ -1129,6 +1200,18 @@ class ScorerConfigurationManager:
         args = get_args(annotation)
         element_type = args[0] if args else str
         if ScorerConfigurationManager._is_scalar_like_annotation(element_type):
+            return element_type
+        return None
+
+    @staticmethod
+    def _component_sequence_element_type(annotation: Any) -> type[Scorer] | type[PromptTarget] | None:
+        """Return the component element type for list/sequence annotations, or None."""
+        origin = get_origin(annotation)
+        if origin not in {list, Sequence, tuple}:
+            return None
+        args = get_args(annotation)
+        element_type = args[0] if args else None
+        if isinstance(element_type, type) and issubclass(element_type, (Scorer, PromptTarget)):
             return element_type
         return None
 
@@ -1310,3 +1393,19 @@ class ScorerConfigurationManager:
         for name in ambiguous_simple_names:
             options.pop(name, None)
         return options
+
+    @staticmethod
+    def _build_scorer_instance(*, scorer_id: str, scorer: Scorer) -> ScorerInstance:
+        """
+        Build response-safe scorer metadata, forcing identifier construction before registration.
+
+        Returns:
+            ScorerInstance: The validated scorer-instance response payload.
+        """
+        identifier = scorer.get_identifier()
+        return ScorerInstance(
+            scorer_id=scorer_id,
+            scorer_type=identifier.class_name or scorer.__class__.__name__,
+            identifier_hash=identifier.hash,
+            score_type=scorer.scorer_type,
+        )

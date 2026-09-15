@@ -15,8 +15,15 @@ from pyrit.backend.models.scorers import CreateScorerRequest, ExpectedResponsePi
 from pyrit.backend.services.scorer_service import ScorerConflictError, ScorerService
 from pyrit.memory import CentralMemory
 from pyrit.models import AttackResult, Conversation, Message, MessagePiece, Parameter
+from pyrit.prompt_target import OpenAIChatTarget
 from pyrit.registry import ScorerRegistry, TargetRegistry
-from pyrit.score import PlagiarismScorer, SelfAskScaleScorer, SubStringScorer, SystemPromptExtractionScorer
+from pyrit.score import (
+    PlagiarismScorer,
+    SelfAskScaleScorer,
+    SubStringScorer,
+    SystemPromptExtractionScorer,
+    TrueFalseInverterScorer,
+)
 from unit.mocks import MockPromptTarget, get_mock_target_identifier
 
 if TYPE_CHECKING:
@@ -123,6 +130,118 @@ async def test_create_scorer_invalid_params_raise_value_error() -> None:
                 params={},
             )
         )
+
+
+async def test_validate_scorer_rejects_missing_required_composite_aggregator() -> None:
+    """Preflight should preserve required callable parameters for composite scorers."""
+    service = ScorerService()
+
+    with pytest.raises(ValueError, match="aggregator"):
+        await service.validate_scorer_request_async(
+            request=CreateScorerRequest(
+                type="TrueFalseCompositeScorer",
+                params={
+                    "scorers": [
+                        {
+                            "type": "SubStringScorer",
+                            "params": {"substring": "WIN"},
+                        }
+                    ]
+                },
+            )
+        )
+
+
+async def test_validate_scorer_rejects_null_non_optional_callable() -> None:
+    """Preflight must reject explicit null for callable params whose annotations are not optional."""
+    service = ScorerService()
+
+    with pytest.raises(ValueError, match="does not accept null"):
+        await service.validate_scorer_request_async(
+            request=CreateScorerRequest(
+                type="TrueFalseInverterScorer",
+                params={
+                    "scorer": {
+                        "type": "RegexScorer",
+                        "params": {
+                            "patterns": {"win": "WIN"},
+                            "score_aggregator": None,
+                        },
+                    }
+                },
+            )
+        )
+
+
+async def test_create_scorer_rejects_null_non_optional_callable_without_registration() -> None:
+    """Create should reject explicit null callables before any scorer is registered."""
+    service = ScorerService()
+
+    with pytest.raises(ValueError, match="does not accept null"):
+        await service.create_scorer_async(
+            request=CreateScorerRequest(
+                type="TrueFalseInverterScorer",
+                params={
+                    "scorer": {
+                        "type": "RegexScorer",
+                        "params": {
+                            "patterns": {"win": "WIN"},
+                            "score_aggregator": None,
+                        },
+                    }
+                },
+            )
+        )
+
+    assert service._registry.instances.get_names() == []
+
+
+async def test_create_scorer_failure_before_response_does_not_register_partial_root() -> None:
+    """Create should build instance metadata before registration so failures do not corrupt the registry."""
+    service = ScorerService()
+
+    with patch.object(
+        service._configuration_manager,
+        "build_scorer_instance",
+        side_effect=RuntimeError("identifier failed"),
+    ):
+        with pytest.raises(RuntimeError, match="identifier failed"):
+            await service.create_scorer_async(
+                request=CreateScorerRequest(
+                    type="SubStringScorer",
+                    params={"substring": "WIN"},
+                )
+            )
+
+    assert service._registry.instances.get_names() == []
+
+
+async def test_validate_scorer_accepts_inline_openai_target_extra_body_parameters_without_sends() -> None:
+    """Generic dict[str, Any] target params should pass preflight without being treated as JSON schemas."""
+    service = ScorerService()
+
+    with patch.object(OpenAIChatTarget, "send_prompt_async", new_callable=AsyncMock) as mock_send_prompt:
+        result = await service.validate_scorer_request_async(
+            request=CreateScorerRequest(
+                type="SelfAskScaleScorer",
+                params={
+                    "chat_target": {
+                        "type": "OpenAIChatTarget",
+                        "params": {
+                            "model_name": "gpt-4.1-mini",
+                            "endpoint": "https://api.openai.com/v1",
+                            "api_key": "test-key",
+                            "extra_body_parameters": {"reasoning_effort": "low"},
+                        },
+                    },
+                    "system_prompt": "Judge the response.",
+                    "scale": {"minimum_value": 0, "maximum_value": 10, "category": "math"},
+                },
+            )
+        )
+
+    assert result.valid is True
+    mock_send_prompt.assert_not_awaited()
 
 
 async def test_scale_scorer_catalog_exposes_required_prompt_and_structured_rubric() -> None:
@@ -553,6 +672,130 @@ async def test_score_attack_result_response_scope_uses_anchored_response_instead
 
     assert str(anchored_result.scores[0].score_value).lower() == "true"
     assert str(latest_result.scores[0].score_value).lower() == "false"
+
+
+async def test_score_attack_result_uses_checked_anchor_snapshot_for_direct_scorer() -> None:
+    """Anchored scoring must use the checked response snapshot even if later memory reads change."""
+    conversation_id = "conv-anchored-snapshot-direct"
+    attack_result = AttackResult(
+        conversation_id=conversation_id,
+        objective="Find WIN",
+        attack_result_id="attack-anchored-snapshot-direct",
+    )
+    piece_id = uuid.uuid4()
+    checked_message = Message(
+        message_pieces=[
+            MessagePiece(
+                id=piece_id,
+                role="assistant",
+                original_value="LOSE",
+                converted_value="LOSE",
+                original_value_data_type="text",
+                converted_value_data_type="text",
+                conversation_id=conversation_id,
+                sequence=1,
+            )
+        ]
+    )
+    mutated_piece = checked_message.get_piece().model_copy(
+        deep=True,
+        update={
+            "original_value": "WIN",
+            "converted_value": "WIN",
+        },
+    )
+    scorer = SubStringScorer(substring="WIN")
+    service = ScorerService()
+    service._registry.instances.register(scorer, name="substring")
+
+    with (
+        patch.object(service._memory, "get_attack_results", return_value=[attack_result]),
+        patch.object(service._memory, "get_conversation_messages", return_value=[checked_message]),
+        patch.object(service._memory, "get_message_pieces", return_value=[mutated_piece]) as mock_get_message_pieces,
+        patch.object(service._memory, "add_scores_to_memory"),
+    ):
+        result = await service.score_attack_result_async(
+            scorer_id="substring",
+            request=ScoreAttackRequest(
+                attack_result_id=attack_result.attack_result_id,
+                conversation_id=conversation_id,
+                expected_scorer_hash=scorer.get_identifier().hash,
+                evidence_sequence=1,
+                evidence_message_piece_ids=[piece_id],
+                expected_response=[
+                    ExpectedResponsePiece(
+                        id=piece_id,
+                        converted_value="LOSE",
+                        converted_value_data_type="text",
+                    )
+                ],
+            ),
+        )
+
+    assert str(result.scores[0].score_value).lower() == "false"
+    mock_get_message_pieces.assert_not_called()
+
+
+async def test_score_attack_result_uses_checked_anchor_snapshot_for_nested_scorer() -> None:
+    """Nested scorer trees must inherit the same anchored snapshot instead of re-reading memory."""
+    conversation_id = "conv-anchored-snapshot-nested"
+    attack_result = AttackResult(
+        conversation_id=conversation_id,
+        objective="Find WIN",
+        attack_result_id="attack-anchored-snapshot-nested",
+    )
+    piece_id = uuid.uuid4()
+    checked_message = Message(
+        message_pieces=[
+            MessagePiece(
+                id=piece_id,
+                role="assistant",
+                original_value="LOSE",
+                converted_value="LOSE",
+                original_value_data_type="text",
+                converted_value_data_type="text",
+                conversation_id=conversation_id,
+                sequence=1,
+            )
+        ]
+    )
+    mutated_piece = checked_message.get_piece().model_copy(
+        deep=True,
+        update={
+            "original_value": "WIN",
+            "converted_value": "WIN",
+        },
+    )
+    scorer = TrueFalseInverterScorer(scorer=SubStringScorer(substring="WIN"))
+    service = ScorerService()
+    service._registry.instances.register(scorer, name="inverter")
+
+    with (
+        patch.object(service._memory, "get_attack_results", return_value=[attack_result]),
+        patch.object(service._memory, "get_conversation_messages", return_value=[checked_message]),
+        patch.object(service._memory, "get_message_pieces", return_value=[mutated_piece]) as mock_get_message_pieces,
+        patch.object(service._memory, "add_scores_to_memory"),
+    ):
+        result = await service.score_attack_result_async(
+            scorer_id="inverter",
+            request=ScoreAttackRequest(
+                attack_result_id=attack_result.attack_result_id,
+                conversation_id=conversation_id,
+                expected_scorer_hash=scorer.get_identifier().hash,
+                evidence_sequence=1,
+                evidence_message_piece_ids=[piece_id],
+                expected_response=[
+                    ExpectedResponsePiece(
+                        id=piece_id,
+                        converted_value="LOSE",
+                        converted_value_data_type="text",
+                    )
+                ],
+            ),
+        )
+
+    assert str(result.scores[0].score_value).lower() == "true"
+    mock_get_message_pieces.assert_not_called()
 
 
 async def test_score_attack_result_rejects_modified_expected_anchor_before_scoring() -> None:
