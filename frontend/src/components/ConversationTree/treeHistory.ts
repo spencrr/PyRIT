@@ -115,7 +115,7 @@ function importedNodeSignature(node: TreeNode): string {
     attackResultId: node.attackResultId,
     conversationId: node.conversationId,
     lastSequence: node.lastSequence,
-    messages: node.messages,
+    messages: exactHistorySignature(node.messages ?? []),
     error: node.error,
     importedFromBackend: node.importedFromBackend === true,
   })

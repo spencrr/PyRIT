@@ -70,6 +70,27 @@ describe('treeHistory', () => {
     jest.clearAllMocks()
   })
 
+  it('allows further imports after backend scoring without rewriting saved evidence', async () => {
+    const tree = workspace([complete(node('root'))])
+    const root = tree.nodes[0]
+    getAttack.mockResolvedValue(attackSummary(root))
+    const firstTurn = [message('user', 3, 'First follow-up', 'history'), message('assistant', 4, 'First reply', 'history')]
+    getMessages.mockResolvedValue({ conversation_id: root.conversationId ?? '', messages: [...(root.messages ?? []), ...firstTurn] })
+    const initial = await discoverTreeContinuation(tree, root.id)
+    const imported = applyTreeCommand(tree, { type: 'importContinuation', nodeId: root.id, nodes: initial.nodes })
+    const scoredReply = { ...firstTurn[1], message_pieces: firstTurn[1].message_pieces.map((piece) => ({
+      ...piece, scores: [{ id: 'score', message_piece_id: piece.id, scorer_type: 'SubStringScorer', score_type: 'true_false', score_value: 'true', timestamp: TIME }],
+    })) }
+    getMessages.mockResolvedValue({ conversation_id: root.conversationId ?? '', messages: [
+      ...(root.messages ?? []), firstTurn[0], scoredReply,
+      message('user', 5, 'Second follow-up', 'history'), message('assistant', 6, 'Second reply', 'history'),
+    ] })
+    const next = await discoverTreeContinuation(imported, root.id)
+    expect(next.nodes).toHaveLength(1)
+    expect(next.nodes[0]).toMatchObject({ parentId: initial.nodes[0].id, prompt: 'Second follow-up' })
+    expect(imported.nodes[1].messages?.[1].message_pieces[0].scores).toEqual([])
+  })
+
   it('discovers deterministic imported continuation nodes and counts a trailing pending user message', async () => {
     const tree = workspace([complete(node('root'))])
     const root = tree.nodes[0]
