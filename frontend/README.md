@@ -312,7 +312,17 @@ variables in the backend process:
 | --- | --- |
 | `PYRIT_TREE_ASSISTANT_MODEL` | Tool-capable planning model or deployment name |
 | `PYRIT_TREE_ASSISTANT_API_KEY` | Server-side credential for that model |
-| `PYRIT_TREE_ASSISTANT_BASE_URL` | Optional OpenAI-compatible Chat Completions base URL |
+| `PYRIT_TREE_ASSISTANT_API` | `chat_completions` (default) or `responses` |
+| `PYRIT_TREE_ASSISTANT_BASE_URL` | Optional OpenAI-compatible base URL, ending in `/v1` (not a specific API route) |
+
+Set `PYRIT_TREE_ASSISTANT_API=responses` for deployments requiring the Responses
+API. The assistant then sends to `/v1/responses`; the default continues to use
+`/v1/chat/completions`. Tool calling and explicit proposal approvals work with
+either transport. Restart the backend and start a new assistant session after
+changing the setting. Both transports use `store=false` and retain conversation
+history locally in the ephemeral session, rather than relying on stored response IDs.
+For the local Azure-auth proxy, use `http://127.0.0.1:4000/v1` as the base URL and
+ensure the proxy forwards `/v1/responses` when Responses mode is selected.
 
 No credentials are accepted in chat requests or stored in the browser. Existing
 backend authentication applies to session endpoints. Without authentication,

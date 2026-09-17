@@ -156,13 +156,13 @@ Do not output executable actions as if performed. A staged proposal is pending r
 
 def create_agent_framework_runtime() -> AssistantRuntime:
     """
-    Build a server-configured Chat Completions client without reading attack target settings.
+    Build a server-configured OpenAI client without reading attack target settings.
 
     Returns:
         AssistantRuntime: A real, separately configured Agent Framework runtime.
     """
     try:
-        from agent_framework.openai import OpenAIChatCompletionClient
+        from agent_framework.openai import OpenAIChatClient, OpenAIChatCompletionClient
         from openai import AsyncOpenAI
     except ImportError:
         raise TreeAssistantError(
@@ -172,6 +172,12 @@ def create_agent_framework_runtime() -> AssistantRuntime:
         ) from None
     model = os.getenv("PYRIT_TREE_ASSISTANT_MODEL", "").strip()
     api_key = os.getenv("PYRIT_TREE_ASSISTANT_API_KEY", "").strip()
+    api = os.getenv("PYRIT_TREE_ASSISTANT_API", "chat_completions").strip().lower()
+    if api not in ("chat_completions", "responses"):
+        raise TreeAssistantError(
+            status=503,
+            detail="PYRIT_TREE_ASSISTANT_API must be chat_completions or responses.",
+        )
     if not model or not api_key or len(model) > 200:
         raise TreeAssistantError(
             status=503,
@@ -184,8 +190,10 @@ def create_agent_framework_runtime() -> AssistantRuntime:
         max_retries=0,
         timeout=60.0,
     )
+    # In the pinned Agent Framework SDK, OpenAIChatClient uses the Responses API.
+    client_type = OpenAIChatClient if api == "responses" else OpenAIChatCompletionClient
     return AgentFrameworkRuntime(
-        client=OpenAIChatCompletionClient(model=model, async_client=client),
+        client=client_type(model=model, async_client=client),
         model=model,
         close_client=client.close,
     )
