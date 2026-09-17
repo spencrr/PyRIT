@@ -66,7 +66,7 @@ describe('ConversationTree', () => {
     render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
     await user.click(screen.getByRole('button', { name: 'Review & run drafts' }))
     expect(runTree).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('checkbox', { name: "Don't ask again in this workspace" }))
+    await user.click(await screen.findByRole('checkbox', { name: "Don't ask again in this workspace" }))
     await user.click(screen.getByRole('button', { name: 'Run approved drafts' }))
     await waitFor(() => expect(runTree).toHaveBeenCalledTimes(1))
     const settings = getTreeSettings(jest.mocked(runTree).mock.calls[0][0])
@@ -288,6 +288,84 @@ describe('ConversationTree', () => {
     expect(saveTreeWorkspace).toHaveBeenCalledTimes(1)
     expect(runTree).not.toHaveBeenCalled()
     expect(jest.mocked(saveTreeWorkspace).mock.calls[0][0].nodes[1]).toMatchObject({ prompt: 'Agent-proposed child', status: 'draft' })
+  })
+
+  it('locks the editor only while an approved mutation is being saved', async () => {
+    const user = userEvent.setup()
+    const tree = fixture()
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    mockAssistantProposal = {
+      id: 'delayed-add', workspace_id: tree.id, base_revision: tree.revision, summary: 'Add child', status: 'pending',
+      action: { kind: 'mutate', commands: [{ type: 'add', parentId: tree.nodes[0].id, prompt: 'Agent child' }] },
+    }
+    let finish: (() => void) | undefined
+    jest.mocked(saveTreeWorkspace).mockImplementationOnce((candidate) => new Promise((resolve) => {
+      finish = () => { resolve({ ...candidate, revision: candidate.revision + 1 }) }
+    }))
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    expect(screen.getByLabelText('Prompt')).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
+    await waitFor(() => expect(finish).toBeDefined())
+    expect(screen.getByLabelText('Prompt')).toBeDisabled()
+    expect(screen.getByLabelText('Node size')).toBeDisabled()
+    await user.type(screen.getByLabelText('Prompt'), 'Unsaved human work')
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Describe your limitations.')
+    await act(async () => { finish?.() })
+    expect(screen.getByLabelText('Prompt')).toBeEnabled()
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Agent child')
+    expect(screen.getByRole('combobox', { name: 'Workspace', exact: true })).toBeEnabled()
+    expect(mockAssistantResults[0]?.status).toBe('applied')
+  })
+
+  it.each([
+    { kind: 'score' as const, scoreStatus: 'not_applicable' as const },
+    { kind: 'run' as const, scoreStatus: 'not_applicable' as const },
+    { kind: 'score' as const, scoreStatus: 'complete' as const },
+    { kind: 'run' as const, scoreStatus: 'complete' as const },
+  ])('reports $scoreStatus results accurately for assistant $kind approvals', async ({ kind, scoreStatus }) => {
+    const user = userEvent.setup()
+    const tree = fixture()
+    tree.settings = { ...getTreeSettings(tree), autoScore: true, scorers: [{
+      scorer_id: 'judge', scorer_type: 'Scale', identifier_hash: 'hash', score_type: 'float_scale', scope: 'response', highIsRisk: true,
+    }] }
+    const completed: TreeWorkspace['nodes'][number] = {
+      ...tree.nodes[0], status: 'completed', attackResultId: 'attack', conversationId: 'conversation', lastSequence: 1,
+      messages: ['user', 'assistant'].map((role, turn_number) => ({
+        role, turn_number, created_at: '2026-09-17T00:00:00.000Z', message_pieces: [{
+          id: `piece-${turn_number}`, original_value_data_type: 'text', converted_value_data_type: 'text',
+          original_value: role === 'user' ? tree.nodes[0].prompt : 'Recorded reply',
+          converted_value: role === 'user' ? tree.nodes[0].prompt : 'Recorded reply',
+          response_error: 'none', scores: [],
+        }],
+      })),
+    }
+    if (kind === 'score') tree.nodes[0] = completed
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    mockAssistantProposal = {
+      id: 'score-result', workspace_id: tree.id, base_revision: tree.revision, summary: 'Evaluate', status: 'pending',
+      action: { kind, node_ids: [tree.nodes[0].id] },
+    }
+    jest.mocked(scorersApi.score).mockResolvedValue({
+      scorer_id: 'judge', scorer_hash: 'hash', status: scoreStatus,
+      scores: scoreStatus === 'complete' ? [{
+        id: 'score', message_piece_id: 'piece-1', scorer_type: 'Scale', score_type: 'float_scale',
+        score_value: '0.8', status: 'complete', timestamp: '2026-09-17T00:00:00.000Z',
+      }] : [],
+    })
+    jest.mocked(runTree).mockImplementation(async (snapshot, options) => {
+      if (!options.commitNodeUpdate || !options.getLatest || !options.onNodeCompleted) throw new Error('Missing controller integration')
+      await options.commitNodeUpdate(completed.id, snapshot.nodes[0], completed)
+      await options.onNodeCompleted(options.getLatest(), completed.id)
+      return options.getLatest()
+    })
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
+    await waitFor(() => expect(mockAssistantResults).toHaveLength(1))
+    expect(mockAssistantResults[0].status).toBe(scoreStatus === 'complete' ? 'applied' : 'failed')
+    expect(mockAssistantResults[0].detail).toContain(scoreStatus === 'complete' ? '1/1' : '0/1')
+    if (scoreStatus === 'not_applicable') expect(mockAssistantResults[0].detail).toContain('1 scorer evaluations not applicable (no scores produced)')
+    const snapshots = jest.mocked(saveTreeWorkspace).mock.calls
+    expect(snapshots[snapshots.length - 1][0].nodes[0].scoreRuns?.[0].status).toBe(scoreStatus)
   })
 
   it('rejects assistant proposals after a human edit without overwriting it', async () => {

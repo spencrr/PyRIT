@@ -113,6 +113,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   const [activityOpen, setActivityOpen] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [assistantBusy, setAssistantBusy] = useState(false)
+  const [assistantCommitting, setAssistantCommitting] = useState(false)
   const assistantPending = useRef(false)
   const assistantApplying = useRef(false)
   const assistantReceipts = useRef(new Map<string, { fingerprint: string; result: Promise<TreeAssistantReceipt> }>())
@@ -299,20 +300,23 @@ export default function ConversationTree({ activeTarget, labels, active = true }
       }
       if (mounted.current) setNotice(stopped.current ? 'Stopped after all in-flight requests settled.' : 'Run finished. Changed or blocked queued branches remain drafts.')
       const latest = current.current ?? snapshot
+      let notApplicable = 0
       const succeeded = approved.nodeIds.filter((id) => {
         const node = latest.nodes.find((item) => item.id === id)
         if (approved.kind === 'run' && (!node || node.status !== 'completed')) return false
         if (approved.kind === 'run' && !settings.autoScore) return true
-        return settings.scorers.every((scorer) => {
+        const passes = settings.scorers.map((scorer) => {
           const pass = node?.scoreRuns?.filter((result) => result.scorerId === scorer.scorer_id).slice(-1)[0]
           const before = snapshot.nodes.find((item) => item.id === id)?.scoreRuns ?? []
-          return pass && pass.status !== 'error' && !before.some((old) => old.id === pass.id)
+          return pass && !before.some((old) => old.id === pass.id) ? pass : undefined
         })
+        notApplicable += passes.filter((pass) => pass?.status === 'not_applicable').length
+        return passes.every((pass) => pass?.status === 'complete' && pass.scores.length > 0)
       }).length
       const complete = succeeded === approved.nodeIds.length && !stopped.current
       return {
         status: complete ? 'applied' : 'failed', revision: latest.revision,
-        detail: `${succeeded}/${approved.nodeIds.length} ${approved.kind === 'run' ? `nodes completed${settings.autoScore ? ' with configured scoring' : ''}` : 'responses scored'}${stopped.current ? '; stopped by the user' : ''}. Inspect failures or skipped nodes before retrying.`,
+        detail: `${succeeded}/${approved.nodeIds.length} ${approved.kind === 'run' ? `nodes completed${settings.autoScore ? ' with configured scoring' : ''}` : 'responses scored'}${notApplicable ? `; ${notApplicable} scorer evaluations not applicable (no scores produced)` : ''}${stopped.current ? '; stopped by the user' : ''}. Inspect failures, non-applicable scorers, or skipped nodes before retrying.`,
       }
     } catch (failure) {
       if (mounted.current) fail(failure)
@@ -338,6 +342,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
       try {
         const prepared = prepareAssistantProposal(base, proposed)
         if (prepared.kind !== 'mutate') return await execute(planned(base, prepared.nodeIds, prepared.kind))
+        setAssistantCommitting(true)
         const saved = await mutate((latest) => {
           const action = prepareAssistantProposal(latest, proposed)
           if (action.kind !== 'mutate') throw new Error('The proposed action changed.')
@@ -352,7 +357,10 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         setFocusedGroupId(null)
         setNotice('Approved assistant edits saved. No target requests were sent.')
         return { status: 'applied', revision: saved.revision, detail: `Saved ${proposed.action.kind === 'mutate' ? proposed.action.commands.length : 0} approved edits; ${added.length} new draft nodes. No model calls.` }
-      } finally { assistantApplying.current = false }
+      } finally {
+        assistantApplying.current = false
+        if (mounted.current) setAssistantCommitting(false)
+      }
     })().catch((failure: unknown): TreeAssistantReceipt => ({
       status: 'failed', revision: current.current?.revision ?? proposed.base_revision,
       detail: failure instanceof Error ? failure.message : toApiError(failure).detail,
@@ -493,7 +501,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   const settings = workspace ? getTreeSettings(workspace) : null
   const locked = recovery !== null || recovering || writes > 0 || importingHistory
   const viewLocked = locked || run !== null || dirty || assistantBusy
-  const selectedLocked = recovery !== null || recovering || importingHistory
+  const selectedLocked = recovery !== null || recovering || importingHistory || assistantCommitting
   const group = workspace?.groups?.find((entry) => selected && entry.nodeIds.includes(selected.id))
   const visible = workspace?.nodes.filter((node) => showPruned || !isNodeHidden(workspace, node.id)) ?? []
   const continuation = backend.continuation

@@ -295,11 +295,15 @@ The interaction is deliberately **inspect → propose → approve → apply → 
 - A proposal is tied to its workspace revision. Human edits remain available while
   the assistant thinks; a changed revision makes an old proposal stale rather than
   allowing it to overwrite newer work.
+  The editor temporarily locks while approved mutations are being saved, so a
+  newly selected node cannot discard text entered during that commit.
 - Results are reported back to the session. If reporting fails after local execution,
   **Retry reporting result** resends only the receipt, never the tree mutation or run.
   If the backend session has expired, **Discard unreported receipt** explicitly
   detaches the chat without undoing or repeating the finished action.
   Sending another chat message explicitly starts the next planning turn.
+  Scoring receipts distinguish completed evaluations from non-applicable scorers;
+  an evaluation producing no scores is not reported as successfully scored.
 
 Install the backend's optional `pyrit[tree_assistant]` extra and configure these
 variables in the backend process:
