@@ -272,7 +272,93 @@ history. It reuses the existing attack, converter, message, and history APIs.
   drafts; evidence snapshots are for inspection, not importing as trusted
   execution history. No credentials belong in converter parameters.
 
-### Strategy plans and future agent assistance
+### Tree assistant (preview)
+
+Open **Assistant** in a tree workspace to start an ephemeral planning conversation.
+The assistant uses **Microsoft Agent Framework on the backend**, with a separately
+configured planning model. It does not reuse the selected attack target.
+
+The interaction is deliberately **inspect → propose → approve → apply → report**:
+
+- Read tools inspect the saved tree, node evidence, and available components.
+  The assistant receives saved prompts, bounded response previews, scorer summaries,
+  and configuration—not unsaved editor text or archived attempts.
+- Mutation tools stage typed proposals for additions, draft edits, child variants,
+  samples, forks, retries, keeping and pruning. They never write the tree themselves.
+- Run and scoring proposals name an explicit node set and show planned operations.
+  The existing execution engine enforces history, scorer identity, budgets,
+  cancellation, and evidence recovery.
+- **Every proposal requires approval**, independent of the workspace's manual-run
+  confirmation setting. Approving edits never triggers auto-run—even when auto-run
+  is enabled. A retry edit archives the attempt and prepares drafts; execution is a
+  separate approval.
+- A proposal is tied to its workspace revision. Human edits remain available while
+  the assistant thinks; a changed revision makes an old proposal stale rather than
+  allowing it to overwrite newer work.
+- Results are reported back to the session. If reporting fails after local execution,
+  **Retry reporting result** resends only the receipt, never the tree mutation or run.
+  If the backend session has expired, **Discard unreported receipt** explicitly
+  detaches the chat without undoing or repeating the finished action.
+  Sending another chat message explicitly starts the next planning turn.
+
+Install the backend's optional `pyrit[tree_assistant]` extra and configure these
+variables in the backend process:
+
+| Variable | Purpose |
+| --- | --- |
+| `PYRIT_TREE_ASSISTANT_MODEL` | Tool-capable planning model or deployment name |
+| `PYRIT_TREE_ASSISTANT_API_KEY` | Server-side credential for that model |
+| `PYRIT_TREE_ASSISTANT_BASE_URL` | Optional OpenAI-compatible Chat Completions base URL |
+
+No credentials are accepted in chat requests or stored in the browser. Existing
+backend authentication applies to session endpoints. Without authentication,
+opaque session IDs act as capabilities; use that mode only for a trusted local
+development environment.
+
+Sessions are **process-local and temporary**: no database migrations, browser chat
+storage, or resumable sessions across restarts. This initial implementation requires
+a single backend worker (or session affinity); it is not a distributed session store.
+Closing/reloading the browser does not provide durable chat recovery. Local tree
+workspaces and backend attack evidence retain their existing persistence behavior.
+Idle sessions expire after one hour. The process admits at most 64 sessions,
+50 completed turns per session, and one in-flight turn per session. Each turn has
+a 90-second timeout, at most 16 tool invocations, bounded tool output, and bounded
+history; assistant-model calls have their own limits, separate from target-run budgets.
+
+The application API is independent of Agent Framework's internal message format:
+
+| Endpoint | Behavior |
+| --- | --- |
+| `POST /api/tree-assistant/sessions` | Create a workspace-bound session without a model call |
+| `GET /api/tree-assistant/sessions/{id}` | Read completed chat turns and proposal results |
+| `POST /api/tree-assistant/sessions/{id}/messages` | Run one bounded planning turn using saved context and an idempotency ID |
+| `POST /api/tree-assistant/sessions/{id}/proposals/{proposal_id}/result` | Record an applied/rejected/failed client receipt without a model call |
+| `DELETE /api/tree-assistant/sessions/{id}` | Discard ephemeral session state |
+
+The agent has no shell, arbitrary Python, filesystem, generic HTTP, or direct
+attack-send tool. Proposal tools reuse a deliberately restricted subset of the
+tree command contract. Approval and execution stay outside the LLM tool loop.
+Streaming transport, persisted sessions, unattended exploration, and richer
+multi-agent strategies can be added behind these boundaries rather than creating
+a second tree mutation engine.
+
+Run the deterministic full-stack assistant tests after installing the optional
+backend extra and frontend dependencies:
+
+```bash
+cd frontend
+npm run test:e2e:assistant
+```
+
+This suite starts isolated backend/frontend servers and a local OpenAI-compatible
+model fixture. Agent Framework sessions, tool invocation, APIs, tree mutation,
+and attack evidence remain real; no remote model credentials are needed.
+Set `PYRIT_E2E_PYTHON` to select a Python executable with the extra installed.
+`PYRIT_E2E_BACKEND_PORT` and `E2E_FRONTEND_PORT` override the dedicated test ports.
+On narrow screens the **Assistant** toggle switches between chat and the tree
+panes so the message composer remains accessible.
+
+### Strategy plan format
 
 A "seed vector" is represented as a **versioned declarative plan**, not an
 embedding or executable skill file:

@@ -1026,3 +1026,76 @@ export interface TreeContinuation {
   nodes: TreeNode[]
   pendingMessages: number
 }
+
+export type TreeAssistantMutation = Extract<TreeCommand, {
+  type: 'add' | 'edit' | 'childVariants' | 'sample' | 'fork' | 'retry' | 'prune' | 'keep'
+}>
+
+export type TreeAssistantAction =
+  | { kind: 'mutate'; commands: TreeAssistantMutation[] }
+  | { kind: 'run' | 'score'; node_ids: string[] }
+
+export interface TreeAssistantReceipt {
+  status: 'applied' | 'rejected' | 'failed'
+  revision: number
+  detail: string
+}
+
+export interface TreeAssistantProposal {
+  id: string
+  workspace_id: string
+  base_revision: number
+  summary: string
+  action: TreeAssistantAction
+  status: 'pending' | 'applied' | 'rejected' | 'failed'
+  result?: TreeAssistantReceipt | null
+}
+
+export interface TreeAssistantNode {
+  id: string
+  parent_id: string | null
+  attempt_id: string
+  prompt: string
+  converters: TreeConverterSpec[]
+  status: TreeNode['status']
+  pruned: boolean
+  kept: boolean
+  response_preview: string
+  response_truncated: boolean
+  score_summary: string
+  error?: string
+  attack_result_id?: string
+  conversation_id?: string
+  last_sequence?: number
+}
+
+export interface TreeAssistantContext {
+  workspace_id: string
+  revision: number
+  name: string
+  objective: string
+  target_registry_name: string
+  target_identifier_hash: string
+  selected_node_id: string | null
+  nodes: TreeAssistantNode[]
+  settings: {
+    traversal: TreeSettings['traversal']
+    concurrency: number
+    operation_budget: number
+    scorer_ids: string[]
+  }
+}
+
+export interface TreeAssistantTurn {
+  request_id: string
+  message: string
+  reply: string
+  proposals: TreeAssistantProposal[]
+}
+
+export interface TreeAssistantSession {
+  session_id: string
+  workspace_id: string
+  model: string
+  turns: TreeAssistantTurn[]
+}

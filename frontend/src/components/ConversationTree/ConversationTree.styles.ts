@@ -36,7 +36,11 @@ export const useConversationTreeStyles = makeStyles({
     flex: 1,
     minHeight: 0,
     minWidth: 0,
-    [NARROW_VIEWPORT_QUERY]: { flexDirection: 'column', overflowY: 'auto' },
+    [NARROW_VIEWPORT_QUERY]: {
+      flexDirection: 'column',
+      overflowY: 'auto',
+      '&[data-assistant="true"] > :not([aria-label="Tree assistant"])': { display: 'none' },
+    },
   },
   outline: {
     width: '12rem',

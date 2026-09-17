@@ -9,7 +9,8 @@ import { BranchForkRegular, MoreHorizontalRegular } from '@fluentui/react-icons'
 import { convertersApi, scorersApi, targetsApi } from '@/services/api'
 import { toApiError } from '@/services/errors'
 import type {
-  BackendScore, ConverterCatalogEntry, TargetInstance, TreeCommand, TreeNode, TreeScoreRun, TreeSettings, TreeWorkspace,
+  BackendScore, ConverterCatalogEntry, TargetInstance, TreeAssistantProposal, TreeAssistantReceipt,
+  TreeCommand, TreeNode, TreeScoreRun, TreeSettings, TreeWorkspace,
 } from '@/types'
 import { downloadTextFile } from '@/utils/conversationExport'
 import { fetchAllPages } from '@/utils/fetchAllPages'
@@ -29,6 +30,8 @@ import {
 import { deleteTreeWorkspace, listTreeWorkspaces, loadTreeWorkspace, saveTreeWorkspace, TREE_STORAGE_PREFIX } from './treeStorage'
 import { captureTreeUndo, reverseTreeUndo, type TreeUndoEntry } from './treeUndo'
 import { discoverTreeContinuation } from './treeHistory'
+import TreeAssistantPanel from './TreeAssistantPanel'
+import { prepareAssistantProposal } from './treeAssistant'
 
 interface ConversationTreeProps {
   activeTarget: TargetInstance | null
@@ -108,6 +111,11 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   const scoringTail = useRef<Promise<void>>(Promise.resolve())
   const [focusedGroupId, setFocusedGroupId] = useState<string | null>(null)
   const [activityOpen, setActivityOpen] = useState(false)
+  const [assistantOpen, setAssistantOpen] = useState(false)
+  const [assistantBusy, setAssistantBusy] = useState(false)
+  const assistantPending = useRef(false)
+  const assistantApplying = useRef(false)
+  const assistantReceipts = useRef(new Map<string, { fingerprint: string; result: Promise<TreeAssistantReceipt> }>())
   const [lastRun, setLastRun] = useState<RunRecord | null>(null)
   const [undo, setUndo] = useState<TreeUndoEntry[]>([])
   const [redo, setRedo] = useState<TreeUndoEntry[]>([])
@@ -134,6 +142,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
     setUndo([]); setRedo([])
     setNotice(''); setError('')
     dirtyRef.current = false; setDirty(false)
+    assistantReceipts.current.clear()
   }
 
   function mutate(operation: (base: TreeWorkspace) => TreeWorkspace): Promise<TreeWorkspace> {
@@ -167,7 +176,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   useEffect(() => {
     mounted.current = true
     function beforeUnload(event: BeforeUnloadEvent): void {
-      if (running.current || dirtyRef.current || recoveryRef.current || pendingWrites.current) {
+      if (running.current || dirtyRef.current || recoveryRef.current || pendingWrites.current || assistantPending.current) {
         event.preventDefault(); event.returnValue = ''
       }
     }
@@ -244,10 +253,15 @@ export default function ConversationTree({ activeTarget, labels, active = true }
     return { kind, workspaceId: snapshot.id, revision: snapshot.revision, nodeIds, operations }
   }
 
-  async function execute(approved: Proposal): Promise<void> {
-    if (running.current || recoveryRef.current || !current.current) return
+  async function execute(approved: Proposal): Promise<TreeAssistantReceipt> {
+    if (running.current || recoveryRef.current || !current.current) {
+      return { status: 'failed', revision: current.current?.revision ?? approved.revision, detail: 'Execution is busy or requires recovery.' }
+    }
     const snapshot = current.current
-    if (snapshot.id !== approved.workspaceId || snapshot.revision !== approved.revision) { setError('Workspace changed. Review the run again.'); return }
+    if (snapshot.id !== approved.workspaceId || snapshot.revision !== approved.revision) {
+      setError('Workspace changed. Review the run again.')
+      return { status: 'failed', revision: snapshot.revision, detail: 'Workspace changed. Review the run again.' }
+    }
     running.current = true; stopped.current = false
     const record = { id: crypto.randomUUID(), workspaceId: snapshot.id, nodeIds: approved.nodeIds }
     setRun(record)
@@ -284,8 +298,67 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         })
       }
       if (mounted.current) setNotice(stopped.current ? 'Stopped after all in-flight requests settled.' : 'Run finished. Changed or blocked queued branches remain drafts.')
-    } catch (failure) { if (mounted.current) fail(failure) }
+      const latest = current.current ?? snapshot
+      const succeeded = approved.nodeIds.filter((id) => {
+        const node = latest.nodes.find((item) => item.id === id)
+        if (approved.kind === 'run' && (!node || node.status !== 'completed')) return false
+        if (approved.kind === 'run' && !settings.autoScore) return true
+        return settings.scorers.every((scorer) => {
+          const pass = node?.scoreRuns?.filter((result) => result.scorerId === scorer.scorer_id).slice(-1)[0]
+          const before = snapshot.nodes.find((item) => item.id === id)?.scoreRuns ?? []
+          return pass && pass.status !== 'error' && !before.some((old) => old.id === pass.id)
+        })
+      }).length
+      const complete = succeeded === approved.nodeIds.length && !stopped.current
+      return {
+        status: complete ? 'applied' : 'failed', revision: latest.revision,
+        detail: `${succeeded}/${approved.nodeIds.length} ${approved.kind === 'run' ? `nodes completed${settings.autoScore ? ' with configured scoring' : ''}` : 'responses scored'}${stopped.current ? '; stopped by the user' : ''}. Inspect failures or skipped nodes before retrying.`,
+      }
+    } catch (failure) {
+      if (mounted.current) fail(failure)
+      return { status: 'failed', revision: current.current?.revision ?? snapshot.revision,
+        detail: failure instanceof Error ? failure.message : toApiError(failure).detail }
+    }
     finally { running.current = false; if (mounted.current) setRun(null) }
+  }
+
+  function applyAssistantProposal(proposed: TreeAssistantProposal): Promise<TreeAssistantReceipt> {
+    const fingerprint = JSON.stringify(proposed)
+    const existing = assistantReceipts.current.get(proposed.id)
+    if (existing) {
+      return existing.fingerprint === fingerprint ? existing.result : Promise.reject(new Error('Proposal identity changed.'))
+    }
+    const result = (async (): Promise<TreeAssistantReceipt> => {
+      const base = current.current
+      if (!base || !active || dirtyRef.current || running.current || recoveryRef.current || pendingWrites.current
+        || recoveringRef.current || importingHistoryRef.current || assistantApplying.current || proposal !== null) {
+        throw new Error('Finish editing, running, or recovering the tree before approving an assistant action.')
+      }
+      assistantApplying.current = true
+      try {
+        const prepared = prepareAssistantProposal(base, proposed)
+        if (prepared.kind !== 'mutate') return await execute(planned(base, prepared.nodeIds, prepared.kind))
+        const saved = await mutate((latest) => {
+          const action = prepareAssistantProposal(latest, proposed)
+          if (action.kind !== 'mutate') throw new Error('The proposed action changed.')
+          return action.workspace
+        })
+        const added = saved.nodes.filter((node) => !base.nodes.some((old) => old.id === node.id))
+        const edit = captureTreeUndo(base, saved)
+        if (!added.length && (edit.nodes.length || edit.groups)) {
+          setUndo((items) => [...items.slice(-19), edit]); setRedo([])
+        }
+        if (added[0]) setSelectedId(added[0].id)
+        setFocusedGroupId(null)
+        setNotice('Approved assistant edits saved. No target requests were sent.')
+        return { status: 'applied', revision: saved.revision, detail: `Saved ${proposed.action.kind === 'mutate' ? proposed.action.commands.length : 0} approved edits; ${added.length} new draft nodes. No model calls.` }
+      } finally { assistantApplying.current = false }
+    })().catch((failure: unknown): TreeAssistantReceipt => ({
+      status: 'failed', revision: current.current?.revision ?? proposed.base_revision,
+      detail: failure instanceof Error ? failure.message : toApiError(failure).detail,
+    }))
+    assistantReceipts.current.set(proposed.id, { fingerprint, result })
+    return result
   }
 
   function requestRun(snapshot: TreeWorkspace, ids: string[], kind: Proposal['kind'] = 'run', automatic = false): void {
@@ -419,7 +492,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   const selected = (recovery ?? workspace)?.nodes.find((node) => node.id === selectedId)
   const settings = workspace ? getTreeSettings(workspace) : null
   const locked = recovery !== null || recovering || writes > 0 || importingHistory
-  const viewLocked = locked || run !== null || dirty
+  const viewLocked = locked || run !== null || dirty || assistantBusy
   const selectedLocked = recovery !== null || recovering || importingHistory
   const group = workspace?.groups?.find((entry) => selected && entry.nodeIds.includes(selected.id))
   const visible = workspace?.nodes.filter((node) => showPruned || !isNodeHidden(workspace, node.id)) ?? []
@@ -475,6 +548,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
           <Button className={styles.button} disabled={viewLocked || !undo.length} onClick={() => { void undoEdit(false) }}>Undo edit</Button>
           <Button className={styles.button} disabled={viewLocked || !redo.length} onClick={() => { void undoEdit(true) }}>Redo edit</Button>
           <Button className={styles.button} aria-pressed={activityOpen} onClick={() => { setActivityOpen(!activityOpen) }}>Activity</Button>
+          <Button className={styles.button} aria-pressed={assistantOpen} onClick={() => { setAssistantOpen(!assistantOpen) }}>Assistant</Button>
           <Button className={styles.button} onClick={() => { setDialog('scoring') }}>Scoring</Button>
           <Button className={styles.button} disabled={viewLocked || !settings.scorers.length} onClick={() => { askScore() }}>Score existing responses</Button>
           <div className={styles.spacer} />
@@ -497,7 +571,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
             <Text className={styles.muted}>Changed inputs and failed-parent branches are not dispatched. Stop waits for in-flight evidence.</Text>
           </>}
         </section>}
-        <div className={styles.body}>
+        <div className={styles.body} data-assistant={assistantOpen}>
           <aside className={styles.outline} aria-label="Tree outline"><div className={styles.stack}>
             <Text weight="semibold">Branches</Text>
             {visible.map((node) => <Button key={node.id} className={styles.outlineButton}
@@ -552,6 +626,11 @@ export default function ConversationTree({ activeTarget, labels, active = true }
               onScore={askScore} onMarkdownChange={(markdown) => { void commitCommand({ type: 'settings', settings: { ...settings, markdown } }) }}
               onDirtyChange={(value) => { dirtyRef.current = value; setDirty(value) }} />}
           </aside>
+          <TreeAssistantPanel key={`assistant-${workspace.id}`} workspace={workspace} selectedId={selectedId} active={active && assistantOpen}
+            disabled={locked || !!run || dirty || proposal !== null} onApply={applyAssistantProposal} onBusyChange={(busy) => {
+              assistantPending.current = busy
+              setAssistantBusy(busy)
+            }} />
         </div>
       </> : <section className={styles.empty}>
         <Text as="h2" size={700}>Explore conversations, not just prompts.</Text>

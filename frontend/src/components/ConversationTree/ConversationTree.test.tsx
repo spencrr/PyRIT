@@ -5,7 +5,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { convertersApi, scorersApi, targetsApi } from '@/services/api'
-import type { TreeWorkspace } from '@/types'
+import type { TreeAssistantProposal, TreeAssistantReceipt, TreeWorkspace } from '@/types'
 
 import ConversationTree from './ConversationTree'
 import { runTree, TreePersistenceError } from './treeExecution'
@@ -27,6 +27,15 @@ jest.mock('./treeStorage', () => ({
 }))
 jest.mock('./TreeCanvas', () => ({ __esModule: true, default: () => <section aria-label="Conversation graph" /> }))
 jest.mock('./treeHistory', () => ({ discoverTreeContinuation: jest.fn() }))
+let mockAssistantProposal: TreeAssistantProposal | null = null
+let mockAssistantResults: TreeAssistantReceipt[] = []
+jest.mock('./TreeAssistantPanel', () => ({
+  __esModule: true,
+  default: ({ onApply, disabled }: { onApply: (proposal: TreeAssistantProposal) => Promise<TreeAssistantReceipt>; disabled: boolean }) =>
+    <button disabled={disabled} onClick={() => {
+      if (mockAssistantProposal) void onApply(mockAssistantProposal).then((result) => { mockAssistantResults.push(result) })
+    }}>Approve assistant test proposal</button>,
+}))
 
 function TestWrapper({ children }: { children: ReactNode }) {
   return <FluentProvider theme={webLightTheme}>{children}</FluentProvider>
@@ -40,6 +49,8 @@ function fixture(): TreeWorkspace {
 describe('ConversationTree', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    mockAssistantProposal = null
+    mockAssistantResults = []
     jest.mocked(targetsApi.listTargets).mockResolvedValue({ items: [], pagination: { limit: 100, has_more: false } })
     jest.mocked(convertersApi.listConverterCatalog).mockResolvedValue({ items: [] })
     jest.mocked(listTreeWorkspaces).mockReturnValue([fixture()])
@@ -259,5 +270,77 @@ describe('ConversationTree', () => {
     await user.click(screen.getByRole('button', { name: 'Score existing responses', exact: true }))
     expect(await screen.findByText('No eligible nodes in this selection.')).toBeVisible()
     expect(scorersApi.score).not.toHaveBeenCalled()
+  })
+
+  it('applies an approved assistant edit once without auto-running newly added nodes', async () => {
+    const user = userEvent.setup()
+    const tree = fixture()
+    tree.settings = { ...getTreeSettings(tree), autoRun: true, confirmRuns: false }
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    mockAssistantProposal = { id: 'assistant-add', workspace_id: tree.id, base_revision: tree.revision, summary: 'Add child', status: 'pending',
+      action: { kind: 'mutate', commands: [{ type: 'add', parentId: tree.nodes[0].id, prompt: 'Agent-proposed child', converters: [] }] } }
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
+    await waitFor(() => expect(mockAssistantResults).toHaveLength(1))
+    expect(mockAssistantResults[0]).toMatchObject({ status: 'applied', revision: 1, detail: expect.stringContaining('No model calls') })
+    await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
+    await waitFor(() => expect(mockAssistantResults).toHaveLength(2))
+    expect(saveTreeWorkspace).toHaveBeenCalledTimes(1)
+    expect(runTree).not.toHaveBeenCalled()
+    expect(jest.mocked(saveTreeWorkspace).mock.calls[0][0].nodes[1]).toMatchObject({ prompt: 'Agent-proposed child', status: 'draft' })
+  })
+
+  it('rejects assistant proposals after a human edit without overwriting it', async () => {
+    const user = userEvent.setup()
+    const tree = fixture()
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    mockAssistantProposal = { id: 'stale-edit', workspace_id: tree.id, base_revision: tree.revision, summary: 'Edit root', status: 'pending',
+      action: { kind: 'mutate', commands: [{ type: 'edit', nodeId: tree.nodes[0].id, prompt: 'Agent edit', converters: [] }] } }
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.clear(screen.getByLabelText('Prompt'))
+    await user.type(screen.getByLabelText('Prompt'), 'Human edit')
+    expect(screen.getByRole('button', { name: 'Approve assistant test proposal' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Save draft' }))
+    await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
+    await waitFor(() => expect(mockAssistantResults).toHaveLength(1))
+    expect(mockAssistantResults[0]).toMatchObject({ status: 'failed', detail: expect.stringContaining('tree changed') })
+    expect(screen.getByLabelText('Prompt')).toHaveValue('Human edit')
+    expect(saveTreeWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  it('approves retry edits without sending and retains the archived attempt', async () => {
+    const user = userEvent.setup()
+    const tree = fixture()
+    tree.nodes[0] = { ...tree.nodes[0], status: 'error', error: 'Prior failure' }
+    tree.settings = { ...getTreeSettings(tree), autoRun: true, confirmRuns: false }
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    mockAssistantProposal = { id: 'retry', workspace_id: tree.id, base_revision: tree.revision, summary: 'Retry preparation', status: 'pending',
+      action: { kind: 'mutate', commands: [{ type: 'retry', nodeId: tree.nodes[0].id, scope: 'node' }] } }
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
+    await waitFor(() => expect(mockAssistantResults[0]?.status).toBe('applied'))
+    expect(runTree).not.toHaveBeenCalled()
+    expect(jest.mocked(saveTreeWorkspace).mock.calls[0][0].nodes[0]).toMatchObject({ status: 'draft', attempts: [expect.objectContaining({ error: 'Prior failure' })] })
+  })
+
+  it('reports failed execution honestly and dispatches only the approved node scope', async () => {
+    const user = userEvent.setup()
+    const root = fixture()
+    const tree = applyTreeCommand(root, { type: 'add', parentId: null, prompt: 'Not approved' })
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    mockAssistantProposal = { id: 'run', workspace_id: tree.id, base_revision: tree.revision, summary: 'Run one', status: 'pending',
+      action: { kind: 'run', node_ids: [tree.nodes[0].id] } }
+    jest.mocked(runTree).mockImplementation(async (workspace, options) => {
+      const node = workspace.nodes[0]
+      if (!options.commitNodeUpdate || !options.getLatest) throw new Error('Missing controller integration')
+      await options.commitNodeUpdate(node.id, node, { status: 'error', error: 'Target failed' })
+      return options.getLatest()
+    })
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
+    await waitFor(() => expect(mockAssistantResults[0]?.status).toBe('failed'))
+    expect(mockAssistantResults[0].detail).toContain('0/1 nodes completed')
+    expect(jest.mocked(runTree).mock.calls[0][1].nodeIds).toEqual([tree.nodes[0].id])
+    expect(jest.mocked(saveTreeWorkspace).mock.calls[0][0].nodes[1].status).toBe('draft')
   })
 })

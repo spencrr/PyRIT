@@ -56,7 +56,7 @@ export default defineConfig({
     {
       name: "mock",
       use: { ...devices["Desktop Chrome"] },
-      grepInvert: /@seeded|@live/,
+      grepInvert: /@seeded|@live|@assistant/,
     },
     {
       name: "seeded",
