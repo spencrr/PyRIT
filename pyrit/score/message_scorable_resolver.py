@@ -58,6 +58,9 @@ class MessageScorableResolver:
 
     @staticmethod
     def _resolve_message_reference(*, scorable: MessageScorable, memory: MemoryInterface) -> Message:
+        if scorable.message_pieces_snapshot is not None:
+            return MessageScorableResolver._resolve_message_snapshot(scorable=scorable)
+
         pieces = memory.get_message_pieces(prompt_ids=list(scorable.message_piece_ids))
         wanted = {str(piece_id) for piece_id in scorable.message_piece_ids}
         pieces = [piece for piece in pieces if str(piece.id) in wanted]
@@ -78,6 +81,19 @@ class MessageScorableResolver:
         by_id = {str(piece.id): piece for piece in resolved.message_pieces}
         resolved.message_pieces = [by_id[str(piece_id)] for piece_id in scorable.message_piece_ids]
         return resolved
+
+    @staticmethod
+    def _resolve_message_snapshot(*, scorable: MessageScorable) -> Message:
+        snapshots = scorable.message_pieces_snapshot
+        if snapshots is None:
+            raise ValueError("A message snapshot is required to resolve snapshot-backed message scorables.")
+
+        by_id = {str(piece["id"]): MessagePiece.model_validate(piece).model_copy(deep=True) for piece in snapshots}
+        missing = [str(piece_id) for piece_id in scorable.message_piece_ids if str(piece_id) not in by_id]
+        if missing:
+            raise ValueError(f"MessageScorable snapshot is missing pieces {missing}.")
+
+        return Message(message_pieces=[by_id[str(piece_id)] for piece_id in scorable.message_piece_ids])
 
     @staticmethod
     def _adapt_content(*, scorable: ContentScorable) -> Message:
