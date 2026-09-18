@@ -40,10 +40,15 @@ export const useConversationTreeStyles = makeStyles({
     [NARROW_VIEWPORT_QUERY]: {
       flexDirection: 'column',
       overflowY: 'auto',
+      '&[data-dock="assistant"] > :not([aria-label="Tree assistant"])': { display: 'none' },
       '&[data-dock="inspect"] > :not([aria-label="Turn inspector"])': { display: 'none' },
       '&[data-dock="graph"] > [aria-label="Turn inspector"]': { display: 'none' },
     },
     '& > [hidden]': { display: 'none' },
+    '&[data-dock="assistant"] > [aria-label="Turn inspector"]': { display: 'none' },
+    '@media (min-width: 1400px)': {
+      '&[data-split="true"] > [aria-label="Turn inspector"]': { display: 'flex' },
+    },
   },
   outline: {
     width: '12rem',
@@ -103,6 +108,7 @@ export const useConversationTreeStyles = makeStyles({
     [NARROW_VIEWPORT_QUERY]: { width: 'auto', flex: 1, minHeight: 0, overflowY: 'auto' },
   },
   mobileOnly: { display: 'none', [NARROW_VIEWPORT_QUERY]: { display: 'inline-flex' } },
+  wideOnly: { '@media (max-width: 1399px)': { display: 'none' } },
   workspaceStatus: {
     display: 'flex',
     flexWrap: 'wrap',

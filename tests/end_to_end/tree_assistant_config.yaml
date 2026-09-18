@@ -1,0 +1,6 @@
+memory_db_type: in_memory
+initializers: []
+initialization_scripts: []
+env_files: []
+env_akv_ref: []
+allow_custom_initializers: false

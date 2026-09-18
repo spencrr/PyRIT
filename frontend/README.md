@@ -189,8 +189,9 @@ authorized, human-directed evaluations of multi-turn text targets with editable
 history. It reuses the existing attack, converter, message, and history APIs.
 
 - **Workbench:** the graph stays central, with a collapsible **Branches** outline
-  and an **Inspect** detail pane. Narrow screens use **Graph** or **Inspect**
-  without unmounting drafts or conversation state.
+  and one **Inspect / Assistant** detail pane. On wide screens, **Show both detail
+  panes** is an explicit workspace-menu option. Narrow screens use **Graph**,
+  **Inspect**, or **Assistant** without unmounting drafts or conversation state.
 - **Workspace options:** the three-dot menu collects new/import/export, display,
   undo/redo, workspace settings and scoring instead of competing with the graph.
   Choose breadth-first (BFS) or depth-first (DFS), an operation budget (default
@@ -344,6 +345,153 @@ history. It reuses the existing attack, converter, message, and history APIs.
   drafts; evidence snapshots are for inspection, not importing as trusted
   execution history. No credentials belong in converter parameters.
 
+### Tree assistant (preview)
+
+Open **Assistant** in a tree workspace to start or resume a planning conversation.
+The assistant uses **Microsoft Agent Framework on the backend**, with a separately
+configured planning model. It does not reuse the selected attack target.
+
+The interaction is deliberately **inspect → propose → approve → apply → report**:
+
+- Read tools inspect the saved tree, node evidence, and available components.
+  **No human approval is needed for these read-only calls.** Tree context is deferred:
+  a compact outline provides topology, status and short prompt previews; node and
+  evidence tools retrieve details when needed instead of embedding the whole tree
+  in each planning message. The full workspace objective is available through
+  bounded, paginated reads, so constraints beyond its preview remain accessible.
+  Tools read saved state, not unsaved editor text.
+- Mutation tools stage typed proposals for additions, draft edits, child variants,
+  samples, forks, retries, keeping and pruning. They never write the tree themselves.
+- Run and scoring proposals name an explicit node set and show planned operations.
+  The existing execution engine enforces history, scorer identity, budgets,
+  cancellation, and evidence recovery.
+- **Every proposal requires approval**, independent of the workspace's
+  manual-run confirmation setting. Approving ordinary edits never triggers
+  auto-run—even when auto-run is enabled. A multi-level plan explicitly states
+  whether approval also runs its new drafts.
+- **Multi-level plans** describe ordered steps with a local step ID and an explicit
+  existing-node or earlier-step parent reference. The whole plan is validated and
+  added atomically. Cycles, forward references, unknown parents and oversized plans
+  are rejected. Running a plan sends only its new nodes; it never silently includes
+  an unrun ancestor.
+- Proposals carry host-captured semantic preconditions. Arranging cards or changing
+  display preferences does not invalidate approval; changes to prompts, topology,
+  evidence, targets, scorers or execution policies require re-planning. Every save
+  still compares the current storage revision and retains the latest layout.
+  The editor temporarily locks while approved mutations are being saved, so a
+  newly selected node cannot discard text entered during that commit.
+- Results are reported back to the session. If reporting fails after local execution,
+  **Retry reporting result** resends only the receipt, never the tree mutation or run.
+  If the backend session has expired, **Discard unreported receipt** explicitly
+  detaches the chat without undoing or repeating the finished action.
+  Sending another chat message explicitly starts the next planning turn.
+  Scoring receipts distinguish completed evaluations from non-applicable scorers;
+  an evaluation producing no scores is not reported as successfully scored.
+
+Install the backend's optional `pyrit[tree_assistant]` extra and configure these
+variables in the backend process:
+
+| Variable | Purpose |
+| --- | --- |
+| `PYRIT_TREE_ASSISTANT_MODEL` | Tool-capable planning model or deployment name |
+| `PYRIT_TREE_ASSISTANT_API_KEY` | Server-side credential for that model |
+| `PYRIT_TREE_ASSISTANT_API` | `chat_completions` (default) or `responses` |
+| `PYRIT_TREE_ASSISTANT_BASE_URL` | Optional OpenAI-compatible base URL, ending in `/v1` (not a specific API route) |
+
+Set `PYRIT_TREE_ASSISTANT_API=responses` for deployments requiring the Responses
+API. The assistant then sends to `/v1/responses`; the default continues to use
+`/v1/chat/completions`. Tool calling and explicit proposal approvals work with
+either transport. Restart the backend and start a new assistant session after
+changing the setting. Both transports use `store=false` and retain conversation
+history locally in the ephemeral session, rather than relying on stored response IDs.
+For the local Azure-auth proxy, use `http://127.0.0.1:4000/v1` as the base URL and
+ensure the proxy forwards `/v1/responses` when Responses mode is selected.
+
+Planning-provider credentials stay on the backend; chat requests do not configure
+them. Existing backend authentication applies to session endpoints. Without authentication,
+opaque session IDs act as capabilities; use that mode only for a trusted local
+development environment.
+
+Chat checkpoints are versioned and saved in **localStorage per workspace**, including
+the transcript, draft text, completed tool traces, context summaries, proposal
+results and any unresolved operation. **Resume session** reconnects to a live backend
+session; if it has expired, it restores conversation history into a fresh session.
+Restored history is data, not executable tool calls or authoritative system policy.
+Old pending proposals from an expired session must be re-planned.
+Up to the latest 50 conversation turns restore model context; older turns remain in
+a local archive and in chat exports. Prior tool payloads and server instructions
+are not re-injected as model history. **Restart with context** rotates the backend
+session while retaining the conversation; it never replays actions or grants.
+Model context has a separate byte budget, with a visible restoration notice when
+fewer recent turns fit; the local transcript is not deleted.
+The local archive is bounded to 1,000 turns and the checkpoint to 2 MiB; reaching
+either limit pauses chat for explicit export/recovery, not silent deletion.
+
+Saving an action's execution marker happens before applying it. If reload interrupts
+an action, the UI requires review of the tree/backend outcome rather than guessing
+whether it finished or replaying it. Checkpoint conflicts and quota failures stop
+new actions and preserve an exportable local snapshot.
+If the checkpoint has reached its storage limit, **Export and clear local chat**
+requests a download of the retained transcript. Separately confirm that you saved
+the file before the checkpoint is removed; cancel if the browser blocked or canceled
+the download. Clearing never replays or undoes an action. Review any exported
+interrupted-action or unreported receipt records before beginning again.
+Only one tab can write a workspace's chat at a time: a Web Locks lease protects
+the transcript and action journal. A second tab is read-only until the first is
+closed and the second reloaded.
+
+Backend sessions remain process-local; a single worker (or session affinity) is
+required while a session is live. Browser storage is not encrypted or cross-device
+synchronization and may contain sensitive evaluation content. Provider credentials
+and authentication headers are not included in telemetry. Text you enter is
+preserved, so do not paste secrets into chat or evaluation prompts. **Export chat** downloads a basic
+versioned JSON transcript, tools, context and results without the live session token.
+Idle sessions expire after one hour. The process admits at most 64 sessions,
+50 fresh completed turns per session (restored turns do not consume this allowance),
+and one in-flight turn per session. Each turn has
+a 90-second timeout, at most 16 tool invocations, bounded tool output, and bounded
+history; assistant-model calls have their own limits, separate from target-run budgets.
+
+**Tool/context details** on each completed turn show tool arguments, returned data,
+status, timing and truncation; model/transport, selected node, workspace revision,
+instructions and available tool names; and token usage when supplied by the provider.
+These are observable execution records, not hidden model reasoning.
+
+### Assistant session API
+
+The application API is independent of Agent Framework's internal message format:
+
+| Endpoint | Behavior |
+| --- | --- |
+| `POST /api/tree-assistant/sessions` | Create a workspace-bound session, optionally restoring bounded history, without a model call |
+| `GET /api/tree-assistant/sessions/{id}` | Read completed chat turns and proposal results |
+| `POST /api/tree-assistant/sessions/{id}/messages` | Run one bounded planning turn using saved context and an idempotency ID |
+| `POST /api/tree-assistant/sessions/{id}/proposals/{proposal_id}/result` | Record an applied/rejected/failed client receipt without a model call |
+| `DELETE /api/tree-assistant/sessions/{id}` | Discard ephemeral session state |
+
+The agent has no shell, arbitrary Python, filesystem, generic HTTP, or direct
+attack-send tool. Proposal tools reuse a deliberately restricted subset of the
+tree command contract. Approval and execution stay outside the LLM tool loop.
+Streaming transport, a server-side durable session store and richer multi-agent
+strategies can be added behind these boundaries rather than creating a second
+tree mutation engine.
+
+Run the deterministic full-stack assistant tests after installing the optional
+backend extra and frontend dependencies:
+
+```bash
+cd frontend
+npm run test:e2e:assistant
+```
+
+This suite starts isolated backend/frontend servers and a local OpenAI-compatible
+model fixture. Agent Framework sessions, tool invocation, APIs, tree mutation,
+and attack evidence remain real; no remote model credentials are needed.
+Set `PYRIT_E2E_PYTHON` to select a Python executable with the extra installed.
+`PYRIT_E2E_BACKEND_PORT` and `E2E_FRONTEND_PORT` override the dedicated test ports.
+On narrow screens the **Assistant** toggle switches between chat and the tree
+panes so the message composer remains accessible.
+
 ### Strategy plan format
 
 A "seed vector" is represented as a **versioned declarative plan**, not an
@@ -373,7 +521,8 @@ embedding or executable skill file:
 Plans are bounded to 300 nodes. Parent references encode sequences and branches;
 converter entries contain `type` and `params`. Import validates the schema and
 graph and does not execute code. Target, labels and system prompt are selected
-when creating the workspace.
+when creating the workspace. The assistant can propose multi-level draft plans
+and explicitly requested execution, using the same commands as human editing.
 Plans do not encode executable conditions or implement research attack algorithms.
 Reusable autonomous attack algorithms belong in PyRIT executors, with judgments
 supplied by scorers rather than inferred from response wording in the UI.

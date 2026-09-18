@@ -48,6 +48,11 @@ import type {
   UpdateAttackRequest,
   ScorerCatalogEntry,
   ScorerInstance,
+  TreeAssistantContext,
+  TreeAssistantProposal,
+  TreeAssistantReceipt,
+  TreeAssistantSession,
+  TreeAssistantTurn,
 } from '../types'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
@@ -59,6 +64,28 @@ const apiClient = axios.create({
   },
   timeout: 5 * 60 * 1000, // 5 minutes – video generation can take a while
 })
+
+export const treeAssistantApi = {
+  createSession: async (workspaceId: string, history?: TreeAssistantTurn[]): Promise<TreeAssistantSession> => {
+    const response = await apiClient.post('/tree-assistant/sessions', { workspace_id: workspaceId, ...(history ? { history } : {}) })
+    return response.data
+  },
+  getSession: async (sessionId: string): Promise<TreeAssistantSession> => {
+    const response = await apiClient.get(`/tree-assistant/sessions/${encodeURIComponent(sessionId)}`)
+    return response.data
+  },
+  sendMessage: async (sessionId: string, request: { request_id: string; message: string; context: TreeAssistantContext }): Promise<TreeAssistantTurn> => {
+    const response = await apiClient.post(`/tree-assistant/sessions/${encodeURIComponent(sessionId)}/messages`, request)
+    return response.data
+  },
+  recordResult: async (sessionId: string, proposalId: string, result: TreeAssistantReceipt): Promise<TreeAssistantProposal> => {
+    const response = await apiClient.post(`/tree-assistant/sessions/${encodeURIComponent(sessionId)}/proposals/${encodeURIComponent(proposalId)}/result`, result)
+    return response.data
+  },
+  deleteSession: async (sessionId: string): Promise<void> => {
+    await apiClient.delete(`/tree-assistant/sessions/${encodeURIComponent(sessionId)}`)
+  },
+}
 
 // ---------------------------------------------------------------------------
 // Request interceptor: attach X-Request-ID for log correlation
