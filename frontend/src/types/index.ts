@@ -1277,13 +1277,18 @@ export type TreeAssistantApply = (
   review?: TreeAssistantPreparedProposal,
 ) => Promise<TreeAssistantReceipt>
 
-export type TreeAssistantOperation = 'idle' | 'connecting' | 'sending' | 'recovering' | 'deciding' | 'reporting' | 'reviewing'
+export type TreeAssistantOperation = 'idle' | 'connecting' | 'sending' | 'recovering' | 'deciding' | 'reporting' | 'reviewing' | 'sequence'
 
 export type TreeAssistantJournal =
   | { readonly kind: 'ready' }
   | { readonly kind: 'message'; readonly pending: TreeAssistantPendingMessage }
   | { readonly kind: 'execution'; readonly execution: NonNullable<TreeAssistantCheckpoint['executing']> }
   | { readonly kind: 'receipt'; readonly result: TreeAssistantUnreportedResult }
+
+export interface TreeAssistantSequence {
+  request: (message: string, grant: TreeAssistantGrant) => Promise<TreeAssistantTurn>
+  resolve: (proposal: TreeAssistantProposal, grant: TreeAssistantGrant, review: TreeAssistantPreparedProposal) => Promise<TreeAssistantReceipt>
+}
 
 export interface TreeAssistantReceipt {
   status: 'applied' | 'rejected' | 'failed'

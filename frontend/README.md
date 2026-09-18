@@ -365,7 +365,7 @@ The interaction is deliberately **inspect → propose → approve → apply → 
 - Run and scoring proposals name an explicit node set and show planned operations.
   The existing execution engine enforces history, scorer identity, budgets,
   cancellation, and evidence recovery.
-- **Every proposal requires approval**, independent of the workspace's
+- By default, **every proposal requires approval**, independent of the workspace's
   manual-run confirmation setting. Approving ordinary edits never triggers
   auto-run—even when auto-run is enabled. A multi-level plan explicitly states
   whether approval also runs its new drafts.
@@ -456,6 +456,23 @@ history; assistant-model calls have their own limits, separate from target-run b
 status, timing and truncation; model/transport, selected node, workspace revision,
 instructions and available tool names; and token usage when supplied by the provider.
 These are observable execution records, not hidden model reasoning.
+
+### Bounded subtree autonomy
+
+Open **Bounded autonomy**, select a subtree root, enter a goal and operation budget,
+then explicitly grant permission. Within that grant the assistant can propose and
+apply edits, run drafts, and score observed responses without a second click for each
+action. Planning still uses the same typed proposal and canonical execution paths.
+
+- Scope includes the selected node and descendants. Root-level sample/fork/keep
+  operations that would affect siblings outside that subtree are not allowed.
+- Target sends, converter applications and scoring requests consume the grant's
+  operation budget; there is also a ten-turn planning cap. Workspace per-run budgets
+  still apply. Provider-internal retries/composite calls and tokens are not an exact
+  monetary budget.
+- Stop pauses after in-flight work settles. Human edits that invalidate a proposal,
+  failed actions, reporting errors and persistence failures pause exploration.
+- Reload/restoration **never rearms autonomy**. A new explicit grant is required.
 
 ### Assistant session API
 

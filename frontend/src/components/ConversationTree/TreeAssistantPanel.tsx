@@ -2,12 +2,13 @@ import { useMemo, useState } from 'react'
 
 import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle,
-  Field, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarBody, Spinner, Text, Textarea,
+  Field, Input, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarBody, Spinner, Text, Textarea,
 } from '@fluentui/react-components'
 import { MoreHorizontalRegular } from '@fluentui/react-icons'
 
 import MarkdownContent from '@/components/Markdown/MarkdownContent'
 import { useTreeAssistantSession } from '@/hooks/useTreeAssistantSession'
+import { useTreeAssistantAutonomy } from '@/hooks/useTreeAssistantAutonomy'
 import { toApiError } from '@/services/errors'
 import type {
   TreeAssistantApply, TreeAssistantNodeChange, TreeAssistantPrecondition, TreeAssistantPreparedProposal,
@@ -168,10 +169,15 @@ function TurnCard({ turn, ...props }: Omit<ProposalCardProps, 'proposal'> & { tu
 }
 
 export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
-  const { workspace, active, disabled } = props
+  const { workspace, active, disabled, selectedId } = props
   const styles = useTreeAssistantPanelStyles()
-  const chat = useTreeAssistantSession(props)
-  const [confirmation, setConfirmation] = useState<'detach' | 'interrupted' | 'clear' | null>(null)
+  const session = useTreeAssistantSession(props)
+  const autonomy = useTreeAssistantAutonomy({ ...props, runSequence: session.runSequence })
+  const chat = { ...session, ...autonomy }
+  const [confirmation, setConfirmation] = useState<'detach' | 'interrupted' | 'autonomy' | 'clear' | null>(null)
+  const [goal, setGoal] = useState('')
+  const [budget, setBudget] = useState('20')
+  const [autonomyOpen, setAutonomyOpen] = useState(false)
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [exportError, setExportError] = useState('')
   const { checkpoint } = chat
@@ -191,6 +197,7 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
     <header className={styles.header}>
       <h2 className={styles.title}>Tree assistant</h2>
       <div className={styles.actions}>
+        {chat.grant && <Button className={styles.button} onClick={chat.stop}>Stop autonomy</Button>}
         {!chat.connected && <Button className={styles.button} appearance="primary" disabled={unavailable}
           onClick={() => { void chat.start() }}>{checkpoint.session ? 'Resume session' : 'Start session'}</Button>}
         <Menu>
@@ -209,7 +216,7 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
     </header>
     <div className={styles.content}><div className={styles.stack}>
       <details><summary className={styles.disclosure}>Session details · {chat.connected ? 'Connected' : 'Offline'}</summary>
-        <Text className={styles.muted}>Chat is saved in this browser; recent turns restore model context. Tree details are retrieved on demand by read-only tools, without approval. Resuming never replays actions. Planned operations exclude provider retries and tokens.</Text>
+        <Text className={styles.muted}>Chat is saved in this browser; recent turns restore model context. Tree details are retrieved on demand by read-only tools, without approval. Resuming never replays actions or re-arms autonomy. Planned operations exclude provider retries and tokens.</Text>
         {checkpoint.session && <Text className={styles.muted}>Model: {checkpoint.session.model} · Journal: {chat.journal.kind}</Text>}
       </details>
       {checkpoint.session && !chat.connected && <Text>Saved conversation loaded. Resume to reconnect or restore its context.</Text>}
@@ -246,6 +253,20 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
         <Button className={styles.button} disabled={unavailable} onClick={() => { void chat.retryReporting() }}>Retry reporting result</Button>
         <Button className={styles.button} disabled={unavailable} onClick={() => { setConfirmation('detach') }}>Discard unreported receipt</Button>
       </div>}
+      <details open={autonomyOpen} onToggle={(event) => { setAutonomyOpen(event.currentTarget.open) }}><summary className={styles.disclosure}>Bounded autonomy</summary>
+        {autonomyOpen && <div className={styles.stack}>
+          <Text>{chat.autonomyStatus}</Text>
+          {chat.grant ? <>
+            <Text>{chat.grant.remaining_operations} operations remaining · {chat.grant.remaining_turns} planning turns remaining</Text>
+          </> : <>
+            <Field label="Autonomy goal"><Textarea value={goal} maxLength={32_000} disabled={locked} onChange={(_, data) => { setGoal(data.value) }} /></Field>
+            <Field label="Autonomy operation budget" hint="Target sends + converter applications + scoring requests. Up to 10 planning turns; provider-internal retries and tokens are separate.">
+              <Input type="number" min={1} max={100000} value={budget} disabled={locked} onChange={(_, data) => { setBudget(data.value) }} />
+            </Field>
+            <Button className={styles.button} disabled={locked || !selectedId || !goal.trim()} onClick={() => { setConfirmation('autonomy') }}>Grant subtree autonomy</Button>
+          </>}
+        </div>}
+      </details>
       {chat.busy && <Spinner size="tiny" label="Working…" />}
     </div></div>
     <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); void chat.send() }}>
@@ -255,10 +276,11 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
     </form>
     {confirmation && <Dialog open={active} onOpenChange={(_, data) => { if (!data.open) setConfirmation(null) }}>
       <DialogSurface><DialogBody>
-        <DialogTitle>{confirmation === 'interrupted' ? 'Confirm interrupted action review'
+        <DialogTitle>{confirmation === 'autonomy' ? 'Grant bounded subtree autonomy?' : confirmation === 'interrupted' ? 'Confirm interrupted action review'
           : confirmation === 'clear' ? 'Confirm saved chat export' : 'Discard unreported receipt?'}</DialogTitle>
         <DialogContent>
-          {confirmation === 'clear' ? <Text>The browser was asked to download your retained chat. Confirm only after verifying the file was saved. If the download was blocked or canceled, cancel this dialog. Clearing removes the local transcript and interrupted-action or unreported receipt records; review uncertain outcomes in the tree/backend. No action is replayed or undone.</Text>
+          {confirmation === 'autonomy' ? <Text>The assistant may edit and run within the selected subtree without further approval, up to {budget} operations and 10 planning turns. It pauses on edits, failures, or reload. Stop waits for in-flight work.</Text>
+            : confirmation === 'clear' ? <Text>The browser was asked to download your retained chat. Confirm only after verifying the file was saved. If the download was blocked or canceled, cancel this dialog. Clearing removes the local transcript and interrupted-action or unreported receipt records; review uncertain outcomes in the tree/backend. No action is replayed or undone.</Text>
             : <Text>No action will be replayed or undone. Preserve the chat export and inspect backend evidence before discarding uncertain reporting state.</Text>}
           {checkpoint.unreported && <pre className={styles.json}>{JSON.stringify(checkpoint.unreported.receipt, null, 2)}</pre>}
         </DialogContent>
@@ -267,10 +289,11 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
           <Button className={styles.button} disabled={confirmation === 'clear' ? !chat.writable || chat.busy : unavailable} onClick={() => {
             const action = confirmation
             setConfirmation(null)
-            if (action === 'interrupted') void chat.reviewInterrupted()
+            if (action === 'autonomy') void chat.runAutonomy(goal, Number(budget))
+            else if (action === 'interrupted') void chat.reviewInterrupted()
             else if (action === 'clear') chat.clearExportedChat()
             else chat.detach()
-          }}>{confirmation === 'interrupted' ? 'Confirm review without replay'
+          }}>{confirmation === 'autonomy' ? 'Start bounded autonomy' : confirmation === 'interrupted' ? 'Confirm review without replay'
               : confirmation === 'clear' ? 'I saved the export; clear local chat' : 'Discard receipt and detach chat'}</Button>
         </DialogActions>
       </DialogBody></DialogSurface>

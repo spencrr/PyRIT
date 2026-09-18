@@ -3,8 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { treeAssistantApi } from '@/services/api'
 import { toApiError } from '@/services/errors'
 import type {
-  TreeAssistantApply, TreeAssistantCheckpoint, TreeAssistantJournal, TreeAssistantOperation,
-  TreeAssistantPreparedProposal, TreeAssistantProposal, TreeAssistantReceipt,
+  TreeAssistantApply, TreeAssistantCheckpoint, TreeAssistantGrant, TreeAssistantJournal, TreeAssistantOperation,
+  TreeAssistantPreparedProposal, TreeAssistantProposal, TreeAssistantReceipt, TreeAssistantSequence,
   TreeAssistantSession, TreeAssistantTurn, TreeWorkspace,
 } from '@/types'
 import {
@@ -214,11 +214,12 @@ export function useTreeAssistantSession(options: AssistantSessionOptions) {
     })
   }
 
-  async function request(message: string): Promise<TreeAssistantTurn> {
+  async function request(message: string, autonomy?: TreeAssistantGrant): Promise<TreeAssistantTurn> {
     const local = current.current
     if (!local.session || connectionRef.current !== 'online' || journalOf(local).kind !== 'ready') throw new Error('Resolve pending chat work before sending.')
     const workspace = optionsRef.current.getWorkspace?.() ?? optionsRef.current.workspace
-    const context = createAssistantContext(workspace, optionsRef.current.selectedId)
+    const context = createAssistantContext(workspace, autonomy?.root_node_id ?? optionsRef.current.selectedId)
+    if (autonomy) context.autonomy = { ...autonomy }
     const pending = { request_id: crypto.randomUUID(), message, context }
     persist({ pendingMessage: pending, draft: '', preconditions: {
       ...local.preconditions, [pending.request_id]: captureAssistantPrecondition(workspace),
@@ -289,7 +290,7 @@ export function useTreeAssistantSession(options: AssistantSessionOptions) {
   }
 
   async function resolve(
-    proposal: TreeAssistantProposal, approve: boolean, suppliedReview?: TreeAssistantPreparedProposal,
+    proposal: TreeAssistantProposal, approve: boolean, autonomy?: TreeAssistantGrant, suppliedReview?: TreeAssistantPreparedProposal,
   ): Promise<TreeAssistantReceipt> {
     const local = current.current
     if (!local.session || local.executing || local.unreported || local.pendingMessage) throw new Error('Resolve pending chat work first.')
@@ -311,7 +312,7 @@ export function useTreeAssistantSession(options: AssistantSessionOptions) {
     let receipt: TreeAssistantReceipt
     if (!approve) receipt = { status: 'rejected', revision: workspace.revision, detail: 'Rejected by user.' }
     else {
-      try { receipt = await optionsRef.current.onApply(savedProposal, undefined, review) }
+      try { receipt = await optionsRef.current.onApply(savedProposal, autonomy, review) }
       catch (failure) {
         receipt = { status: 'failed', revision: (optionsRef.current.getWorkspace?.() ?? workspace).revision, detail: toApiError(failure).detail.slice(0, 2000) }
       }
@@ -323,7 +324,7 @@ export function useTreeAssistantSession(options: AssistantSessionOptions) {
 
   async function decide(proposal: TreeAssistantProposal, approve: boolean, review?: TreeAssistantPreparedProposal): Promise<void> {
     if (connectionRef.current !== 'online' || journalOf(current.current).kind !== 'ready') return
-    await guarded('deciding', async () => { await resolve(proposal, approve, review) })
+    await guarded('deciding', async () => { await resolve(proposal, approve, undefined, review) })
   }
 
   async function reviewInterrupted(): Promise<void> {
@@ -335,6 +336,14 @@ export function useTreeAssistantSession(options: AssistantSessionOptions) {
       saveReceipt(proposal, { status: 'failed', revision: (optionsRef.current.getWorkspace?.() ?? optionsRef.current.workspace).revision,
         detail: 'Interrupted while executing. Outcome may be partial or unknown; user reviewed backend/tree evidence. No action was replayed.' })
       if (connectionRef.current === 'online') await report()
+    })
+  }
+
+  async function runSequence(work: (sequence: TreeAssistantSequence) => Promise<void>): Promise<void> {
+    if (connectionRef.current !== 'online' || journalOf(current.current).kind !== 'ready') return
+    await guarded('sequence', async () => {
+      await work({ request, resolve: (proposal: TreeAssistantProposal, grant: TreeAssistantGrant, review: TreeAssistantPreparedProposal) =>
+        resolve(proposal, true, grant, review) })
     })
   }
 
@@ -379,5 +388,5 @@ export function useTreeAssistantSession(options: AssistantSessionOptions) {
   return { checkpoint, error, storageError, writerError, writable: writerState === 'writable',
     busy: operation !== 'idle', connected: connection === 'online', operation, connection, journal: journalOf(checkpoint),
     start, send, retryMessage, recoverReply, decide, retryReporting, reviewInterrupted,
-    editDraft, retrySave, detach, clearExportedChat }
+    runSequence, editDraft, retrySave, detach, clearExportedChat }
 }

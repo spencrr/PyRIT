@@ -175,6 +175,38 @@ test.describe('Tree assistant @assistant', () => {
     await expect(page.getByRole('button', { name: 'Approve edits' })).toHaveCount(0)
   })
 
+  test('runs bounded subtree exploration and never rearms after reload', async ({ page }) => {
+    await setup(page)
+    await page.getByText('Bounded autonomy', { exact: true }).click()
+    await page.getByLabel('Autonomy goal').fill('Explore the selected subtree')
+    await page.getByLabel('Autonomy operation budget', { exact: true }).fill('4')
+    await page.getByRole('button', { name: 'Grant subtree autonomy' }).click()
+    await page.getByRole('button', { name: 'Start bounded autonomy' }).click()
+    await expect(page.getByText('Paused: operation budget exhausted.')).toBeVisible({ timeout: 40_000 })
+    const tree = await saved(page)
+    expect(tree.nodes).toHaveLength(4)
+    expect(tree.nodes.every((node) => node.status === 'completed')).toBe(true)
+    await page.reload()
+    await page.getByRole('button', { name: 'Assistant', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Resume session' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Stop autonomy' })).toHaveCount(0)
+    expect((await saved(page)).revision).toBe(tree.revision)
+  })
+
+  test('stops during planning without executing the returned proposal', async ({ page }) => {
+    await setup(page)
+    await page.getByText('Bounded autonomy', { exact: true }).click()
+    await page.getByLabel('Autonomy goal').fill('Stop while planning')
+    await page.getByRole('button', { name: 'Grant subtree autonomy' }).click()
+    await page.getByRole('button', { name: 'Start bounded autonomy' }).click()
+    await page.getByRole('button', { name: 'Stop autonomy' }).click()
+    await expect(page.getByText('Stopped. In-flight work has settled; no further actions will run.')).toBeVisible()
+    const tree = await saved(page)
+    expect(tree.nodes).toHaveLength(1)
+    expect(tree.nodes[0].status).toBe('draft')
+    await expect(page.getByRole('button', { name: 'Approve run' })).toBeEnabled()
+  })
+
   test('executes a branching plan using workspace traversal rather than insertion order', async ({ page }) => {
     await setup(page)
     await ask(page, 'Run the selected root')

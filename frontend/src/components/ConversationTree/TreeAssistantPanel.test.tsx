@@ -745,6 +745,8 @@ describe('TreeAssistantPanel', () => {
     await user.tab()
     expect(screen.getByText('Session details · Connected')).toHaveFocus()
     await user.tab()
+    expect(screen.getByText('Bounded autonomy')).toHaveFocus()
+    await user.tab()
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveFocus()
     await user.keyboard('Explore')
     await user.tab()
