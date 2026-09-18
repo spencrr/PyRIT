@@ -100,6 +100,10 @@ dev = [
 
 [project.optional-dependencies]
 # always make sure the individual ones are in sync with the all group
+tree_assistant = [
+    "agent-framework-core==1.18.0",
+    "agent-framework-openai==1.14.3",
+]
 huggingface = [
     "sentencepiece>=0.2.0",
     "torch>=2.7.0",
@@ -137,6 +141,8 @@ litellm = [
 # all includes all functional dependencies excluding the ones from the "dev" dependency group
 all = [
     "accelerate>=1.7.0",
+    "agent-framework-core==1.18.0",
+    "agent-framework-openai==1.14.3",
     "azure-ai-ml>=1.32.0",
     "azure-cognitiveservices-speech>=1.44.0",
     "flask>=3.1.3",
