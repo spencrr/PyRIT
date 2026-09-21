@@ -508,6 +508,9 @@ whole workspace; optionally restrict it to the selected subtree. The submitted
 message, scope and semantic workspace state are captured for confirmation, rather
 than retargeting if the selection changes. Within that task the assistant may
 apply validated proposals without repeated approval.
+The orchestrator submits actions to the workspace pipeline instead of asking
+for additional permission in chat. Tool responses distinguish submission from
+completion; execution receipts remain the source of action outcomes.
 
 - The permission applies only to that submitted task, not future messages.
   Whole-workspace scope can create roots in an empty workspace. For subtree scope,

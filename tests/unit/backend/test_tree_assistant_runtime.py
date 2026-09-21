@@ -73,6 +73,28 @@ def proposal_call(action: dict[str, Any] | None = None) -> list[Content]:
     )
 
 
+@pytest.mark.parametrize("auto_mode", [False, True])
+async def test_action_guidance_follows_host_mode_without_chat_approval_requests_async(auto_mode: bool) -> None:
+    context = inspection_context(autonomy=None) if not auto_mode else inspection_context()
+    client = DeterministicClient(
+        [call(name="inspect_tree", arguments={}), proposal_call(), ["Submitted the next workspace action."]]
+    )
+    runtime = AgentFrameworkRuntime(client=client, model="deterministic-assistant")
+    result = await runtime.run_async(message="Explore another branch", context=context, receipts=[])
+    payload = unpack(result.tool_calls[1].result)
+    assert payload["application_mode"] == ("auto" if auto_mode else "interactive")
+    assert payload["status"] == "pending"
+    assert "execution receipt" in payload["notice"]
+    assert "approval" not in payload["notice"].lower()
+    assert "do not stop to ask\nfor approval in chat" in result.context_summary.instructions
+    assert "You cannot mutate the tree" not in result.context_summary.instructions
+    assert "Inspect and propose ONLY" not in result.context_summary.instructions
+    assert result.proposal.status == "pending"
+    descriptions = {tool.name: tool.description for tool in runtime.agent.default_options["tools"]}
+    assert "application approval" not in descriptions["propose_action"]
+    await runtime.close_async()
+
+
 async def test_real_agent_tools_session_receipt_and_next_message_async() -> None:
     client = DeterministicClient(
         [

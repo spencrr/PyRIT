@@ -482,10 +482,10 @@ class TreeAssistantTools:
 
     def stage_proposal(self, *, summary: str, action_json: str) -> str:
         """
-        Stage ONE proposal for application approval, never execution.
+        Submit ONE typed action to the workspace's configured interaction mode.
 
         Args:
-            summary (str): Concise purpose for human review.
+            summary (str): Concise purpose of the workspace action.
             action_json (str): A whitelisted mutate/run/score/plan action encoded as JSON.
 
         Returns:
@@ -513,18 +513,27 @@ class TreeAssistantTools:
             action=action,
         )
         output = self._output(
-            {"proposal_id": proposal.id, "status": "pending", "notice": "Not applied. Await application approval."}
+            {
+                "proposal_id": proposal.id,
+                "status": "pending",
+                "application_mode": "auto" if context.autonomy is not None else "interactive",
+                "notice": (
+                    "Submitted to the workspace action pipeline. "
+                    "The current mode, run policy, scope and budget govern application. "
+                    "Use the execution receipt to confirm the outcome."
+                ),
+            }
         )
         self.proposal = proposal
         return output
 
     def propose_action(self, *, summary: str, action: TreeAssistantAction) -> str:
         """
-        Propose typed tree edits, a multilevel plan, or an explicit run/score selection.
+        Submit typed tree edits, a multilevel plan, or a run/score selection for workspace application.
 
         A retry prepares drafts and invalidates descendant attempts; it never sends.
-        A plan may request creation and execution under one application approval.
-        No action is applied by this tool.
+        A plan may combine creation and execution in one workspace action.
+        The workspace applies the action according to the current mode and returns an execution receipt.
 
         Returns:
             str: A pending proposal identity or an explicit validation error.
