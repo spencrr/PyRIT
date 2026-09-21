@@ -382,9 +382,9 @@ def test_tool_output_and_call_budgets() -> None:
     tools = TreeAssistantTools()
     context = context_dict(nodes=[{**context_dict()["nodes"][0], "prompt": "x" * 32_000}])
     tools.begin(TreeAssistantContext.model_validate(context))
-    output = json.loads(tools.inspect_node("n1"))
-    assert output["truncated"] is True
-    assert "Truncated" in output["notice"]
+    output = json.loads(tools.inspect_node(node_id="n1"))
+    assert output["truncated"] is False
+    assert json.loads(output["data"])["next_cursor"] is not None
     tools.begin(TreeAssistantContext.model_validate(context_dict()))
     for _ in range(tools.MAX_CALLS):
         tools.inspect_tree()

@@ -22,12 +22,15 @@ from .test_tree_assistant import context_dict
 
 
 @pytest.mark.parametrize("api", [None, "chat_completions", "responses"])
-async def test_transport_tool_loop_and_local_history_async(api: str | None) -> None:
+@pytest.mark.parametrize("auto_run", [False, True])
+async def test_transport_tool_loop_and_local_history_async(*, api: str | None, auto_run: bool) -> None:
     """Both transports invoke tools, stage proposals and carry local history with storage disabled."""
     requests: list[dict[str, Any]] = []
     paths: list[str] = []
     replies = [
         ("inspect_tree", {}),
+        ("inspect_selected_node", {}),
+        ("inspect_subtree", {"root_node_id": "n1", "detail": "nodes"}),
         (
             "propose_action",
             {
@@ -44,7 +47,7 @@ async def test_transport_tool_loop_and_local_history_async(api: str | None) -> N
         requests.append(json.loads(request.content))
         index = len(requests) - 1
         name, arguments = replies[index]
-        text = "Pending approval. Nothing was applied." if index == 2 else "Your decision is recorded."
+        text = "Pending approval. Nothing was applied." if index == 4 else "Your decision is recorded."
         if api == "responses":
             output = (
                 [
@@ -129,11 +132,20 @@ async def test_transport_tool_loop_and_local_history_async(api: str | None) -> N
             runtime = create_agent_framework_runtime()
         try:
             context = TreeAssistantContext.model_validate(context_dict())
+            context.settings.auto_run = auto_run
             result = await runtime.run_async(message="Suggest a follow-up", context=context, receipts=[])
             proposal = result.proposal
             assert "Pending approval" in result.reply
             assert proposal is not None and proposal.status == "pending"
             assert proposal.action.commands[0].parent_id == "n1"
+            assert proposal.action.run is None
+            assert [trace.name for trace in result.tool_calls] == [
+                "inspect_tree",
+                "inspect_selected_node",
+                "inspect_subtree",
+                "propose_action",
+            ]
+            assert json.loads(json.loads(result.tool_calls[1].result)["data"])["selected_node_id"] == "n1"
             assert context.nodes[0].prompt == "Hello"
             assert len(context.nodes) == 1
             next_result = await runtime.run_async(
@@ -147,7 +159,7 @@ async def test_transport_tool_loop_and_local_history_async(api: str | None) -> N
             assert "Pending approval" in json.dumps(history)
             assert "No thanks" in json.dumps(history)
             expected_path = "/v1/responses" if api == "responses" else "/v1/chat/completions"
-            assert paths == [expected_path] * 4
+            assert paths == [expected_path] * 6
             assert all(payload["store"] is False for payload in requests)
             assert all("previous_response_id" not in payload and "conversation" not in payload for payload in requests)
             if api == "responses":
@@ -158,7 +170,12 @@ async def test_transport_tool_loop_and_local_history_async(api: str | None) -> N
                     for item in requests[1]["input"]
                 )
                 assert any(item.get("encrypted_content") == "opaque-reasoning" for item in requests[1]["input"])
-                assert {tool["name"] for tool in requests[0]["tools"]} >= {"inspect_tree", "propose_action"}
+                assert {tool["name"] for tool in requests[0]["tools"]} >= {
+                    "inspect_tree",
+                    "inspect_selected_node",
+                    "inspect_subtree",
+                    "propose_action",
+                }
         finally:
             await runtime.close_async()
         assert http_client.is_closed
