@@ -32,6 +32,24 @@ jest.mock('@xyflow/react', () => ({
 
 describe('TreeCanvas', () => {
   beforeEach(() => { jest.clearAllMocks(); mockNodes = [] })
+  it('highlights a fork path without selecting, moving or mutating nodes', () => {
+    let tree = applyTreeCommand(createTreeWorkspace({
+      name: 'Path preview', targetRegistryName: 'target', targetIdentifierHash: 'hash', systemPrompt: '', labels: {},
+    }), { type: 'add', parentId: null, prompt: 'Root' })
+    tree = applyTreeCommand(tree, { type: 'add', parentId: tree.nodes[0].id, prompt: 'Child' })
+    const props = { workspace: tree, selectedId: tree.nodes[1].id, showPruned: false, disabled: false, onSelect: jest.fn(), onMove: jest.fn(), onGroup: jest.fn() }
+    const view = render(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} /></FluentProvider>)
+    const positions = mockNodes.map((node) => node.position)
+    const viewportCalls = mockSetViewport.mock.calls.length
+    view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} highlightedNodeIds={tree.nodes.map((node) => node.id)} /></FluentProvider>)
+    expect(mockNodes.every((node) => node.data.pathPreview === true)).toBe(true)
+    expect(mockNodes.map((node) => node.position)).toEqual(positions)
+    expect(mockSetViewport).toHaveBeenCalledTimes(viewportCalls)
+    expect(props.onGroup).not.toHaveBeenCalled()
+    expect(props.onSelect).not.toHaveBeenCalled()
+    view.rerender(<FluentProvider theme={webLightTheme}><TreeCanvas {...props} /></FluentProvider>)
+    expect(mockNodes.every((node) => node.data.pathPreview === false)).toBe(true)
+  })
   it('keeps existing positions and viewport during response/content updates', async () => {
     const tree = applyTreeCommand(createTreeWorkspace({
       name: 'Stable', targetRegistryName: 'target', targetIdentifierHash: 'hash', systemPrompt: '', labels: {},

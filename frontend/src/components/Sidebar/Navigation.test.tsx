@@ -138,7 +138,7 @@ describe("Navigation", () => {
     expect(labels).toEqual([
       "Home",
       "Chat",
-      "Conversation tree",
+      "Workspace",
       "History",
       "Scanner",
       "Registry",
@@ -169,7 +169,7 @@ describe("Navigation", () => {
     renderWithProvider(
       <Navigation {...defaultProps} currentView="tree" onNavigate={onNavigate} />,
     );
-    const button = screen.getByRole("button", { name: "Conversation tree" });
+    const button = screen.getByRole("button", { name: "Workspace" });
     expect(button).toHaveAttribute("aria-current", "page");
     await user.click(button);
     expect(onNavigate).toHaveBeenCalledWith("tree");

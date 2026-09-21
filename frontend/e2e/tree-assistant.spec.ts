@@ -2,11 +2,14 @@ import { expect, test, type Page } from '@playwright/test'
 
 import type { TreeAssistantSession, TreeWorkspace } from '@/types'
 
-async function setup(page: Page): Promise<void> {
+async function setup(page: Page, empty = false): Promise<void> {
   await page.goto('/tree')
-  await page.getByRole('button', { name: 'Create your first tree' }).click()
-  await page.getByRole('dialog').getByRole('combobox').selectOption('tree-assistant-test-target')
-  await page.getByLabel(/^First prompt/).fill('Describe your limitations.')
+  await page.getByRole('button', { name: 'Create your first workspace' }).click()
+  await page.getByRole('dialog').getByRole('combobox', { name: 'Target', exact: true }).selectOption('tree-assistant-test-target')
+  if (empty) {
+    await page.getByLabel('Start from', { exact: true }).selectOption('objective')
+    await page.getByLabel('Evaluation objective', { exact: true }).fill('Explore grounding safely')
+  } else await page.getByLabel(/^First prompt/).fill('Describe your limitations.')
   await page.getByRole('button', { name: 'Create workspace' }).click()
   await page.getByRole('button', { name: 'Assistant', exact: true }).click()
   await page.getByRole('button', { name: 'Start session', exact: true }).click()
@@ -24,6 +27,14 @@ async function saved(page: Page): Promise<TreeWorkspace> {
 async function ask(page: Page, text: string): Promise<void> {
   await page.getByRole('textbox', { name: 'Message', exact: true }).fill(text)
   await page.getByRole('button', { name: 'Send message', exact: true }).click()
+}
+
+async function enableDraftAutoRun(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Workspace options' }).click()
+  await page.getByRole('menuitem', { name: 'Workspace settings', exact: true }).click()
+  await page.getByRole('checkbox', { name: 'Auto-run newly added branches' }).check()
+  await page.getByRole('button', { name: 'Save settings', exact: true }).click()
+  await expect(page.getByRole('dialog')).toBeHidden()
 }
 
 test.describe('Tree assistant @assistant', () => {
@@ -58,6 +69,7 @@ test.describe('Tree assistant @assistant', () => {
     await page.getByRole('button', { name: 'Approve edits' }).click()
     await expect.poll(async () => (await saved(page)).nodes.length).toBe(2)
     expect(sends).toHaveLength(0)
+    await page.getByRole('button', { name: 'Branches', exact: true }).click()
     await page.getByRole('complementary', { name: 'Tree outline' }).getByRole('button', { name: 'Describe your limitations. (draft)', exact: true }).click()
     await ask(page, 'Run the selected root')
     await expect(page.getByRole('button', { name: 'Approve run' })).toBeEnabled()
@@ -117,12 +129,13 @@ test.describe('Tree assistant @assistant', () => {
     await expect(page.getByRole('complementary', { name: 'Turn inspector' })).toBeVisible()
   })
 
-  test('keeps a readable graph and one detail dock at intermediate widths', async ({ page }) => {
+  test('keeps responsive detail docks and enables both by default on wide screens', async ({ page }) => {
     await setup(page)
-    await page.getByRole('button', { name: 'Branches', exact: true }).click()
+    await expect(page.getByRole('complementary', { name: 'Tree outline' })).toBeHidden()
     for (const width of [768, 1024, 1600]) {
       await page.setViewportSize({ width, height: 1000 })
-      await expect(page.getByRole('complementary', { name: 'Turn inspector' })).toBeHidden()
+      if (width < 1400) await expect(page.getByRole('complementary', { name: 'Turn inspector' })).toBeHidden()
+      else await expect(page.getByRole('complementary', { name: 'Turn inspector' })).toBeVisible()
       const canvas = await page.getByRole('region', { name: 'Conversation graph' }).boundingBox()
       expect(canvas?.width).toBeGreaterThanOrEqual(300)
       await expect(page.getByRole('complementary', { name: 'Tree assistant' })).toBeVisible()
@@ -175,31 +188,31 @@ test.describe('Tree assistant @assistant', () => {
     await expect(page.getByRole('button', { name: 'Approve edits' })).toHaveCount(0)
   })
 
-  test('runs bounded subtree exploration and never rearms after reload', async ({ page }) => {
+  test('runs a budgeted Auto-mode task and never rearms after reload', async ({ page }) => {
     await setup(page)
-    await page.getByText('Bounded autonomy', { exact: true }).click()
-    await page.getByLabel('Autonomy goal').fill('Explore the selected subtree')
-    await page.getByLabel('Autonomy operation budget', { exact: true }).fill('4')
-    await page.getByRole('button', { name: 'Grant subtree autonomy' }).click()
-    await page.getByRole('button', { name: 'Start bounded autonomy' }).click()
-    await expect(page.getByText('Paused: operation budget exhausted.')).toBeVisible({ timeout: 40_000 })
+    await page.getByRole('switch', { name: 'Auto mode' }).check()
+    await ask(page, 'Explore the selected subtree')
+    await page.getByLabel('Scope', { exact: true }).selectOption('subtree')
+    await page.getByLabel('Operation budget', { exact: true }).fill('4')
+    await page.getByRole('button', { name: 'Run task' }).click()
+    await expect(page.getByRole('status', { name: 'Auto mode status' })).toContainText('budget exhausted', { timeout: 40_000 })
     const tree = await saved(page)
     expect(tree.nodes).toHaveLength(4)
     expect(tree.nodes.every((node) => node.status === 'completed')).toBe(true)
     await page.reload()
     await page.getByRole('button', { name: 'Assistant', exact: true }).click()
     await expect(page.getByRole('button', { name: 'Resume session' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Stop autonomy' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('switch', { name: 'Auto mode' })).not.toBeChecked()
     expect((await saved(page)).revision).toBe(tree.revision)
   })
 
   test('stops during planning without executing the returned proposal', async ({ page }) => {
     await setup(page)
-    await page.getByText('Bounded autonomy', { exact: true }).click()
-    await page.getByLabel('Autonomy goal').fill('Stop while planning')
-    await page.getByRole('button', { name: 'Grant subtree autonomy' }).click()
-    await page.getByRole('button', { name: 'Start bounded autonomy' }).click()
-    await page.getByRole('button', { name: 'Stop autonomy' }).click()
+    await page.getByRole('switch', { name: 'Auto mode' }).check()
+    await ask(page, 'Stop while planning')
+    await page.getByRole('button', { name: 'Run task' }).click()
+    await page.getByRole('button', { name: 'Stop', exact: true }).click()
     await expect(page.getByText('Stopped. In-flight work has settled; no further actions will run.')).toBeVisible()
     const tree = await saved(page)
     expect(tree.nodes).toHaveLength(1)
@@ -213,7 +226,7 @@ test.describe('Tree assistant @assistant', () => {
     await page.getByRole('button', { name: 'Approve run' }).click()
     await expect(page.getByRole('status', { name: 'Workspace activity' })).toContainText('1/1 nodes completed')
     await ask(page, 'Build a branching runnable plan')
-    await page.getByRole('button', { name: 'Approve plan and run' }).click()
+    await page.getByRole('button', { name: 'Approve and run 3 new drafts' }).click()
     await expect(page.getByRole('status', { name: 'Workspace activity' })).toContainText('3/3 nodes completed')
     const tree = await saved(page)
     expect(tree.nodes).toHaveLength(4)
@@ -310,7 +323,7 @@ test.describe('Tree assistant @assistant', () => {
     await page.getByRole('button', { name: 'Workspace options' }).click()
     await page.getByRole('menuitem', { name: 'Import plan', exact: true }).click()
     const dialog = page.getByRole('dialog')
-    await dialog.getByRole('combobox').selectOption('tree-assistant-test-target')
+    await dialog.getByRole('combobox', { name: 'Target', exact: true }).selectOption('tree-assistant-test-target')
     await dialog.getByLabel('Strategy plan JSON').fill(JSON.stringify({
       schemaVersion: 1,
       name: 'Assistant capacity check',
@@ -333,5 +346,67 @@ test.describe('Tree assistant @assistant', () => {
       .map((key) => JSON.parse(localStorage.getItem(key) ?? 'null'))
       .find((tree) => tree.nodes.length === 300))
     expect(fullTree.nodes.every((node: { status: string }) => node.status === 'draft')).toBe(true)
+  })
+
+  test('runs approved agent additions under auto-run and retries only the failed receipt', async ({ page, request }) => {
+    await setup(page)
+    await ask(page, 'Run the selected root')
+    await page.getByRole('button', { name: 'Approve run' }).click()
+    await expect.poll(async () => (await saved(page)).nodes[0].status).toBe('completed')
+    await enableDraftAutoRun(page)
+    let sends = 0
+    page.on('request', (outgoing) => {
+      if (outgoing.method() === 'POST' && /\/attacks\/[^/]+\/messages/.test(outgoing.url())) sends++
+    })
+    await ask(page, 'Add a comparison')
+    const approval = page.getByRole('button', { name: 'Approve and run 1 new drafts' })
+    await expect(approval).toBeEnabled()
+    expect(sends).toBe(0)
+    expectedReportingFailure = true
+    expect((await request.post('/api/tree-assistant-test/fail-receipt')).ok()).toBe(true)
+    await approval.click()
+    await expect.poll(async () => (await saved(page)).nodes.filter((node) => node.status === 'completed').length).toBe(2)
+    await page.getByRole('button', { name: 'Retry reporting result' }).click()
+    await expect(page.getByRole('button', { name: 'Retry reporting result' })).toHaveCount(0)
+    expect(sends).toBe(1)
+    await ask(page, 'Add a comparison, drafts only')
+    await page.getByRole('button', { name: 'Approve edits' }).click()
+    await expect.poll(async () => (await saved(page)).nodes.length).toBe(3)
+    expect((await saved(page)).nodes[2].status).toBe('draft')
+    expect(sends).toBe(1)
+  })
+
+  test('reads selection and subtree without action approvals or target sends', async ({ page }) => {
+    await setup(page)
+    await ask(page, 'Inspect selected node only')
+    await expect(page.getByRole('log', { name: 'Assistant conversation' }).getByText(/Read-only inspection/)).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Approve/ })).toHaveCount(0)
+    await ask(page, 'Inspect subtree only')
+    await expect(page.getByRole('log', { name: 'Assistant conversation' }).getByText(/Read-only inspection/)).toHaveCount(2)
+    expect((await saved(page)).nodes).toHaveLength(1)
+    expect((await saved(page)).nodes[0].status).toBe('draft')
+  })
+
+  test('starts Auto mode from an objective-only workspace and cancels safely before confirmation', async ({ page }) => {
+    await setup(page, true)
+    expect((await saved(page)).nodes).toEqual([])
+    await page.getByRole('switch', { name: 'Auto mode' }).check()
+    await ask(page, 'Build a multi-level plan')
+    await expect(page.getByLabel('Scope', { exact: true })).toHaveValue('workspace')
+    await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click()
+    expect((await saved(page)).nodes).toEqual([])
+    await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue('Build a multi-level plan')
+    await expect(page.getByRole('switch', { name: 'Auto mode' })).not.toBeChecked()
+    await page.getByRole('switch', { name: 'Auto mode' }).check()
+    await page.getByRole('button', { name: 'Send message' }).click()
+    await page.getByLabel('Operation budget', { exact: true }).fill('3')
+    await page.getByRole('button', { name: 'Run task' }).click()
+    await expect(page.getByRole('status', { name: 'Auto mode status' })).toContainText('budget exhausted')
+    const tree = await saved(page)
+    expect(tree.nodes).toHaveLength(3)
+    expect(tree.nodes[0].parentId).toBeNull()
+    expect(tree.nodes[1].parentId).toBe(tree.nodes[0].id)
+    expect(tree.nodes[2].parentId).toBe(tree.nodes[1].id)
+    expect(tree.nodes.every((node) => node.status === 'completed')).toBe(true)
   })
 })

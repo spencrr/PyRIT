@@ -3,8 +3,8 @@ import { StrictMode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
 
 import { treeAssistantApi } from '@/services/api'
-import type { TreeAssistantCheckpoint, TreeAssistantProposal, TreeAssistantTurn, TreeWorkspace } from '@/types'
-import { createTreeWorkspace, applyTreeCommand } from '@/components/ConversationTree/treeModel'
+import type { TreeAssistantApply, TreeAssistantCheckpoint, TreeAssistantProposal, TreeAssistantTurn, TreeWorkspace } from '@/types'
+import { createTreeWorkspace, applyTreeCommand, getTreeSettings } from '@/components/ConversationTree/treeModel'
 import { deleteAssistantCheckpoint, saveAssistantCheckpoint } from '@/components/ConversationTree/treeAssistantStorage'
 
 import { useTreeAssistantSession as useSession } from './useTreeAssistantSession'
@@ -229,7 +229,7 @@ describe('useTreeAssistantSession', () => {
     api.sendMessage.mockImplementation(async (_id, request) => ({ request_id: request.request_id, message: request.message, reply: 'Pending', proposals: [proposal] }))
     const hook = renderHook(() => useTreeAssistantSession({ workspace, selectedId: root, active: true, disabled: false, onApply }))
     await start(hook.result)
-    await act(async () => { await hook.result.current.runAutonomy('Explore scope', 3) })
+    await act(async () => { await hook.result.current.runAutonomy('Explore scope', 3, root) })
     expect(onApply).not.toHaveBeenCalled()
     expect(hook.result.current.error).toContain('escapes')
     expect(api.sendMessage.mock.calls[0][1].context.autonomy).toMatchObject({ root_node_id: root, remaining_operations: 3, remaining_turns: 9 })
@@ -247,7 +247,7 @@ describe('useTreeAssistantSession', () => {
     }))
     const hook = renderHook(() => useTreeAssistantSession({ workspace, selectedId: root, active: true, disabled: false, onApply }))
     await start(hook.result)
-    await act(async () => { await hook.result.current.runAutonomy('Explore', 1) })
+    await act(async () => { await hook.result.current.runAutonomy('Explore', 1, root) })
     expect(onApply).toHaveBeenCalledWith(proposal, expect.objectContaining({ root_node_id: root, remaining_operations: 1 }),
       expect.objectContaining({ nodeIds: [root], operations: 1 }))
     expect(api.sendMessage).toHaveBeenCalledTimes(1)
@@ -267,7 +267,7 @@ describe('useTreeAssistantSession', () => {
     }))
     await start(hook.result)
     let task: Promise<void> | undefined
-    act(() => { task = hook.result.current.runAutonomy('Explore', 2) })
+    act(() => { task = hook.result.current.runAutonomy('Explore', 2, root) })
     const pending = hook.result.current.checkpoint.pendingMessage
     expect(pending).not.toBeNull()
     act(() => {
@@ -288,6 +288,7 @@ describe('useTreeAssistantSession', () => {
 
   it('does not rearm a planning grant when the assistant is hidden and reopened before its reply arrives', async () => {
     const workspace = fixture()
+    const root = workspace.nodes[0].id
     const onApply = jest.fn()
     let respond: ((turn: TreeAssistantTurn) => void) | undefined
     api.sendMessage.mockImplementation(() => new Promise((resolve) => { respond = resolve }))
@@ -296,7 +297,7 @@ describe('useTreeAssistantSession', () => {
     }), { initialProps: { active: true } })
     await start(hook.result)
     let task: Promise<void> | undefined
-    act(() => { task = hook.result.current.runAutonomy('Explore', 2) })
+    act(() => { task = hook.result.current.runAutonomy('Explore', 2, root) })
     const pending = hook.result.current.checkpoint.pendingMessage
     hook.rerender({ active: false })
     hook.rerender({ active: true })
@@ -311,6 +312,121 @@ describe('useTreeAssistantSession', () => {
     expect(api.sendMessage).toHaveBeenCalledTimes(1)
     expect(hook.result.current.grant).toBeNull()
     expect(hook.result.current.checkpoint.session?.turns[0].proposals[0].status).toBe('pending')
+  })
+
+  it('sends current selection each iteration independently of the captured subtree root', async () => {
+    const original = fixture()
+    const workspace = applyTreeCommand(original, { type: 'add', parentId: null, prompt: 'Another root' })
+    const root = workspace.nodes[0].id
+    const other = workspace.nodes[1].id
+    let respond: ((turn: TreeAssistantTurn) => void) | undefined
+    api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { respond = resolve }))
+    const onApply = jest.fn().mockResolvedValue({ status: 'applied', revision: 1, detail: 'Edited' })
+    const hook = renderHook(({ selectedId }: { selectedId: string | null }) => useTreeAssistantSession({
+      workspace, selectedId, active: true, disabled: false, onApply,
+    }), { initialProps: { selectedId: other } })
+    await start(hook.result)
+    let task: Promise<void> | undefined
+    act(() => { task = hook.result.current.runAutonomy('Explore fixed scope', 2, root) })
+    const pending = hook.result.current.checkpoint.pendingMessage
+    expect(pending?.context.selected_node_id).toBe(other)
+    expect(pending?.context.autonomy?.root_node_id).toBe(root)
+    hook.rerender({ selectedId: root })
+    await act(async () => {
+      respond?.({ request_id: pending?.request_id ?? '', message: 'Explore fixed scope', reply: 'Edit', proposals: [{
+        id: 'edit', workspace_id: workspace.id, base_revision: workspace.revision, summary: 'Edit scoped root', status: 'pending',
+        action: { kind: 'mutate', commands: [{ type: 'edit', nodeId: root, prompt: 'Updated', converters: [] }] },
+      }] })
+      await task
+    })
+    expect(onApply).toHaveBeenCalledTimes(1)
+    expect(api.sendMessage).toHaveBeenCalledTimes(2)
+    expect(api.sendMessage.mock.calls[1][1].context).toMatchObject({
+      selected_node_id: root, autonomy: { root_node_id: root, remaining_operations: 2, remaining_turns: 8 },
+    })
+  })
+
+  it.each([
+    { kind: 'mutate' as const, auto: false }, { kind: 'plan' as const, auto: false },
+    { kind: 'mutate' as const, auto: true }, { kind: 'plan' as const, auto: true },
+  ])('journals save and new-draft execution together and retries only the receipt: %j', async ({ kind, auto }) => {
+    const workspace = fixture()
+    workspace.settings = { ...getTreeSettings(workspace), autoRun: true, autoScore: true, scorers: [
+      { scorer_id: 'judge', scorer_type: 'Scale', identifier_hash: 'hash', score_type: 'float_scale', highIsRisk: true, scope: 'response' },
+    ] }
+    const converters = [{ type: 'Base64Converter', params: {} }]
+    const proposed: TreeAssistantProposal = {
+      id: 'addition', workspace_id: workspace.id, base_revision: workspace.revision, status: 'pending', summary: 'Create and run',
+      action: kind === 'mutate'
+        ? { kind, commands: [{ type: 'add', parentId: null, prompt: 'New', converters }] }
+        : { kind, steps: [{ id: 'new', parent: null, prompt: 'New', converters }] },
+    }
+    api.sendMessage.mockImplementation(async (_id, request) => ({
+      request_id: request.request_id, message: request.message, reply: 'Review', proposals: [proposed],
+    }))
+    api.recordResult.mockRejectedValueOnce(new Error('Receipt connection lost'))
+    const onApply = jest.fn<ReturnType<TreeAssistantApply>, Parameters<TreeAssistantApply>>(async (_proposal, _grant, review) => {
+      expect(mockStored?.executing?.proposalId).toBe(proposed.id)
+      expect(mockStored?.unreported).toBeNull()
+      expect(review).toMatchObject({ kind, run: true, operations: 3 })
+      expect(review?.nodeIds).toEqual(review?.addedNodeIds)
+      expect(review?.nodeIds).toHaveLength(1)
+      expect(review?.nodeIds).not.toContain(workspace.nodes[0].id)
+      expect(Object.isFrozen(review)).toBe(true)
+      return { status: 'applied', revision: 1, detail: 'Saved and executed exactly one new draft.' }
+    })
+    const options = { workspace, selectedId: null, active: true, disabled: false, onApply }
+    const hook = renderHook(() => useTreeAssistantSession(options))
+    await start(hook.result)
+    if (auto) await act(async () => { await hook.result.current.runAutonomy('Create a new root', 3, null) })
+    else {
+      act(() => { hook.result.current.editDraft('Create a new root') })
+      await act(async () => { await hook.result.current.send(); await hook.result.current.decide(proposed, true) })
+    }
+    expect(hook.result.current.journal.kind).toBe('receipt')
+    expect(hook.result.current.grant).toBeNull()
+    expect(api.sendMessage.mock.calls[0][1].context.settings.auto_run).toBe(true)
+    await act(async () => { await hook.result.current.retryReporting() })
+    expect(hook.result.current.journal.kind).toBe('ready')
+    expect(api.recordResult).toHaveBeenCalledTimes(2)
+    expect(onApply).toHaveBeenCalledTimes(1)
+    expect(api.sendMessage).toHaveBeenCalledTimes(1)
+    const saved = hook.result.current.checkpoint.session
+    if (!saved) throw new Error('Missing saved session')
+    hook.unmount()
+    api.getSession.mockResolvedValue(saved)
+    const reloaded = renderHook(() => useTreeAssistantSession(options))
+    await start(reloaded.result)
+    expect(reloaded.result.current.grant).toBeNull()
+    expect(onApply).toHaveBeenCalledTimes(1)
+    expect(api.sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries the historical Auto message after reload without reauthorizing its proposal', async () => {
+    const workspace = { ...fixture(), nodes: [] }
+    const options = { workspace, selectedId: null, active: true, disabled: false, onApply: jest.fn() }
+    api.sendMessage.mockRejectedValueOnce(new Error('Lost planning reply'))
+    const first = renderHook(() => useTreeAssistantSession(options))
+    await start(first.result)
+    await act(async () => { await first.result.current.runAutonomy('Start from empty', 3, null) })
+    const saved = first.result.current.checkpoint
+    expect(saved.pendingMessage?.context.autonomy?.root_node_id).toBeNull()
+    if (!saved.session) throw new Error('Missing session')
+    first.unmount()
+    api.getSession.mockResolvedValue(saved.session)
+    api.sendMessage.mockImplementation(async (_id, request) => ({
+      request_id: request.request_id, message: request.message, reply: 'Ready', proposals: [{
+        id: 'root', workspace_id: workspace.id, base_revision: workspace.revision, summary: 'Create root', status: 'pending',
+        action: { kind: 'mutate', run: true, commands: [{ type: 'add', parentId: null, prompt: 'New root' }] },
+      }],
+    }))
+    const second = renderHook(() => useTreeAssistantSession(options))
+    await start(second.result)
+    await act(async () => { await second.result.current.retryMessage() })
+    expect(api.sendMessage.mock.calls[1][1]).toEqual(saved.pendingMessage)
+    expect(second.result.current.grant).toBeNull()
+    expect(second.result.current.checkpoint.session?.turns[0].proposals[0].status).toBe('pending')
+    expect(options.onApply).not.toHaveBeenCalled()
   })
 
   it('stays read-only when another tab owns the workspace chat writer lock', async () => {

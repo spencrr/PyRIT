@@ -177,8 +177,8 @@ function validateAction(value: unknown): asserts value is TreeAssistantAction {
     fields(action, 'Execution action', ['kind', 'node_ids'])
     identifiers(action.node_ids, 'Action node IDs', MAX_NODES, 1)
   } else if (action.kind === 'plan') {
-    fields(action, 'Plan action', ['kind', 'steps', 'run'])
-    boolean(action.run, 'Plan run flag')
+    fields(action, 'Plan action', ['kind', 'steps'], ['run'])
+    if (action.run != null) boolean(action.run, 'Plan run flag')
     const stepIds = new Set<string>()
     for (const item of list(action.steps, 'Plan steps', 20, 1)) {
       const step = fields(item, 'Plan step', ['id', 'parent', 'prompt', 'converters'])
@@ -201,7 +201,8 @@ function validateAction(value: unknown): asserts value is TreeAssistantAction {
     }
   } else {
     requireValue(action.kind === 'mutate', 'Unknown assistant action')
-    fields(action, 'Mutation action', ['kind', 'commands'])
+    fields(action, 'Mutation action', ['kind', 'commands'], ['run'])
+    if (action.run != null) boolean(action.run, 'Mutation run flag')
     for (const item of list(action.commands, 'Mutation commands', 20, 1)) {
       const command = record(item, 'Command')
       requireValue(typeof command.type === 'string' && Object.prototype.hasOwnProperty.call(COMMAND_KEYS, command.type), 'Unknown assistant command')
@@ -258,7 +259,8 @@ function validateContext(value: unknown, workspaceId: string): asserts value is 
   text(context.objective, 'Objective')
   identifier(context.target_registry_name, 'Target registry name')
   identifier(context.target_identifier_hash, 'Target identifier hash')
-  const settings = fields(context.settings, 'Context settings', ['traversal', 'concurrency', 'operation_budget', 'scorer_ids'])
+  const settings = fields(context.settings, 'Context settings', ['traversal', 'concurrency', 'operation_budget', 'scorer_ids'], ['auto_run'])
+  if (settings.auto_run !== undefined) boolean(settings.auto_run, 'Context auto-run flag')
   requireValue(settings.traversal === 'breadth-first' || settings.traversal === 'depth-first', 'Unknown traversal')
   requireValue([1, 2, 4].includes(Number(settings.concurrency)) && typeof settings.concurrency === 'number', 'Invalid concurrency')
   integer(settings.operation_budget, 'Operation budget', 1, 100_000)
@@ -299,8 +301,10 @@ function validateContext(value: unknown, workspaceId: string): asserts value is 
   // Preserve the exact pending request for idempotent retry, not as permission to resume actions.
   if (context.autonomy != null) {
     const historical = fields(context.autonomy, 'Historical autonomy context', ['root_node_id', 'remaining_operations', 'remaining_turns', 'goal'])
-    identifier(historical.root_node_id, 'Historical autonomy root')
-    requireValue(parents.has(historical.root_node_id), 'Unknown historical autonomy root node')
+    if (historical.root_node_id !== null) {
+      identifier(historical.root_node_id, 'Historical autonomy root')
+      requireValue(parents.has(historical.root_node_id), 'Unknown historical autonomy root node')
+    }
     integer(historical.remaining_operations, 'Historical operation budget', 0, 100_000)
     integer(historical.remaining_turns, 'Historical turn budget', 0, MAX_TURNS)
     text(historical.goal, 'Historical autonomy goal')

@@ -1114,6 +1114,7 @@ export type TreeCommand =
   | { type: 'edit'; nodeId: string; prompt: string; converters: TreeConverterSpec[] }
   | { type: 'fanOut'; nodeId: string; variants: Array<{ prompt: string; converters: TreeConverterSpec[] }> }
   | { type: 'fork'; nodeId: string; prompt: string; converters: TreeConverterSpec[] }
+  | { type: 'forkPath'; nodeId: string; descendantId: string; prompt: string; converters: TreeConverterSpec[] }
   | { type: 'prune'; nodeId: string; pruned: boolean }
   | { type: 'keep'; nodeId: string }
   | { type: 'move'; nodeId: string; position: { x: number; y: number } }
@@ -1221,9 +1222,9 @@ export type TreeAssistantMutation = Extract<TreeCommand, {
 }>
 
 export type TreeAssistantAction =
-  | { kind: 'mutate'; commands: TreeAssistantMutation[] }
+  | { kind: 'mutate'; commands: TreeAssistantMutation[]; run?: boolean | null }
   | { kind: 'run' | 'score'; node_ids: string[] }
-  | { kind: 'plan'; steps: TreeAssistantPlanStep[]; run: boolean }
+  | { kind: 'plan'; steps: TreeAssistantPlanStep[]; run?: boolean | null }
 
 export interface TreeAssistantPlanStep {
   id: string
@@ -1233,7 +1234,7 @@ export interface TreeAssistantPlanStep {
 }
 
 export interface TreeAssistantGrant {
-  root_node_id: string
+  root_node_id: string | null
   remaining_operations: number
   remaining_turns: number
   goal: string
@@ -1266,9 +1267,10 @@ export interface TreeAssistantReview extends Readonly<Omit<TreePreparedChange, '
 }
 
 export type TreeAssistantPreparedProposal = TreeAssistantReview & (
-  | { readonly kind: 'mutate'; readonly workspace: TreeWorkspace; readonly change: TreePreparedChange }
+  | { readonly kind: 'mutate'; readonly workspace: TreeWorkspace; readonly change: TreePreparedChange; readonly run: boolean }
   | { readonly kind: 'plan'; readonly workspace: TreeWorkspace; readonly change: TreePreparedChange; readonly run: boolean }
-  | { readonly kind: 'run' | 'score' }
+  | { readonly kind: 'run' }
+  | { readonly kind: 'score' }
 )
 
 export type TreeAssistantApply = (
@@ -1324,6 +1326,14 @@ export interface TreeAssistantNode {
   last_sequence?: number
 }
 
+export interface TreeAssistantSettings {
+  traversal: TreeSettings['traversal']
+  concurrency: number
+  operation_budget: number
+  scorer_ids: string[]
+  auto_run?: boolean
+}
+
 export interface TreeAssistantContext {
   workspace_id: string
   revision: number
@@ -1333,12 +1343,7 @@ export interface TreeAssistantContext {
   target_identifier_hash: string
   selected_node_id: string | null
   nodes: TreeAssistantNode[]
-  settings: {
-    traversal: TreeSettings['traversal']
-    concurrency: number
-    operation_budget: number
-    scorer_ids: string[]
-  }
+  settings: TreeAssistantSettings
   autonomy?: TreeAssistantGrant | null
 }
 

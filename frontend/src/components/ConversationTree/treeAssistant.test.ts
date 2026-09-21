@@ -283,16 +283,16 @@ describe('treeAssistant', () => {
     tree.nodes[0].prompt = 'X'.repeat(32_001)
     expect(() => createAssistantContext(tree, null)).toThrow(/32000/)
   })
-  it('previews edits atomically without mutating the workspace or auto-running', () => {
+  it('supports an explicit draft-only override without mutating the workspace', () => {
     const tree = fixture()
     tree.settings = { ...getTreeSettings(tree), autoRun: true, confirmRuns: false }
-    const proposed = proposal(tree, { kind: 'mutate', commands: [
+    const proposed = proposal(tree, { kind: 'mutate', run: false, commands: [
       { type: 'childVariants', nodeId: tree.nodes[0].id, variants: [{ prompt: 'Follow up', converters: [] }] },
       { type: 'sample', nodeId: tree.nodes[0].id, count: 2 },
     ] })
     const prepared = prepareAssistantProposal(tree, proposed)
     expect(prepared.kind).toBe('mutate')
-    expect(previewAssistantProposal(tree, proposed)).toMatchObject({ operations: 0, description: expect.stringContaining('Auto-run is suppressed') })
+    expect(previewAssistantProposal(tree, proposed)).toMatchObject({ operations: 0, description: expect.stringContaining('Explicit draft-only override') })
     if (prepared.kind !== 'mutate') throw new Error('Wrong action')
     expect(prepared.workspace.nodes).toHaveLength(4)
     expect(prepared.workspace.nodes.every((node) => node.status === 'draft')).toBe(true)
@@ -370,6 +370,101 @@ describe('treeAssistant', () => {
     expect(() => prepareAssistantProposal(tree, proposed)).toThrow(/budget/i)
     tree.settings.operationBudget = 3
     expect(previewAssistantProposal(tree, proposed).operations).toBe(3)
+  })
+
+  it.each([
+    { autoRun: false, intent: undefined, expected: false },
+    { autoRun: false, intent: null, expected: false },
+    { autoRun: false, intent: false, expected: false },
+    { autoRun: false, intent: true, expected: true },
+    { autoRun: true, intent: undefined, expected: true },
+    { autoRun: true, intent: null, expected: true },
+    { autoRun: true, intent: false, expected: false },
+    { autoRun: true, intent: true, expected: true },
+  ])('freezes additions under policy %j for both action kinds', ({ autoRun, intent, expected }) => {
+    const tree = fixture()
+    tree.settings = { ...getTreeSettings(tree), autoRun, autoScore: true, scorers: [
+      { scorer_id: 'judge', scorer_type: 'Scale', identifier_hash: 'hash', score_type: 'float_scale', highIsRisk: true, scope: 'response' },
+    ] }
+    expect(createAssistantContext(tree, null).settings.auto_run).toBe(autoRun)
+    const converters = [{ type: 'Base64Converter', params: {} }]
+    const actions: TreeAssistantAction[] = [
+      { kind: 'mutate', run: intent, commands: [{ type: 'add', parentId: null, prompt: 'New root', converters }] },
+      { kind: 'plan', run: intent, steps: [{ id: 'new-root', parent: null, prompt: 'New root', converters }] },
+    ]
+    for (const action of actions) {
+      const proposed = proposal(tree, action)
+      const prepared = prepareAssistantProposal(tree, proposed)
+      expect(prepared).toMatchObject({ run: expected, operations: expected ? 3 : 0 })
+      expect(prepared.nodeIds).toEqual(expected ? prepared.addedNodeIds : [])
+      expect(prepared.nodeIds).not.toContain(tree.nodes[0].id)
+      expect(Object.isFrozen(prepared.nodeIds)).toBe(true)
+      const grant = { root_node_id: null, remaining_operations: 3, remaining_turns: 2, goal: 'Explore' }
+      expect(validateAutonomousProposal(tree, proposed, grant, prepared)).toBe(expected ? 3 : 0)
+      if (expected) {
+        expect(() => validateAutonomousProposal(tree, proposed, { ...grant, remaining_operations: 2 }, prepared)).toThrow(/budget/)
+      }
+    }
+  })
+
+  it.each(['mutate', 'plan'] as const)('fails %s auto-run atomically for an unrun ancestor and allows explicit draft-only', (kind) => {
+    const tree = fixture()
+    tree.settings = { ...getTreeSettings(tree), autoRun: true }
+    const action: TreeAssistantAction = kind === 'mutate'
+      ? { kind, commands: [{ type: 'add', parentId: tree.nodes[0].id, prompt: 'Blocked child' }] }
+      : { kind, steps: [{ id: 'child', parent: { node_id: tree.nodes[0].id }, prompt: 'Blocked child', converters: [] }] }
+    expect(() => prepareAssistantProposal(tree, proposal(tree, action))).toThrow(/parent first.*run: false/i)
+    expect(tree.nodes).toHaveLength(1)
+    expect(prepareAssistantProposal(tree, proposal(tree, { ...action, run: false }))).toMatchObject({ run: false, operations: 0, nodeIds: [] })
+  })
+
+  it.each(['retry', 'edit', 'prune'] as const)('does not auto-run old nodes after %s without additions', (type) => {
+    const tree = type === 'retry' ? observed(fixture()) : fixture()
+    tree.settings = { ...getTreeSettings(tree), autoRun: true }
+    const nodeId = tree.nodes[0].id
+    const command = type === 'retry' ? { type, nodeId, scope: 'node' as const }
+      : type === 'edit' ? { type, nodeId, prompt: 'Edited', converters: [] } : { type, nodeId, pruned: true }
+    const prepared = prepareAssistantProposal(tree, proposal(tree, { kind: 'mutate', run: true, commands: [command] }))
+    expect(prepared).toMatchObject({ run: false, operations: 0, nodeIds: [], addedNodeIds: [] })
+  })
+
+  it('validates mutation auto-run costs including converters and scoring before saving', () => {
+    const tree = fixture()
+    tree.settings = { ...getTreeSettings(tree), autoRun: true, autoScore: true, operationBudget: 2, scorers: [
+      { scorer_id: 'judge', scorer_type: 'Scale', identifier_hash: 'hash', score_type: 'float_scale', highIsRisk: true, scope: 'response' },
+    ] }
+    const proposed = proposal(tree, { kind: 'mutate', commands: [
+      { type: 'add', parentId: null, prompt: 'New root', converters: [{ type: 'Base64Converter', params: {} }] },
+    ] })
+    expect(() => prepareAssistantProposal(tree, proposed)).toThrow(/budget/)
+    expect(tree.nodes).toHaveLength(1)
+  })
+
+  it('allows whole-workspace Auto mode to create the first root in an empty workspace', () => {
+    const tree = { ...fixture(), nodes: [] }
+    const proposed = proposal(tree, { kind: 'mutate', run: true, commands: [{ type: 'add', parentId: null, prompt: 'First root' }] })
+    expect(validateAutonomousProposal(tree, proposed, {
+      root_node_id: null, remaining_operations: 1, remaining_turns: 9, goal: 'Start',
+    })).toBe(1)
+    expect(tree.nodes).toEqual([])
+  })
+
+  it.each(['false', 0, 1, {}, []])('rejects malformed nullable run flags: %j', (run: unknown) => {
+    const tree = fixture()
+    for (const action of [
+      { kind: 'mutate', run, commands: [{ type: 'add', parentId: null, prompt: 'Root' }] },
+      { kind: 'plan', run, steps: [{ id: 'root', parent: null, prompt: 'Root', converters: [] }] },
+    ]) {
+      const proposed: TreeAssistantProposal = JSON.parse(JSON.stringify({ ...proposal(tree, { kind: 'mutate', commands: [] }), action }))
+      expect(() => prepareAssistantProposal(tree, proposed)).toThrow(/Invalid/)
+    }
+  })
+
+  it.each([undefined, false, 0, '', 'missing'])('rejects malformed or missing Auto mode roots: %j', (root: unknown) => {
+    const tree = fixture()
+    const proposed = proposal(tree, { kind: 'mutate', run: false, commands: [{ type: 'add', parentId: null, prompt: 'Root' }] })
+    const grant = JSON.parse(JSON.stringify({ root_node_id: root, remaining_operations: 1, remaining_turns: 1, goal: 'Start' }))
+    expect(() => validateAutonomousProposal(tree, proposed, grant)).toThrow()
   })
   it('scores only stored assistant evidence using workspace scorers', () => {
     const tree = fixture()

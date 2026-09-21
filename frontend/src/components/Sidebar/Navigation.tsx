@@ -99,8 +99,8 @@ export default function Navigation({
           data-active={currentView === 'tree'}
           appearance="subtle"
           icon={<BranchForkRegular />}
-          title="Conversation tree"
-          aria-label="Conversation tree"
+          title="Workspace"
+          aria-label="Workspace"
           aria-current={currentView === 'tree' ? 'page' : undefined}
           onClick={() => onNavigate('tree')}
         />

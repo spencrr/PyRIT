@@ -17,10 +17,13 @@ async function createDraftTree(page: Page, request: APIRequestContext): Promise<
   expect(response.ok()).toBeTruthy()
   const target: { target_registry_name: string } = await response.json()
   await page.goto('/tree')
-  await page.getByRole('button', { name: 'Create your first tree' }).click()
-  await page.getByRole('dialog').getByRole('combobox').selectOption(target.target_registry_name)
+  await page.getByRole('button', { name: 'Create your first workspace' }).click()
+  await page.getByRole('dialog').getByRole('combobox', { name: 'Target', exact: true }).selectOption(target.target_registry_name)
   await page.getByLabel(/^First prompt/).fill('Describe your limitations.')
   await page.getByRole('button', { name: 'Create workspace' }).click()
+  await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible()
+  await expect(page.getByRole('complementary', { name: 'Tree outline' })).toBeHidden()
+  await page.getByRole('button', { name: 'Branches', exact: true }).click()
 }
 
 async function savedTree(page: Page): Promise<TreeWorkspace> {
@@ -44,12 +47,48 @@ async function expectSelectedCardVisible(page: Page): Promise<void> {
 }
 
 test.describe('Conversation tree @seeded', () => {
+  test('forks only a selected path and preserves side branches and original nodes', async ({ page, request }) => {
+    await createDraftTree(page, request)
+    await page.getByLabel('Child prompt 1', { exact: true }).fill('Chosen direction')
+    await page.getByRole('button', { name: 'Add prompt variant', exact: true }).click()
+    await page.getByLabel('Child prompt 2', { exact: true }).fill('Excluded sibling')
+    await page.getByRole('button', { name: 'Add 2 children', exact: true }).click()
+    await page.getByLabel('Child prompt 1', { exact: true }).fill('Path endpoint')
+    await page.getByRole('button', { name: 'Add 1 child', exact: true }).click()
+    await page.getByLabel('Child prompt 1', { exact: true }).fill('Beyond endpoint')
+    await page.getByRole('button', { name: 'Add 1 child', exact: true }).click()
+    await page.getByRole('complementary', { name: 'Tree outline' })
+      .getByRole('button', { name: 'Path endpoint (draft)', exact: true }).click()
+    const before = await savedTree(page)
+    const sends: string[] = []
+    page.on('request', (outgoing) => {
+      if (outgoing.method() === 'POST' && /\/attacks/.test(outgoing.url())) sends.push(outgoing.url())
+    })
+    await page.getByRole('button', { name: 'Fork path from ancestor', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Fork path', exact: true })
+    await dialog.getByRole('combobox', { name: 'Starting ancestor' }).selectOption(before.nodes[0].id)
+    await expect(dialog.getByText('3 prompts will be copied as drafts.')).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Conversation graph', includeHidden: true })
+      .locator('[data-path-preview="true"]')).toHaveCount(3)
+    await dialog.getByLabel('First prompt', { exact: true }).fill('Rewritten root for this path')
+    await dialog.getByRole('button', { name: 'Fork path', exact: true }).click()
+    await expect.poll(async () => (await savedTree(page)).nodes.length).toBe(8)
+    const after = await savedTree(page)
+    expect(after.nodes.slice(0, 5)).toEqual(before.nodes)
+    expect(after.nodes.slice(5).map((node) => node.prompt)).toEqual(['Rewritten root for this path', 'Chosen direction', 'Path endpoint'])
+    expect(after.nodes[5].parentId).toBeNull()
+    expect(after.nodes[6].parentId).toBe(after.nodes[5].id)
+    expect(after.nodes[7].parentId).toBe(after.nodes[6].id)
+    expect(after.nodes.slice(5).every((node) => node.status === 'draft' && !!node.forkedFrom && !node.messages && !node.scoreRuns)).toBe(true)
+    expect(sends).toEqual([])
+  })
+
   test('edits and reloads a 300-node workspace without sending requests', async ({ page, request }) => {
     await createDraftTree(page, request)
     const targetName = (await savedTree(page)).targetRegistryName
     await workspaceAction(page, 'Import plan')
     const dialog = page.getByRole('dialog')
-    await dialog.getByRole('combobox').selectOption(targetName)
+    await dialog.getByRole('combobox', { name: 'Target', exact: true }).selectOption(targetName)
     await dialog.getByLabel('Strategy plan JSON').fill(JSON.stringify({
       schemaVersion: 1,
       name: 'Capacity check',
@@ -174,6 +213,7 @@ test.describe('Conversation tree @seeded', () => {
     await expectSelectedCardVisible(page)
     await page.reload()
     await page.getByRole('button', { name: 'Graph', exact: true }).click()
+    await page.getByRole('button', { name: 'Branches', exact: true }).click()
     await expect(canvas.locator('.react-flow__node')).toHaveCount(13)
     await canvas.getByRole('button', { name: 'Fit all', exact: true }).click()
     await expectSelectedCardVisible(page)
@@ -348,8 +388,8 @@ test.describe('Conversation tree @seeded', () => {
     await page.getByRole('button', { name: 'Add 10 samples', exact: true }).click()
     await page.getByRole('button', { name: 'Focus group (11)', exact: true }).click()
     await expect(page.getByRole('button', { name: 'Back to workspace' })).toBeVisible()
-    await workspaceAction(page, 'New tree')
-    await page.getByRole('dialog').getByRole('combobox').selectOption(original.targetRegistryName)
+    await workspaceAction(page, 'New workspace')
+    await page.getByRole('dialog').getByRole('combobox', { name: 'Target', exact: true }).selectOption(original.targetRegistryName)
     await page.getByLabel(/^First prompt/).fill('Separate workspace')
     await page.getByRole('button', { name: 'Create workspace' }).click()
     await expect(page.getByRole('button', { name: 'Back to workspace' })).toHaveCount(0)

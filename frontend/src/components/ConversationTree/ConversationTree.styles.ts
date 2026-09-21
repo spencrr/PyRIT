@@ -151,6 +151,7 @@ export const useConversationTreeStyles = makeStyles({
       outline: `2px solid ${tokens.colorBrandStroke1}`,
       boxShadow: tokens.shadow8,
     },
+    '&[data-path-preview="true"]': { outline: `3px solid ${tokens.colorBrandStroke1}` },
     '&[data-kept="true"]': { borderLeft: `4px solid ${tokens.colorBrandStroke1}` },
     '&[data-pruned="true"]': {
       opacity: 0.6,
@@ -197,6 +198,7 @@ export const useConversationTreeStyles = makeStyles({
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   button: { ...mobileTouchTarget },
+  forkPathButton: { ...mobileTouchTarget, flexShrink: 0 },
   pipelinePreview: {
     whiteSpace: 'nowrap',
     overflow: 'hidden',

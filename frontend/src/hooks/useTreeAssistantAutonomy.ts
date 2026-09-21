@@ -23,7 +23,7 @@ type AutonomyState =
 /** Optional orchestration. The session hook owns persistence and never restores this authority. */
 export function useTreeAssistantAutonomy(options: TreeAssistantAutonomyOptions) {
   const [state, setState] = useState<AutonomyState>({
-    kind: 'off', status: 'Autonomy is off. Restoring chat never resumes actions.',
+    kind: 'off', status: 'Auto mode is off. Restoring chat never resumes actions.',
   })
   const optionsRef = useRef(options)
   const generation = useRef(0)
@@ -50,20 +50,22 @@ export function useTreeAssistantAutonomy(options: TreeAssistantAutonomyOptions) 
       ? { ...previous, kind: 'stopping', status: 'Stopping after in-flight work settles…' } : previous)
   }
 
-  async function runAutonomy(goal: string, operationBudget: number): Promise<void> {
+  async function runAutonomy(goal: string, operationBudget: number, scopeRootId: string | null): Promise<void> {
     if (!goal.trim()) return
     await optionsRef.current.runSequence(async (sequence: TreeAssistantSequence) => {
       const config = optionsRef.current
       const workspace = config.getWorkspace?.() ?? config.workspace
-      const root = config.selectedId
-      if (!root || !workspace.nodes.some((node) => node.id === root) || isNodeHidden(workspace, root)) throw new Error('Select a non-pruned subtree first.')
+      const root = scopeRootId
+      if (root !== null && (!workspace.nodes.some((node) => node.id === root) || isNodeHidden(workspace, root))) {
+        throw new Error('The selected subtree is missing or pruned. Submit the message again with a valid scope.')
+      }
       if (!Number.isSafeInteger(operationBudget) || operationBudget < 1 || operationBudget > 100_000) throw new Error('Choose a budget between 1 and 100000 operations.')
       const run = ++generation.current
       const allowance: TreeAssistantGrant = { root_node_id: root, remaining_operations: operationBudget, remaining_turns: 10, goal: goal.trim() }
-      const status = 'Running within the selected subtree. Each planning turn may use bounded tool/model calls.'
+      const status = `Auto mode: running within ${root === null ? 'the whole workspace' : 'the granted subtree'}.`
       try {
         while (mounted.current && generation.current === run && allowance.remaining_turns > 0) {
-          if (optionsRef.current.disabled || !optionsRef.current.active) throw new Error('Autonomy paused because the workspace is busy, edited, or hidden.')
+          if (optionsRef.current.disabled || !optionsRef.current.active) throw new Error('Auto mode paused because the workspace is busy, edited, or hidden.')
           const before = optionsRef.current.getWorkspace?.() ?? optionsRef.current.workspace
           const precondition = captureAssistantPrecondition(before)
           allowance.remaining_turns--
@@ -72,7 +74,7 @@ export function useTreeAssistantAutonomy(options: TreeAssistantAutonomyOptions) 
           if (!mounted.current || generation.current !== run) break
           const after = optionsRef.current.getWorkspace?.() ?? optionsRef.current.workspace
           if (treeSemanticSignature(after) !== precondition.semanticSignature || optionsRef.current.disabled || !optionsRef.current.active) {
-            throw new Error('Tree changed while planning. Review the proposal manually; autonomy paused.')
+            throw new Error('Tree changed while planning. Review the proposal manually; Auto mode paused.')
           }
           const proposal = turn.proposals[0]
           if (!proposal) { update({ kind: 'finished', status: 'Finished: the assistant returned no further action.' }); return }
@@ -80,14 +82,14 @@ export function useTreeAssistantAutonomy(options: TreeAssistantAutonomyOptions) 
           const operations = validateAutonomousProposal(after, proposal, allowance, review)
           const receipt = await sequence.resolve(proposal, { ...allowance }, review)
           allowance.remaining_operations -= operations
-          if (receipt.status !== 'applied') throw new Error('Autonomy paused after an incomplete action. Review its result before continuing.')
+          if (receipt.status !== 'applied') throw new Error('Auto mode paused after an incomplete action. Review its result before continuing.')
           if (allowance.remaining_operations <= 0) { update({ kind: 'paused', status: 'Paused: operation budget exhausted.' }); return }
           await new Promise<void>((done: () => void) => { setTimeout(done, 0) })
         }
         update({ kind: 'paused', status: generation.current !== run
           ? 'Stopped. In-flight work has settled; no further actions will run.' : 'Paused: the ten-turn planning limit was reached.' })
       } catch (failure: unknown) {
-        update({ kind: 'paused', status: 'Paused. Review the reported issue and pending proposal before granting autonomy again.' })
+        update({ kind: 'paused', status: 'Auto mode paused. Review the reported issue and pending proposal before authorizing another message.' })
         throw failure
       }
     })

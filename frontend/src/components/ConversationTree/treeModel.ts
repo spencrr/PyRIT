@@ -502,6 +502,39 @@ function getNode(workspace: TreeWorkspace, nodeId: string): TreeNode {
   return node
 }
 
+/** Returns the inclusive ancestor-to-descendant path, never its sibling branches. */
+export function getTreePath(workspace: TreeWorkspace, startId: string, endId: string): TreeNode[] {
+  getNode(workspace, startId)
+  let current = getNode(workspace, endId)
+  const reversed: TreeNode[] = []
+  const visited = new Set<string>()
+  while (true) {
+    requireValue(!visited.has(current.id), 'cycle detected')
+    visited.add(current.id)
+    reversed.push(current)
+    if (current.id === startId) return reversed.reverse()
+    requireValue(current.parentId !== null, 'path endpoint must be a descendant of the starting node')
+    current = getNode(workspace, current.parentId)
+  }
+}
+
+/** Validates a path fork without allocating IDs, changing evidence, or scheduling execution. */
+export function validateTreeForkPath(
+  workspace: TreeWorkspace,
+  command: Extract<TreeCommand, { type: 'forkPath' }>,
+): TreeNode[] {
+  const validated = parseTreeWorkspace(JSON.stringify(workspace))
+  const path = getTreePath(validated, command.nodeId, command.descendantId)
+  requireValue(path.every((node: TreeNode) => !isNodeHidden(validated, node.id)),
+    'restore hidden branches before forking a path')
+  requireValue(path.every((node: TreeNode) => node.status !== 'running'),
+    'forking this path is blocked until running source nodes finish')
+  requireValue(validated.nodes.length + path.length <= MAX_TREE_NODES, `maximum ${MAX_TREE_NODES} nodes`)
+  text(command.prompt, 'prompt')
+  converters(parseJson(JSON.stringify(command.converters)))
+  return path
+}
+
 function childrenByParent(workspace: TreeWorkspace): Map<string | null, TreeNode[]> {
   const children = new Map<string | null, TreeNode[]>()
   for (const node of workspace.nodes) {
@@ -1137,6 +1170,26 @@ export function applyTreeCommand(workspace: TreeWorkspace, command: TreeCommand)
       assertNoRunningSubtree(next, node.id, 'forking this branch')
       next.nodes.push(...cloneBranch(next, node, command.prompt, command.converters))
       break
+    case 'forkPath': {
+      const path = validateTreeForkPath(next, command)
+      let parentId = node.parentId
+      let parentAttemptId = node.parentAttemptId
+      for (const original of path) {
+        const clone: TreeNode = {
+          ...buildDraftNode(
+            parentId,
+            original.id === node.id ? command.prompt : original.prompt,
+            original.id === node.id ? command.converters : original.converters,
+            parentAttemptId,
+          ),
+          forkedFrom: original.id,
+        }
+        next.nodes.push(clone)
+        parentId = clone.id
+        parentAttemptId = getCurrentAttemptId(clone)
+      }
+      break
+    }
     case 'retry': {
       requireValue(!isNodeHidden(next, node.id), 'restore hidden branches before retrying')
       requireValue(node.status !== 'running', 'Recover the recorded result before retrying')

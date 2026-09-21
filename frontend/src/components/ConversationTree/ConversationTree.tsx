@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field,
-  Link, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarBody, Select, Text,
+  Link, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarBody, Select, Text, Textarea,
 } from '@fluentui/react-components'
 import { BranchForkRegular, MoreHorizontalRegular } from '@fluentui/react-icons'
 
@@ -23,6 +23,7 @@ import TreeNodeEditor from './TreeNodeEditor'
 import TreeWorkspaceDialog from './TreeWorkspaceDialog'
 import TreeSettingsDialog from './TreeSettingsDialog'
 import TreeScoringDialog from './TreeScoringDialog'
+import TreeForkPathDialog from './TreeForkPathDialog'
 import { recoverTreeNode, runTree, TreePersistenceError } from './treeExecution'
 import {
   applyTreeCommand, exportTreePlan, getNewRunNodeIds, getRunNodeIds, getTreeSettings, isNodeHidden, TREE_WORKSPACE_LABEL,
@@ -99,7 +100,8 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   const dirtyRef = useRef(false)
   const [showPruned, setShowPruned] = useState(false)
   const [layoutVersions, setLayoutVersions] = useState<Record<string, number>>({})
-  const [dialog, setDialog] = useState<'new' | 'import' | 'settings' | 'scoring' | 'delete' | 'discard-recovery' | null>(null)
+  const [dialog, setDialog] = useState<'new' | 'import' | 'settings' | 'scoring' | 'delete' | 'discard-recovery' | 'fork-path' | null>(null)
+  const [pathPreview, setPathPreview] = useState<string[]>([])
   const [proposal, setProposal] = useState<Proposal | null>(null)
   const [skipConfirm, setSkipConfirm] = useState(false)
   const [run, setRun] = useState<RunRecord | null>(null)
@@ -114,8 +116,9 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   const [focusedGroupId, setFocusedGroupId] = useState<string | null>(null)
   const [activityOpen, setActivityOpen] = useState(false)
   const [dock, setDock] = useState<'graph' | 'inspect' | 'assistant'>('inspect')
-  const [outlineOpen, setOutlineOpen] = useState(true)
-  const [splitDock, setSplitDock] = useState(false)
+  const [outlineOpen, setOutlineOpen] = useState(false)
+  const [splitDock, setSplitDock] = useState(true)
+  const [firstPrompt, setFirstPrompt] = useState('')
   const assistantOpen = dock === 'assistant'
   const [assistantBusy, setAssistantBusy] = useState(false)
   const [assistantCommitting, setAssistantCommitting] = useState(false)
@@ -145,9 +148,11 @@ export default function ConversationTree({ activeTarget, labels, active = true }
     else { current.current = null; setWorkspace(null) }
     setSelectedId(next?.nodes[0]?.id ?? null)
     setFocusedGroupId(null)
+    setPathPreview([])
     setUndo([]); setRedo([])
     setNotice(''); setError('')
     dirtyRef.current = false; setDirty(false)
+    setFirstPrompt('')
     assistantReceipts.current.clear()
   }
 
@@ -375,7 +380,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         const saved = change.workspace
         const added = change.addedNodeIds
         setFocusedGroupId(null)
-        if (prepared.kind === 'plan' && prepared.run) {
+        if (prepared.run) {
           if (stopped.current) return { status: 'failed', revision: saved.revision, detail: 'Plan drafts saved; stopped before execution. No requests sent.' }
           return await executeAssistantRun(planned(saved, prepared.nodeIds, 'run'))
         }
@@ -530,14 +535,14 @@ export default function ConversationTree({ activeTarget, labels, active = true }
   return (
     <div className={styles.root}>
       <header className={styles.toolbar}>
-        <BranchForkRegular fontSize={24} /><Text as="h1" className={styles.title}>Conversation tree</Text>
+        <BranchForkRegular fontSize={24} /><Text as="h1" className={styles.title}>Workspace</Text>
         {workspace && <Select aria-label="Workspace" className={styles.workspaceSelect} value={workspace.id} disabled={viewLocked}
           onChange={(_, data) => { openWorkspace(data.value) }}>
           {workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
         </Select>}
         <Menu><MenuTrigger disableButtonEnhancement><Button className={styles.button} icon={<MoreHorizontalRegular />} aria-label="Workspace options" /></MenuTrigger>
           <MenuPopover><MenuList>
-            <MenuItem disabled={viewLocked || loading} onClick={() => { setDialog('new') }}>New tree</MenuItem>
+            <MenuItem disabled={viewLocked || loading} onClick={() => { setDialog('new') }}>New workspace</MenuItem>
             <MenuItem disabled={viewLocked || loading} onClick={() => { setDialog('import') }}>Import plan</MenuItem>
             <MenuItem disabled={!workspace || viewLocked} onClick={() => { download(true) }}>Export plan</MenuItem>
             <MenuItem disabled={!workspace || viewLocked} onClick={() => { download(false) }}>Export evidence</MenuItem>
@@ -610,10 +615,23 @@ export default function ConversationTree({ activeTarget, labels, active = true }
           </div></aside>
           {active && <TreeCanvas workspace={workspace} key={workspace.id} selectedId={selectedId} showPruned={showPruned}
             disabled={recovery !== null || recovering} layoutVersion={layoutVersions[workspace.id] ?? 0} queuedIds={run?.nodeIds}
-            focusedGroupId={focusedGroupId} onFocusGroup={setFocusedGroupId}
+            focusedGroupId={focusedGroupId} onFocusGroup={setFocusedGroupId} highlightedNodeIds={pathPreview}
             onSelect={(id) => { void selectNode(id) }} onMove={(nodeId, position) => { void commitCommand({ type: 'move', nodeId, position }) }}
             onGroup={(command) => { void commitCommand(command) }} />}
           <aside className={styles.inspector} aria-label="Turn inspector">
+            {selected && <Button className={styles.forkPathButton} disabled={viewLocked || selected.status === 'running'}
+              onClick={() => { setDialog('fork-path') }}>Fork path from ancestor</Button>}
+            {workspace.nodes.length === 0 && <div className={styles.stack}>
+              <Text weight="semibold">Start this workspace</Text>
+              <Text>{settings.objective || 'Add a first prompt, or ask the assistant to build a plan.'}</Text>
+              <Field label="First prompt"><Textarea value={firstPrompt} disabled={selectedLocked}
+                onChange={(_, data) => { setFirstPrompt(data.value); dirtyRef.current = !!data.value; setDirty(!!data.value) }} /></Field>
+              <Button className={styles.button} disabled={selectedLocked || !firstPrompt.trim()}
+                onClick={() => { void commitCommand({ type: 'add', parentId: null, prompt: firstPrompt }).then((saved) => {
+                  if (saved) setFirstPrompt('')
+                }) }}>Add first prompt</Button>
+              <Button className={styles.button} disabled={!!firstPrompt} onClick={() => { setDock('assistant') }}>Plan with assistant</Button>
+            </div>}
             {group && <div className={styles.row}>
               <Button className={styles.button} onClick={() => { setFocusedGroupId(group.id) }}>Focus group ({group.nodeIds.length})</Button>
               <Button className={styles.button} disabled={locked} onClick={() => { void commitCommand({ type: 'group', groupId: group.id, collapsed: !group.collapsed }) }}>
@@ -662,7 +680,7 @@ export default function ConversationTree({ activeTarget, labels, active = true }
       </> : <section className={styles.empty}>
         <Text as="h2" size={700}>Explore conversations, not just prompts.</Text>
         <Text>Compare branches, retain attempts, and evaluate responses.</Text>
-        <Button className={styles.button} appearance="primary" disabled={loading} onClick={() => { setDialog('new') }}>Create your first tree</Button>
+        <Button className={styles.button} appearance="primary" disabled={loading} onClick={() => { setDialog('new') }}>Create your first workspace</Button>
       </section>}
       {(dialog === 'new' || dialog === 'import') && <TreeWorkspaceDialog targets={targets} activeTarget={activeTarget} labels={labels}
         importing={dialog === 'import'} open={active} onClose={() => { setDialog(null) }} onCreate={async (next) => {
@@ -670,6 +688,9 @@ export default function ConversationTree({ activeTarget, labels, active = true }
         }} />}
       {settings && dialog === 'settings' && <TreeSettingsDialog settings={settings} open={active} onClose={() => { setDialog(null) }}
         onSave={(next) => commitCommand({ type: 'settings', settings: next })} />}
+      {workspace && selectedId && dialog === 'fork-path' && <TreeForkPathDialog workspace={workspace} selectedId={selectedId}
+        catalog={catalog} targets={targets} open={active} onClose={() => { setDialog(null); setPathPreview([]) }}
+        onPreview={setPathPreview} onFork={commitCommand} />}
       {settings && dialog === 'scoring' && <TreeScoringDialog settings={settings} targets={targets} open={active} onClose={() => { setDialog(null) }}
         onSave={(next) => commitCommand({ type: 'settings', settings: next })} />}
       <Dialog open={active && proposal !== null} onOpenChange={(_, data) => { if (!data.open) setProposal(null) }}>

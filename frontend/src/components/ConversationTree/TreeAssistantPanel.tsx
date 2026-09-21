@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 
 import {
   Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle,
-  Field, Input, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarBody, Spinner, Text, Textarea,
+  Field, Input, Menu, MenuItem, MenuList, MenuPopover, MenuTrigger, MessageBar, MessageBarBody, Select, Spinner, Switch, Text, Textarea,
 } from '@fluentui/react-components'
 import { MoreHorizontalRegular } from '@fluentui/react-icons'
 
@@ -16,8 +16,9 @@ import type {
 } from '@/types'
 import { downloadTextFile } from '@/utils/conversationExport'
 
-import { prepareAssistantProposal } from './treeAssistant'
+import { captureAssistantPrecondition, prepareAssistantProposal } from './treeAssistant'
 import { exportAssistantChat } from './treeAssistantStorage'
+import { isNodeHidden, treeSemanticSignature } from './treeModel'
 import TreeAssistantTurnDetails from './TreeAssistantTurnDetails'
 import { useTreeAssistantPanelStyles } from './TreeAssistantPanel.styles'
 
@@ -47,6 +48,13 @@ interface NodeChangeProps {
 interface ReviewValueProps {
   readonly label: string
   readonly value: string
+}
+
+interface AutoConfirmation {
+  readonly draft: string
+  readonly precondition: TreeAssistantPrecondition
+  readonly selectedId: string | null
+  readonly subtreeAvailable: boolean
 }
 
 const PROMPT_LABEL_LENGTH = 80
@@ -115,7 +123,7 @@ function ProposalCard({ workspace, proposal, precondition, disabled, onResolve }
   }, [workspaceJson, proposalJson, preconditionJson])
   const action = proposal.action
   const label = action.kind === 'run' ? 'Approve run' : action.kind === 'score' ? 'Approve scoring'
-    : action.kind === 'plan' && action.run ? 'Approve plan and run' : 'Approve edits'
+    : preview && 'run' in preview && preview.run ? `Approve and run ${preview.nodeIds.length} new drafts` : 'Approve edits'
   if (proposal.status !== 'pending') return <details className={styles.resolved} aria-label="Resolved assistant proposal">
     <summary className={styles.disclosure}>
       <Text weight="semibold">{proposal.status === 'applied' ? 'Applied' : proposal.status === 'rejected' ? 'Rejected' : 'Failed'}</Text>
@@ -175,15 +183,53 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
   const autonomy = useTreeAssistantAutonomy({ ...props, runSequence: session.runSequence })
   const chat = { ...session, ...autonomy }
   const [confirmation, setConfirmation] = useState<'detach' | 'interrupted' | 'autonomy' | 'clear' | null>(null)
-  const [goal, setGoal] = useState('')
   const [budget, setBudget] = useState('20')
-  const [autonomyOpen, setAutonomyOpen] = useState(false)
+  const [autoMode, setAutoMode] = useState(false)
+  const [autoConfirmation, setAutoConfirmation] = useState<AutoConfirmation | null>(null)
+  const [scope, setScope] = useState<'workspace' | 'subtree'>('workspace')
+  const [autoError, setAutoError] = useState('')
   const [archiveOpen, setArchiveOpen] = useState(false)
   const [exportError, setExportError] = useState('')
   const { checkpoint } = chat
   const unavailable = disabled || !active || chat.busy || !!chat.storageError || !chat.writable
   const locked = unavailable || !chat.connected || chat.journal.kind !== 'ready'
   const pendingMessage = checkpoint.pendingMessage
+
+  function submitMessage(): void {
+    if (locked || !checkpoint.draft.trim()) return
+    setAutoError('')
+    if (!autoMode) { void chat.send(); return }
+    const current = props.getWorkspace?.() ?? workspace
+    setAutoConfirmation({
+      draft: checkpoint.draft, precondition: captureAssistantPrecondition(current), selectedId,
+      subtreeAvailable: selectedId !== null && current.nodes.some((node) => node.id === selectedId) && !isNodeHidden(current, selectedId),
+    })
+    setScope('workspace')
+    setAutoMode(false)
+    setConfirmation('autonomy')
+  }
+
+  function confirmAuto(): void {
+    const current = props.getWorkspace?.() ?? workspace
+    if (!autoConfirmation || autoConfirmation.draft !== checkpoint.draft || autoConfirmation.selectedId !== selectedId
+      || autoConfirmation.precondition.workspaceId !== current.id
+      || autoConfirmation.precondition.semanticSignature !== treeSemanticSignature(current)) {
+      setAutoError('The message, workspace, or selection changed. Cancel and submit again; Auto mode was not started.')
+      return
+    }
+    if (!Number.isSafeInteger(Number(budget)) || Number(budget) < 1 || Number(budget) > 100_000) {
+      setAutoError('Choose a budget between 1 and 100000 operations.')
+      return
+    }
+    if (locked) {
+      setAutoError('The workspace is no longer available. Cancel and submit again; Auto mode was not started.')
+      return
+    }
+    setConfirmation(null)
+    setAutoConfirmation(null)
+    setAutoError('')
+    void chat.runAutonomy(autoConfirmation.draft, Number(budget), scope === 'subtree' ? autoConfirmation.selectedId : null)
+  }
 
   function exportChat(): boolean {
     try {
@@ -197,7 +243,7 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
     <header className={styles.header}>
       <h2 className={styles.title}>Tree assistant</h2>
       <div className={styles.actions}>
-        {chat.grant && <Button className={styles.button} onClick={chat.stop}>Stop autonomy</Button>}
+        {chat.grant && <Button className={styles.button} onClick={chat.stop}>Stop</Button>}
         {!chat.connected && <Button className={styles.button} appearance="primary" disabled={unavailable}
           onClick={() => { void chat.start() }}>{checkpoint.session ? 'Resume session' : 'Start session'}</Button>}
         <Menu>
@@ -216,7 +262,7 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
     </header>
     <div className={styles.content}><div className={styles.stack}>
       <details><summary className={styles.disclosure}>Session details · {chat.connected ? 'Connected' : 'Offline'}</summary>
-        <Text className={styles.muted}>Chat is saved in this browser; recent turns restore model context. Tree details are retrieved on demand by read-only tools, without approval. Resuming never replays actions or re-arms autonomy. Planned operations exclude provider retries and tokens.</Text>
+        <Text className={styles.muted}>Chat is saved in this browser; recent turns restore model context. Tree details are retrieved on demand by read-only tools, without approval. Resuming never replays actions or re-arms Auto mode. Planned operations exclude provider retries and tokens.</Text>
         {checkpoint.session && <Text className={styles.muted}>Model: {checkpoint.session.model} · Journal: {chat.journal.kind}</Text>}
       </details>
       {checkpoint.session && !chat.connected && <Text>Saved conversation loaded. Resume to reconnect or restore its context.</Text>}
@@ -253,33 +299,42 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
         <Button className={styles.button} disabled={unavailable} onClick={() => { void chat.retryReporting() }}>Retry reporting result</Button>
         <Button className={styles.button} disabled={unavailable} onClick={() => { setConfirmation('detach') }}>Discard unreported receipt</Button>
       </div>}
-      <details open={autonomyOpen} onToggle={(event) => { setAutonomyOpen(event.currentTarget.open) }}><summary className={styles.disclosure}>Bounded autonomy</summary>
-        {autonomyOpen && <div className={styles.stack}>
-          <Text>{chat.autonomyStatus}</Text>
-          {chat.grant ? <>
-            <Text>{chat.grant.remaining_operations} operations remaining · {chat.grant.remaining_turns} planning turns remaining</Text>
-          </> : <>
-            <Field label="Autonomy goal"><Textarea value={goal} maxLength={32_000} disabled={locked} onChange={(_, data) => { setGoal(data.value) }} /></Field>
-            <Field label="Autonomy operation budget" hint="Target sends + converter applications + scoring requests. Up to 10 planning turns; provider-internal retries and tokens are separate.">
-              <Input type="number" min={1} max={100000} value={budget} disabled={locked} onChange={(_, data) => { setBudget(data.value) }} />
-            </Field>
-            <Button className={styles.button} disabled={locked || !selectedId || !goal.trim()} onClick={() => { setConfirmation('autonomy') }}>Grant subtree autonomy</Button>
-          </>}
-        </div>}
-      </details>
+      <div className={styles.message} role="status" aria-label="Auto mode status">
+        <Text>{chat.state.kind === 'off' && chat.operation === 'idle' && autoMode
+          ? 'Auto mode is ready for this message. Submit to review scope and budget.' : chat.autonomyStatus}</Text>
+        {chat.grant && <Text>{chat.grant.remaining_operations} operations remaining · {chat.grant.remaining_turns} planning turns remaining</Text>}
+      </div>
       {chat.busy && <Spinner size="tiny" label="Working…" />}
     </div></div>
-    <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); void chat.send() }}>
+    <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); submitMessage() }}>
       <Field label="Message"><Textarea className={styles.input} value={checkpoint.draft} disabled={locked}
         rows={3} resize="vertical" maxLength={32_000} onChange={(_, data) => { chat.editDraft(data.value) }} /></Field>
-      <Button className={styles.button} type="submit" appearance="primary" disabled={locked || !checkpoint.draft.trim()}>Send message</Button>
+      <div className={styles.composerActions}>
+        <Switch className={styles.autoSwitch} label="Auto mode" checked={autoMode} disabled={locked}
+          onChange={(_, data) => { setAutoMode(data.checked) }} />
+        <Button className={styles.button} type="submit" appearance="primary" disabled={locked || !checkpoint.draft.trim()}>Send message</Button>
+      </div>
     </form>
     {confirmation && <Dialog open={active} onOpenChange={(_, data) => { if (!data.open) setConfirmation(null) }}>
       <DialogSurface><DialogBody>
-        <DialogTitle>{confirmation === 'autonomy' ? 'Grant bounded subtree autonomy?' : confirmation === 'interrupted' ? 'Confirm interrupted action review'
+        <DialogTitle>{confirmation === 'autonomy' ? 'Authorize Auto mode for this message?' : confirmation === 'interrupted' ? 'Confirm interrupted action review'
           : confirmation === 'clear' ? 'Confirm saved chat export' : 'Discard unreported receipt?'}</DialogTitle>
         <DialogContent>
-          {confirmation === 'autonomy' ? <Text>The assistant may edit and run within the selected subtree without further approval, up to {budget} operations and 10 planning turns. It pauses on edits, failures, or reload. Stop waits for in-flight work.</Text>
+          {confirmation === 'autonomy' ? <div className={styles.stack}>
+            <Text className={styles.userText}>{autoConfirmation?.draft}</Text>
+            <Text>The assistant may edit, run, and score within the authorized scope without further approval for this message only. Draft additions follow workspace auto-run unless the proposal explicitly requests draft-only or execution. Auto mode pauses on edits, failures, or reload. Stop waits for in-flight work.</Text>
+            <Field label="Scope">
+              <Select value={scope} onChange={(_, data) => { setScope(data.value === 'subtree' ? 'subtree' : 'workspace') }}>
+                <option value="workspace">Whole workspace</option>
+                {autoConfirmation?.subtreeAvailable && <option value="subtree">Selected subtree</option>}
+              </Select>
+            </Field>
+            <Field label="Operation budget" hint="Counts target sends + converter applications + automatic and requested scoring. All execution costs are checked before saving or running.">
+              <Input type="number" min={1} max={100000} value={budget} onChange={(_, data) => { setBudget(data.value) }} />
+            </Field>
+            <Text>Planning cap: up to 10 assistant turns. Each turn may use bounded tool/model calls; provider-internal retries and tokens are separate from the operation budget.</Text>
+            {autoError && <MessageBar intent="error" role="alert"><MessageBarBody>{autoError}</MessageBarBody></MessageBar>}
+          </div>
             : confirmation === 'clear' ? <Text>The browser was asked to download your retained chat. Confirm only after verifying the file was saved. If the download was blocked or canceled, cancel this dialog. Clearing removes the local transcript and interrupted-action or unreported receipt records; review uncertain outcomes in the tree/backend. No action is replayed or undone.</Text>
             : <Text>No action will be replayed or undone. Preserve the chat export and inspect backend evidence before discarding uncertain reporting state.</Text>}
           {checkpoint.unreported && <pre className={styles.json}>{JSON.stringify(checkpoint.unreported.receipt, null, 2)}</pre>}
@@ -288,12 +343,12 @@ export default function TreeAssistantPanel(props: TreeAssistantPanelProps) {
           <Button className={styles.button} onClick={() => { setConfirmation(null) }}>Cancel</Button>
           <Button className={styles.button} disabled={confirmation === 'clear' ? !chat.writable || chat.busy : unavailable} onClick={() => {
             const action = confirmation
+            if (action === 'autonomy') { confirmAuto(); return }
             setConfirmation(null)
-            if (action === 'autonomy') void chat.runAutonomy(goal, Number(budget))
-            else if (action === 'interrupted') void chat.reviewInterrupted()
+            if (action === 'interrupted') void chat.reviewInterrupted()
             else if (action === 'clear') chat.clearExportedChat()
             else chat.detach()
-          }}>{confirmation === 'autonomy' ? 'Start bounded autonomy' : confirmation === 'interrupted' ? 'Confirm review without replay'
+          }}>{confirmation === 'autonomy' ? 'Run task' : confirmation === 'interrupted' ? 'Confirm review without replay'
               : confirmation === 'clear' ? 'I saved the export; clear local chat' : 'Discard receipt and detach chat'}</Button>
         </DialogActions>
       </DialogBody></DialogSurface>

@@ -152,5 +152,13 @@ export const useTreeAssistantPanelStyles = makeStyles({
     padding: tokens.spacingHorizontalM,
     borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
   },
+  composerActions: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: tokens.spacingHorizontalS,
+  },
+  autoSwitch: { ...mobileTouchTargetHeight },
   input: { ...mobileTouchTargetHeight },
 })

@@ -466,6 +466,10 @@ describe('treeAssistantStorage', () => {
       { ...CONTEXT, nodes: [{ ...CONTEXT.nodes[0], response_preview: 'x'.repeat(2001) }] },
       { ...CONTEXT, settings: { ...CONTEXT.settings, concurrency: 3 } },
       { ...CONTEXT, settings: { ...CONTEXT.settings, operation_budget: 0 } },
+      ...[null, 'false', 0, 1, {}].map((autoRun: unknown) => ({ ...CONTEXT, settings: { ...CONTEXT.settings, auto_run: autoRun } })),
+      ...[undefined, '', false, 0, {}].map((root: unknown) => ({ ...CONTEXT, autonomy: {
+        root_node_id: root, remaining_operations: 4, remaining_turns: 3, goal: 'Continue',
+      } })),
       { ...CONTEXT, autonomy: { root_node_id: 'missing', remaining_operations: 4, remaining_turns: 3, goal: 'Continue' } },
       { ...CONTEXT, autonomy: { root_node_id: 'node', remaining_operations: -1, remaining_turns: 3, goal: 'Continue' } },
       { ...CONTEXT, autonomy: { root_node_id: 'node', remaining_operations: 4, remaining_turns: 51, goal: 'Continue' } },
@@ -477,6 +481,39 @@ describe('treeAssistantStorage', () => {
     ]
     for (const context of invalidContexts) {
       expect(() => parse({ ...checkpoint(), pendingMessage: { request_id: 'pending', message: 'Next', context } })).toThrow('malformed')
+    }
+  })
+
+  it('should preserve historical whole-workspace grants for empty trees without restoring authority', () => {
+    const context: TreeAssistantContext = {
+      ...CONTEXT, selected_node_id: null, nodes: [], settings: { ...CONTEXT.settings, auto_run: true },
+      autonomy: { root_node_id: null, remaining_operations: 4, remaining_turns: 3, goal: 'Start' },
+    }
+    const candidate = checkpoint({ pendingMessage: { request_id: 'pending', message: 'Start', context } })
+    const saved = saveAssistantCheckpoint(candidate)
+    expect(loadAssistantCheckpoint(WORKSPACE_ID)?.pendingMessage?.context).toEqual(context)
+    expect(Object.isFrozen(saved.pendingMessage?.context.autonomy)).toBe(true)
+    expect(saved).not.toHaveProperty('autonomy')
+    expect(saved).not.toHaveProperty('autoMode')
+  })
+
+  it.each([undefined, null, false, true])('should preserve nullable draft run intent %j without coercion', (run) => {
+    const actions: TreeAssistantAction[] = [
+      { kind: 'mutate', run, commands: [{ type: 'add', parentId: null, prompt: 'Root' }] },
+      { kind: 'plan', run, steps: [{ id: 'root', parent: null, prompt: 'Root', converters: [] }] },
+    ]
+    for (const action of actions) {
+      const parsed = parse(withTurn({ ...TURN, proposals: [{ ...PROPOSAL, action }] }))
+      expect(parsed.session?.turns[0].proposals[0].action).toEqual(JSON.parse(JSON.stringify(action)))
+    }
+  })
+
+  it.each(['false', 0, 1, {}, []])('should reject malformed nullable draft run flags: %j', (run: unknown) => {
+    for (const action of [
+      { kind: 'mutate', run, commands: [{ type: 'add', parentId: null, prompt: 'Root' }] },
+      { kind: 'plan', run, steps: [{ id: 'root', parent: null, prompt: 'Root', converters: [] }] },
+    ]) {
+      expect(() => parse({ ...checkpoint(), session: { ...checkpoint().session, turns: [{ ...TURN, proposals: [{ ...PROPOSAL, action }] }] } })).toThrow(/run flag/)
     }
   })
 

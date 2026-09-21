@@ -69,4 +69,31 @@ describe('TreeWorkspaceDialog', () => {
     expect(await screen.findByText('Storage quota exceeded')).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
   })
+
+  it('creates an objective-only workspace without inventing or running a root prompt', async () => {
+    const user = userEvent.setup()
+    const onCreate = jest.fn<Promise<void>, [TreeWorkspace]>().mockResolvedValue()
+    render(<TestWrapper><TreeWorkspaceDialog targets={[TARGET]} activeTarget={TARGET} labels={{}}
+      importing={false} onClose={jest.fn()} onCreate={onCreate} /></TestWrapper>)
+    await user.selectOptions(screen.getByLabelText('Start from'), 'objective')
+    await user.type(screen.getByLabelText('Evaluation objective'), 'Evaluate response grounding')
+    expect(screen.queryByLabelText(/first prompt/i)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Create workspace' }))
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
+    expect(onCreate.mock.calls[0][0].nodes).toEqual([])
+    expect(onCreate.mock.calls[0][0].settings?.objective).toBe('Evaluate response grounding')
+  })
+
+  it('switches creation modes while retaining entered prompt and objective text', async () => {
+    const user = userEvent.setup()
+    render(<TestWrapper><TreeWorkspaceDialog targets={[TARGET]} activeTarget={TARGET} labels={{}}
+      importing={false} onClose={jest.fn()} onCreate={jest.fn()} /></TestWrapper>)
+    await user.type(screen.getByLabelText(/first prompt/i), 'Keep my first prompt')
+    await user.type(screen.getByLabelText('Evaluation objective'), 'Keep my objective')
+    await user.selectOptions(screen.getByLabelText('Start from'), 'plan')
+    expect(screen.getByLabelText('Strategy plan JSON')).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Start from'), 'prompt')
+    expect(screen.getByLabelText(/first prompt/i)).toHaveValue('Keep my first prompt')
+    expect(screen.getByLabelText('Evaluation objective')).toHaveValue('Keep my objective')
+  })
 })

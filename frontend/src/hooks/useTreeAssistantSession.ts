@@ -218,7 +218,7 @@ export function useTreeAssistantSession(options: AssistantSessionOptions) {
     const local = current.current
     if (!local.session || connectionRef.current !== 'online' || journalOf(local).kind !== 'ready') throw new Error('Resolve pending chat work before sending.')
     const workspace = optionsRef.current.getWorkspace?.() ?? optionsRef.current.workspace
-    const context = createAssistantContext(workspace, autonomy?.root_node_id ?? optionsRef.current.selectedId)
+    const context = createAssistantContext(workspace, optionsRef.current.selectedId)
     if (autonomy) context.autonomy = { ...autonomy }
     const pending = { request_id: crypto.randomUUID(), message, context }
     persist({ pendingMessage: pending, draft: '', preconditions: {
