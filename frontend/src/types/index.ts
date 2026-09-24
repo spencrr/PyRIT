@@ -1215,3 +1215,190 @@ export interface TreePreparedChange {
   layoutChanged: boolean
   undo: TreeUndoEntry | null
 }
+
+export type TreeAssistantMutation = Extract<TreeCommand, {
+  type: 'add' | 'edit' | 'childVariants' | 'sample' | 'fork' | 'retry' | 'prune' | 'keep'
+}>
+
+export type TreeAssistantAction =
+  | { kind: 'mutate'; commands: TreeAssistantMutation[] }
+  | { kind: 'run' | 'score'; node_ids: string[] }
+  | { kind: 'plan'; steps: TreeAssistantPlanStep[]; run: boolean }
+
+export interface TreeAssistantPlanStep {
+  id: string
+  parent: { node_id: string } | { step_id: string } | null
+  prompt: string
+  converters: TreeConverterSpec[]
+}
+
+export interface TreeAssistantGrant {
+  root_node_id: string
+  remaining_operations: number
+  remaining_turns: number
+  goal: string
+}
+
+/** Captured by the host, never accepted from the model or sent as model context. */
+export interface TreeAssistantPrecondition {
+  readonly workspaceId: string
+  readonly baseRevision: number
+  readonly semanticSignature: string
+}
+
+export interface TreeAssistantNodeChange {
+  readonly nodeId: string
+  readonly before?: TreeNode
+  readonly after?: TreeNode
+  readonly beforeHidden?: boolean
+  readonly afterHidden?: boolean
+}
+
+export interface TreeAssistantReview extends Readonly<Omit<TreePreparedChange, 'workspace'>> {
+  readonly proposalId: string
+  readonly actionSignature: string
+  readonly precondition: TreeAssistantPrecondition
+  readonly preparedRevision: number
+  readonly changes: TreeAssistantNodeChange[]
+  readonly nodeIds: string[]
+  readonly operations: number
+  readonly description: string
+}
+
+export type TreeAssistantPreparedProposal = TreeAssistantReview & (
+  | { readonly kind: 'mutate'; readonly workspace: TreeWorkspace; readonly change: TreePreparedChange }
+  | { readonly kind: 'plan'; readonly workspace: TreeWorkspace; readonly change: TreePreparedChange; readonly run: boolean }
+  | { readonly kind: 'run' | 'score' }
+)
+
+export type TreeAssistantApply = (
+  proposal: TreeAssistantProposal,
+  grant?: TreeAssistantGrant,
+  review?: TreeAssistantPreparedProposal,
+) => Promise<TreeAssistantReceipt>
+
+export type TreeAssistantOperation = 'idle' | 'connecting' | 'sending' | 'recovering' | 'deciding' | 'reporting' | 'reviewing'
+
+export type TreeAssistantJournal =
+  | { readonly kind: 'ready' }
+  | { readonly kind: 'message'; readonly pending: TreeAssistantPendingMessage }
+  | { readonly kind: 'execution'; readonly execution: NonNullable<TreeAssistantCheckpoint['executing']> }
+  | { readonly kind: 'receipt'; readonly result: TreeAssistantUnreportedResult }
+
+export interface TreeAssistantReceipt {
+  status: 'applied' | 'rejected' | 'failed'
+  revision: number
+  detail: string
+}
+
+export interface TreeAssistantProposal {
+  id: string
+  workspace_id: string
+  base_revision: number
+  summary: string
+  action: TreeAssistantAction
+  status: 'pending' | 'applied' | 'rejected' | 'failed'
+  result?: TreeAssistantReceipt | null
+}
+
+export interface TreeAssistantNode {
+  id: string
+  parent_id: string | null
+  attempt_id: string
+  prompt: string
+  converters: TreeConverterSpec[]
+  status: TreeNode['status']
+  pruned: boolean
+  kept: boolean
+  response_preview: string
+  response_truncated: boolean
+  score_summary: string
+  error?: string
+  attack_result_id?: string
+  conversation_id?: string
+  last_sequence?: number
+}
+
+export interface TreeAssistantContext {
+  workspace_id: string
+  revision: number
+  name: string
+  objective: string
+  target_registry_name: string
+  target_identifier_hash: string
+  selected_node_id: string | null
+  nodes: TreeAssistantNode[]
+  settings: {
+    traversal: TreeSettings['traversal']
+    concurrency: number
+    operation_budget: number
+    scorer_ids: string[]
+  }
+  autonomy?: TreeAssistantGrant | null
+}
+
+export interface TreeAssistantToolCall {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+  result: string
+  status: 'completed' | 'error'
+  duration_ms: number
+  truncated: boolean
+}
+
+export interface TreeAssistantTurnContext {
+  workspace_id: string
+  revision: number
+  selected_node_id: string | null
+  node_count: number
+  model: string
+  api: string
+  instructions: string
+  tools: string[]
+  restored: boolean
+  restoration_notice?: string
+}
+
+export interface TreeAssistantTurn {
+  request_id: string
+  message: string
+  reply: string
+  proposals: TreeAssistantProposal[]
+  tool_calls?: TreeAssistantToolCall[]
+  context_summary?: TreeAssistantTurnContext | null
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null
+}
+
+export interface TreeAssistantSession {
+  session_id: string
+  workspace_id: string
+  model: string
+  turns: TreeAssistantTurn[]
+}
+
+export interface TreeAssistantPendingMessage {
+  request_id: string
+  message: string
+  context: TreeAssistantContext
+}
+
+export interface TreeAssistantUnreportedResult {
+  proposalId: string
+  receipt: TreeAssistantReceipt
+  error: string
+}
+
+export interface TreeAssistantCheckpoint {
+  schemaVersion: 1
+  revision: number
+  workspaceId: string
+  savedAt: string
+  session: TreeAssistantSession | null
+  archivedTurns?: TreeAssistantTurn[]
+  draft: string
+  pendingMessage: TreeAssistantPendingMessage | null
+  unreported: TreeAssistantUnreportedResult | null
+  executing: { proposalId: string; baseRevision: number; precondition?: TreeAssistantPrecondition } | null
+  preconditions?: Record<string, TreeAssistantPrecondition>
+}

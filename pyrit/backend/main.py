@@ -37,6 +37,7 @@ from pyrit.backend.routes import (
     scorers,
     scores,
     targets,
+    tree_assistant,
     version,
 )
 from pyrit.backend.services.configuration_file_service import ConfigurationFileService
@@ -120,6 +121,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await converter_service.close_async()
         finally:
             get_converter_service.cache_clear()
+            assistant_service = getattr(app.state, "tree_assistant_service", None)
+            if assistant_service is not None:
+                await assistant_service.close_async()
 
 
 app = FastAPI(
@@ -166,6 +170,7 @@ app.include_router(configuration.router, prefix="/api", tags=["config"])
 app.include_router(targets.router, prefix="/api", tags=["targets"])
 app.include_router(converters.router, prefix="/api", tags=["converters"])
 app.include_router(scorers.router, prefix="/api", tags=["scorers"])
+app.include_router(tree_assistant.router, prefix="/api", tags=["tree-assistant"])
 app.include_router(datasets.router, prefix="/api", tags=["datasets"])
 app.include_router(scenarios.router, prefix="/api", tags=["scenarios"])
 app.include_router(initializers.router, prefix="/api", tags=["initializers"])
