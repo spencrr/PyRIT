@@ -73,6 +73,8 @@ interface MessageListProps {
   globalMarkdown?: boolean
   /** Recovery action for the processing error caused by the most recent send. */
   processingErrorRecovery?: ProcessingErrorRecovery
+  /** Disable for embedded inspectors so transcript updates do not scroll surrounding editors. */
+  autoScroll?: boolean
 }
 
 /** Image that shows a spinner while loading. */
@@ -565,7 +567,7 @@ function getRenderMessagePieces(message: Message, messageIndex: number): RenderM
   return pieces
 }
 
-export default function MessageList({ messages, onCopyToInput, onCopyToNewConversation, onBranchConversation, onBranchAttack, isLoading, isSingleTurn, isOperatorLocked, isCrossTarget, noTargetSelected, globalMarkdown = false, processingErrorRecovery }: MessageListProps) {
+export default function MessageList({ messages, onCopyToInput, onCopyToNewConversation, onBranchConversation, onBranchAttack, isLoading, isSingleTurn, isOperatorLocked, isCrossTarget, noTargetSelected, globalMarkdown = false, processingErrorRecovery, autoScroll = true }: MessageListProps) {
   const styles = useMessageListStyles()
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -590,8 +592,8 @@ export default function MessageList({ messages, onCopyToInput, onCopyToNewConver
   }
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    if (autoScroll) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, autoScroll])
 
   if (isLoading) {
     return (

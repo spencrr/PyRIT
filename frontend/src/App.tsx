@@ -5,6 +5,8 @@ import { Joyride } from 'react-joyride'
 import { useTheme } from './hooks/useTheme'
 import MainLayout from './components/Layout/MainLayout'
 import ChatWindow from './components/Chat/ChatWindow'
+import ConversationTree from './components/ConversationTree/ConversationTree'
+import { useAppStyles } from './App.styles'
 import AttackNotFound from './components/Chat/AttackNotFound'
 import Home from './components/Home/Home'
 import TargetConfig from './components/Config/TargetConfig'
@@ -59,6 +61,7 @@ const HISTORY_SCANNER_PATH = '/history/scanner'
 const VIEW_PATHS: Record<ViewName, string> = {
   home: '/',
   chat: '/chat',
+  tree: '/tree',
   history: HISTORY_ATTACKS_PATH,
   registry: '/registry/targets',
   targets: '/registry/targets',
@@ -150,6 +153,7 @@ function ConnectionBannerContainer() {
 }
 
 function App() {
+  const styles = useAppStyles()
   const { instance } = useMsal()
   const navigate = useNavigate()
   const location = useLocation()
@@ -586,6 +590,12 @@ function App() {
             canManageConfiguration={canManageConfiguration}
             onStartTour={startTour}
           >
+            {/* Retain unsaved edits and received-but-unsaved evidence across client-side routes. */}
+            <section className={styles.treeWorkspace} hidden={currentView !== 'tree'}>
+              <ErrorBoundary>
+                <ConversationTree activeTarget={activeTarget} labels={globalLabels} active={currentView === 'tree'} />
+              </ErrorBoundary>
+            </section>
             <Routes>
               <Route
                 path="/"
@@ -603,6 +613,7 @@ function App() {
                 path="/chat"
                 element={chatElement}
               />
+              <Route path="/tree" element={null} />
               <Route
                 path="/attacks/:attackId"
                 element={chatElement}

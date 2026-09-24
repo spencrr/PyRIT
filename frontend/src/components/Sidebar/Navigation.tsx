@@ -18,6 +18,7 @@ import {
   TargetRegular,
   WeatherMoonRegular,
   WeatherSunnyRegular,
+  BranchForkRegular,
 } from '@fluentui/react-icons'
 import { useTheme } from '@/hooks/useTheme'
 import { isThemeMode, THEME_PRESETS } from '@/themes/themePresets'
@@ -28,6 +29,7 @@ import { useNavigationStyles } from './Navigation.styles'
 export type ViewName =
   | 'home'
   | 'chat'
+  | 'tree'
   | 'history'
   | 'registry'
   // Kept as an internal compatibility destination for the unchanged chat pane.
@@ -90,6 +92,17 @@ export default function Navigation({
           aria-label="Chat"
           aria-current={currentView === 'chat' ? 'page' : undefined}
           onClick={() => onNavigate('chat')}
+        />
+
+        <Button
+          className={styles.navButton}
+          data-active={currentView === 'tree'}
+          appearance="subtle"
+          icon={<BranchForkRegular />}
+          title="Conversation tree"
+          aria-label="Conversation tree"
+          aria-current={currentView === 'tree' ? 'page' : undefined}
+          onClick={() => onNavigate('tree')}
         />
 
         <Button

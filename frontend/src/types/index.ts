@@ -981,3 +981,237 @@ export interface ScenarioRunProgress {
   has_more: boolean
   plan_complete: boolean
 }
+
+// --- Human-reviewed conversation trees (browser-local workspace schema) ---
+
+export interface TreeConverterSpec {
+  type: string
+  params: Record<string, unknown>
+}
+
+export interface ScorerParameter extends Parameter {
+  input_kind?: 'field' | 'multiline' | 'json' | 'unsupported'
+  json_schema?: Record<string, unknown> | null
+  example?: string | null
+  reference_kind?: 'scorer' | 'target' | null
+  accepts_inline?: boolean
+  accepted_types?: string[]
+  supports_yaml?: boolean
+  accepts_text?: boolean
+  presets?: Array<{ name: string; value: unknown }>
+}
+
+export interface ScorerCatalogEntry {
+  scorer_type: string
+  score_type: 'true_false' | 'float_scale' | 'unknown'
+  is_llm_based: boolean
+  parameters: ScorerParameter[]
+  description?: string | null
+}
+
+export interface ScorerInstance {
+  scorer_id: string
+  scorer_type: string
+  identifier_hash: string
+  score_type: 'true_false' | 'float_scale' | 'unknown'
+}
+
+export interface TreeScorerSelection extends ScorerInstance {
+  scope: 'response' | 'conversation'
+  highIsRisk: boolean
+}
+
+export interface TreeScoreRun {
+  id: string
+  scorerId: string
+  scorerHash: string
+  status: 'complete' | 'not_applicable' | 'error'
+  scores: BackendScore[]
+  error?: string
+}
+
+export interface TreeSettings {
+  traversal: 'breadth-first' | 'depth-first'
+  operationBudget: number
+  confirmRuns: boolean
+  autoRun: boolean
+  continueOnError: boolean
+  markdown: boolean
+  stackSamples: boolean
+  stackVariants: boolean
+  autoScore: boolean
+  objective: string
+  scorers: TreeScorerSelection[]
+  primaryScorerId?: string
+  concurrency?: 1 | 2 | 4
+  edgeStyle?: 'bezier' | 'smoothstep' | 'straight'
+  nodeSize?: 'compact' | 'standard' | 'expanded'
+}
+
+export interface TreeAttempt {
+  attemptId: string
+  parentAttemptId?: string
+  prompt: string
+  converters: TreeConverterSpec[]
+  status: 'completed' | 'error'
+  attackResultId?: string
+  conversationId?: string
+  lastSequence?: number
+  messages?: BackendMessage[]
+  error?: string
+  scoreRuns?: TreeScoreRun[]
+}
+
+export interface TreeGroup {
+  id: string
+  kind: 'sample' | 'variant'
+  nodeIds: string[]
+  collapsed: boolean
+  activeNodeId: string
+}
+
+export interface TreeNode {
+  id: string
+  parentId: string | null
+  prompt: string
+  converters: TreeConverterSpec[]
+  status: 'draft' | 'running' | 'completed' | 'error'
+  pruned: boolean
+  kept: boolean
+  forkedFrom?: string
+  position?: { x: number; y: number }
+  attackResultId?: string
+  conversationId?: string
+  lastSequence?: number
+  messages?: BackendMessage[]
+  error?: string
+  attemptId?: string
+  parentAttemptId?: string
+  attempts?: TreeAttempt[]
+  scoreRuns?: TreeScoreRun[]
+  size?: { width: number; height: number }
+  importedFromBackend?: boolean
+}
+
+export interface TreeWorkspace {
+  schemaVersion: 1
+  id: string
+  revision: number
+  name: string
+  targetRegistryName: string
+  targetIdentifierHash: string
+  systemPrompt: string
+  labels: Record<string, string>
+  nodes: TreeNode[]
+  createdAt: string
+  updatedAt: string
+  settings?: TreeSettings
+  groups?: TreeGroup[]
+}
+
+export type TreeCommand =
+  | { type: 'add'; parentId: string | null; prompt: string; converters?: TreeConverterSpec[] }
+  | { type: 'edit'; nodeId: string; prompt: string; converters: TreeConverterSpec[] }
+  | { type: 'fanOut'; nodeId: string; variants: Array<{ prompt: string; converters: TreeConverterSpec[] }> }
+  | { type: 'fork'; nodeId: string; prompt: string; converters: TreeConverterSpec[] }
+  | { type: 'prune'; nodeId: string; pruned: boolean }
+  | { type: 'keep'; nodeId: string }
+  | { type: 'move'; nodeId: string; position: { x: number; y: number } }
+  | { type: 'childVariants'; nodeId: string; variants: Array<{ prompt: string; converters: TreeConverterSpec[] }> }
+  | { type: 'sample'; nodeId: string; count: number }
+  | { type: 'retry'; nodeId: string; scope: 'node' | 'subtree' }
+  | { type: 'autoLayout' }
+  | { type: 'settings'; settings: TreeSettings }
+  | { type: 'group'; groupId: string; collapsed?: boolean; activeNodeId?: string }
+  | { type: 'score'; nodeId: string; attemptId: string; result: TreeScoreRun }
+  | { type: 'resize'; nodeId: string; size?: { width: number; height: number }; position?: { x: number; y: number } }
+  | { type: 'importContinuation'; nodeId: string; nodes: TreeNode[] }
+
+export interface TreeContinuation {
+  workspaceId: string
+  nodeId: string
+  attemptId: string
+  nodes: TreeNode[]
+  pendingMessages: number
+}
+
+export type TreeRunOutcome = 'completed' | 'error' | 'skipped' | 'not_applicable'
+
+export interface TreeRunCounts {
+  readonly completed: number
+  readonly error: number
+  readonly skipped: number
+  readonly notApplicable: number
+}
+
+export interface TreeRunScorerResult {
+  readonly scorerId: string
+  readonly scorerHash: string
+  readonly outcome: TreeRunOutcome
+  readonly result?: TreeScoreRun
+}
+
+export interface TreeRunNodeResult {
+  readonly nodeId: string
+  readonly attemptId: string
+  /** Overall requested outcome, including configured auto-scoring; the exact send status is retained in attempt. */
+  readonly outcome: TreeRunOutcome
+  readonly attempt?: TreeAttempt
+  readonly scorers: readonly TreeRunScorerResult[]
+}
+
+export interface TreeRunResult {
+  readonly id?: string
+  readonly workspaceId: string
+  readonly revision: number
+  readonly kind: 'run' | 'score'
+  readonly nodeIds: readonly string[]
+  readonly stopped: boolean
+  readonly error?: string
+  readonly persisted: boolean
+  readonly effectiveConcurrency?: number
+  /** Approved upper bound, not an estimate of actual provider requests or retries. */
+  readonly operations: number
+  readonly budget: number
+  readonly nodes: readonly TreeRunNodeResult[]
+  readonly counts: TreeRunCounts
+  readonly scoringCounts: TreeRunCounts
+  readonly complete: boolean
+}
+
+export interface TreeRunCapture {
+  readonly before: TreeWorkspace
+  readonly after: TreeWorkspace
+  readonly nodeIds: readonly string[]
+  readonly kind: 'run' | 'score'
+  readonly stopped: boolean
+  readonly id?: string
+  readonly error?: string
+  readonly persisted?: boolean
+  readonly effectiveConcurrency?: number
+}
+
+export type TreeUndoEditableField = 'prompt' | 'converters' | 'pruned' | 'kept' | 'position' | 'size'
+
+export interface TreeUndoNode {
+  id: string
+  attemptId: string
+  fields: TreeUndoEditableField[]
+  before: Pick<TreeNode, TreeUndoEditableField>
+  after: Pick<TreeNode, TreeUndoEditableField>
+}
+
+export interface TreeUndoEntry {
+  workspaceId: string
+  nodes: TreeUndoNode[]
+  groups?: { before: TreeGroup[]; after: TreeGroup[] }
+}
+
+export interface TreePreparedChange {
+  workspace: TreeWorkspace
+  addedNodeIds: string[]
+  affectedNodeIds: string[]
+  selectionId?: string
+  layoutChanged: boolean
+  undo: TreeUndoEntry | null
+}

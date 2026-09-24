@@ -62,6 +62,18 @@ describe("MessageList", () => {
     expect(screen.getByText("Can you help me?")).toBeInTheDocument();
   });
 
+  it.each([true, false])("should respect autoScroll=%s for embedded transcripts", (autoScroll: boolean) => {
+    const scroll = jest.spyOn(Element.prototype, "scrollIntoView");
+    scroll.mockClear();
+    render(
+      <TestWrapper>
+        <MessageList messages={mockMessages} autoScroll={autoScroll} />
+      </TestWrapper>,
+    );
+    expect(scroll).toHaveBeenCalledTimes(autoScroll ? 1 : 0);
+    scroll.mockRestore();
+  });
+
   it("should not render system messages as transcript bubbles", () => {
     const withSystem: Message[] = [
       {
