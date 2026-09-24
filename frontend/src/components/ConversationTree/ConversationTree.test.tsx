@@ -78,6 +78,52 @@ describe('ConversationTree', () => {
     expect(await screen.findByRole('button', { name: 'Run drafts', exact: true })).toBeEnabled()
   })
 
+  it('uses Workspace naming, hides branches and enables both detail panes by default', async () => {
+    const user = userEvent.setup()
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    expect(screen.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible()
+    expect(screen.queryByRole('complementary', { name: 'Tree outline' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Branches', exact: true })).toHaveAttribute('aria-pressed', 'false')
+    await user.click(screen.getByRole('button', { name: 'Workspace options' }))
+    expect(screen.getByRole('menuitem', { name: 'Use one detail pane' })).toBeInTheDocument()
+  })
+
+  it('adds the first draft to an objective-only workspace without losing its objective', async () => {
+    const user = userEvent.setup()
+    const tree = createTreeWorkspace({ name: 'Empty', targetRegistryName: 'local', targetIdentifierHash: 'hash', systemPrompt: '', labels: {} })
+    tree.settings = { ...getTreeSettings(tree), objective: 'Evaluate grounding' }
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.type(screen.getByLabelText('First prompt'), 'Start with a harmless question')
+    expect(screen.getByRole('button', { name: 'Plan with assistant' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Add first prompt' }))
+    expect(await screen.findByLabelText('Prompt')).toHaveValue('Start with a harmless question')
+    expect(jest.mocked(saveTreeWorkspace).mock.calls[0][0].settings?.objective).toBe('Evaluate grounding')
+    expect(runTree).not.toHaveBeenCalled()
+  })
+
+  it('runs only newly added agent drafts once when workspace auto-run is enabled', async () => {
+    const user = userEvent.setup()
+    const tree = fixture()
+    tree.settings = { ...getTreeSettings(tree), autoRun: true }
+    jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
+    mockAssistantProposal = {
+      id: 'auto-add', workspace_id: tree.id, base_revision: tree.revision, status: 'pending', summary: 'Another root',
+      action: { kind: 'mutate', commands: [{ type: 'add', parentId: null, prompt: 'Only new draft' }] },
+    }
+    render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
+    await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
+    await waitFor(() => expect(mockAssistantResults).toHaveLength(1))
+    expect(runTree).toHaveBeenCalledTimes(1)
+    const [candidate, options] = jest.mocked(runTree).mock.calls[0]
+    expect(options.nodeIds).toEqual([candidate.nodes[1].id])
+    expect(options.nodeIds).not.toContain(tree.nodes[0].id)
+    await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
+    await waitFor(() => expect(mockAssistantResults).toHaveLength(2))
+    expect(runTree).toHaveBeenCalledTimes(1)
+    expect(saveTreeWorkspace).toHaveBeenCalledTimes(1)
+  })
+
   it('retains dirty drafts across tab navigation and blocks accidental runs', async () => {
     const user = userEvent.setup()
     const view = render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
@@ -103,6 +149,7 @@ describe('ConversationTree', () => {
     expect(await screen.findByText('Quota exceeded')).toBeVisible()
     expect(screen.getByLabelText('Child prompt 1')).toHaveValue('Keep child')
     await user.click(screen.getByRole('button', { name: 'Add 1 child' }))
+    await user.click(screen.getByRole('button', { name: 'Branches', exact: true }))
     expect(await within(screen.getByRole('complementary', { name: 'Tree outline' }))
       .findByRole('button', { name: 'Keep child (draft)' })).toHaveAttribute('aria-pressed', 'true')
   })
@@ -125,6 +172,7 @@ describe('ConversationTree', () => {
     await user.click(screen.getByRole('button', { name: 'Review & run drafts' }))
     await user.click(screen.getByRole('button', { name: 'Run approved drafts' }))
     await waitFor(() => expect(finish).toBeDefined())
+    await user.click(await screen.findByRole('button', { name: 'Branches', exact: true }))
     await user.click(within(screen.getByRole('complementary', { name: 'Tree outline' })).getByRole('button', { name: 'Independent branch (draft)' }))
     expect(screen.getByLabelText('Prompt')).toBeEnabled()
     await user.clear(screen.getByLabelText('Prompt'))
@@ -220,6 +268,7 @@ describe('ConversationTree', () => {
     expect(saveTreeWorkspace).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: 'Add 1 child' })).toBeDisabled()
     await act(async () => { finish?.() })
+    await user.click(screen.getByRole('button', { name: 'Branches', exact: true }))
     expect(within(screen.getByRole('complementary', { name: 'Tree outline' })).getAllByRole('button', { name: 'One batch (draft)' })).toHaveLength(1)
   })
   it('undoes a local draft edit and redoes it through persistence', async () => {
@@ -278,13 +327,13 @@ describe('ConversationTree', () => {
     expect(scorersApi.score).not.toHaveBeenCalled()
   })
 
-  it('applies an approved assistant edit once without auto-running newly added nodes', async () => {
+  it('honors explicit draft-only assistant edits even when auto-run is enabled', async () => {
     const user = userEvent.setup()
     const tree = fixture()
     tree.settings = { ...getTreeSettings(tree), autoRun: true, confirmRuns: false }
     jest.mocked(listTreeWorkspaces).mockReturnValue([tree])
     mockAssistantProposal = { id: 'assistant-add', workspace_id: tree.id, base_revision: tree.revision, summary: 'Add child', status: 'pending',
-      action: { kind: 'mutate', commands: [{ type: 'add', parentId: tree.nodes[0].id, prompt: 'Agent-proposed child', converters: [] }] } }
+      action: { kind: 'mutate', run: false, commands: [{ type: 'add', parentId: tree.nodes[0].id, prompt: 'Agent-proposed child', converters: [] }] } }
     render(<TestWrapper><ConversationTree activeTarget={null} labels={{}} /></TestWrapper>)
     await user.click(screen.getByRole('button', { name: 'Approve assistant test proposal' }))
     await waitFor(() => expect(mockAssistantResults).toHaveLength(1))

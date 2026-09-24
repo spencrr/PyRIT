@@ -80,6 +80,32 @@ describe('prepareTreeChange', () => {
     expect(selected.affectedNodeIds).toEqual(expect.arrayContaining(group.nodeIds))
   })
 
+  it('should select the new path root and report only its exact added and affected scope', () => {
+    const before = applyTreeCommand(fixture(), { type: 'add', parentId: 'root', prompt: 'Side branch' })
+    before.nodes.reverse()
+    before.settings = { ...getTreeSettings(before), autoRun: true }
+    const original = JSON.stringify(before)
+    const change = prepareTreeChange(before, [{
+      type: 'forkPath', nodeId: 'root', descendantId: 'child', prompt: 'New root', converters: [],
+    }])
+    const added = change.workspace.nodes.filter((node: TreeNode) => change.addedNodeIds.includes(node.id))
+    expect(added.map((node: TreeNode) => node.forkedFrom)).toEqual(['root', 'child'])
+    expect(change.addedNodeIds).toEqual(added.map((node: TreeNode) => node.id))
+    expect(change.affectedNodeIds).toEqual(change.addedNodeIds)
+    expect(change.selectionId).toBe(added[0].id)
+    expect(added[1].parentId).toBe(added[0].id)
+    expect(added.every((node: TreeNode) => node.status === 'draft' && node.messages === undefined)).toBe(true)
+    expect(change.workspace.revision).toBe(before.revision)
+    expect(change.layoutChanged).toBe(false)
+    expect(change.undo).toBeNull()
+    expect(JSON.stringify(before)).toBe(original)
+    expect(() => prepareTreeChange(before, [
+      { type: 'edit', nodeId: 'root', prompt: 'Temporary edit', converters: [] },
+      { type: 'forkPath', nodeId: 'root', descendantId: 'other', prompt: 'Invalid', converters: [] },
+    ])).toThrow('descendant')
+    expect(JSON.stringify(before)).toBe(original)
+  })
+
   it('should not create partial undo entries for batches containing additions or settings', () => {
     const before = fixture()
     const change = prepareTreeChange(before, [

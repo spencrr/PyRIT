@@ -9,7 +9,7 @@ import type { TargetInstance, TreeWorkspace } from '@/types'
 import { targetIdentifierHash } from '@/utils/targetIdentity'
 
 import { useConversationTreeStyles } from './ConversationTree.styles'
-import { applyTreeCommand, createTreeWorkspace, importTreePlan } from './treeModel'
+import { applyTreeCommand, createTreeWorkspace, getTreeSettings, importTreePlan } from './treeModel'
 
 interface TreeWorkspaceDialogProps {
   targets: TargetInstance[]
@@ -40,6 +40,8 @@ export default function TreeWorkspaceDialog({
   )
   const [systemPrompt, setSystemPrompt] = useState('')
   const [prompt, setPrompt] = useState('')
+  const [mode, setMode] = useState<'prompt' | 'objective' | 'plan'>(importing ? 'plan' : 'prompt')
+  const [objective, setObjective] = useState('')
   const [plan, setPlan] = useState(PLAN_EXAMPLE)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -62,10 +64,12 @@ export default function TreeWorkspaceDialog({
         systemPrompt: target.capabilities?.supports_system_prompt ? systemPrompt : '',
         labels,
       }
-      const workspace = importing
+      const workspace = mode === 'plan'
         ? importTreePlan(plan, configuration)
-        : applyTreeCommand(createTreeWorkspace(configuration), { type: 'add', parentId: null, prompt })
-      await onCreate(workspace)
+        : mode === 'prompt'
+          ? applyTreeCommand(createTreeWorkspace(configuration), { type: 'add', parentId: null, prompt })
+          : createTreeWorkspace(configuration)
+      await onCreate(applyTreeCommand(workspace, { type: 'settings', settings: { ...getTreeSettings(workspace), objective } }))
       onClose()
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Unable to create workspace.')
@@ -78,7 +82,7 @@ export default function TreeWorkspaceDialog({
     <Dialog open={open} onOpenChange={(_, data) => { if (!data.open && !saving) onClose() }}>
       <DialogSurface className={styles.dialog}>
         <DialogBody>
-          <DialogTitle>{importing ? 'Import strategy plan' : 'New conversation tree'}</DialogTitle>
+          <DialogTitle>New workspace</DialogTitle>
           <DialogContent className={styles.stack}>
             <Field label="Workspace name" required><Input value={name} disabled={saving} onChange={(_, data) => { setName(data.value) }} /></Field>
             <Field label="Target" required hint="Text prompts, multi-turn conversations and editable history are required. Target identity is pinned for this workspace.">
@@ -92,18 +96,31 @@ export default function TreeWorkspaceDialog({
               <Textarea value={systemPrompt} disabled={saving || !target?.capabilities?.supports_system_prompt}
                 onChange={(_, data) => { setSystemPrompt(data.value) }} rows={2} />
             </Field>
-            {importing
+            <Field label="Start from">
+              <Select value={mode} disabled={saving} onChange={(_, data) => {
+                if (data.value === 'prompt' || data.value === 'objective' || data.value === 'plan') setMode(data.value)
+              }}>
+                <option value="prompt">First prompt</option>
+                <option value="objective">Objective / empty workspace</option>
+                <option value="plan">Import plan</option>
+              </Select>
+            </Field>
+            <Field label="Evaluation objective" hint="Describe what to evaluate. An empty workspace can be populated manually or with the assistant.">
+              <Textarea value={objective} disabled={saving} rows={2} maxLength={32000}
+                onChange={(_, data) => { setObjective(data.value) }} />
+            </Field>
+            {mode === 'plan'
               ? <Field label="Strategy plan JSON" hint="Versioned, declarative prompt steps. Import only stages drafts; no code or automatic model calls.">
                 <Textarea className={styles.planEditor} value={plan} disabled={saving} onChange={(_, data) => { setPlan(data.value) }} />
               </Field>
-              : <Field label="First prompt" required>
+              : mode === 'prompt' && <Field label="First prompt" required>
                 <Textarea value={prompt} disabled={saving} rows={4} onChange={(_, data) => { setPrompt(data.value) }} />
               </Field>}
             {error && <MessageBar layout="multiline" intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
           </DialogContent>
           <DialogActions>
             <Button className={styles.button} disabled={saving} onClick={onClose}>Cancel</Button>
-            <Button className={styles.button} appearance="primary" disabled={saving || !name.trim() || !supported || (!importing && !prompt.trim())} onClick={() => { void create() }}>
+            <Button className={styles.button} appearance="primary" disabled={saving || !name.trim() || !supported || (mode === 'prompt' && !prompt.trim())} onClick={() => { void create() }}>
               {saving ? 'Saving...' : 'Create workspace'}
             </Button>
           </DialogActions>

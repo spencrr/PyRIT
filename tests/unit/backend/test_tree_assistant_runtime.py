@@ -28,6 +28,7 @@ from pyrit.backend.services.tree_assistant_runtime import AgentFrameworkRuntime,
 from pyrit.backend.services.tree_assistant_service import TreeAssistantService
 
 from .test_tree_assistant import context_dict, message
+from .test_tree_assistant_inspection import inspection_context, unpack
 
 
 class DeterministicClient(FunctionInvocationLayer, BaseChatClient):
@@ -70,6 +71,28 @@ def proposal_call(action: dict[str, Any] | None = None) -> list[Content]:
             or {"kind": "mutate", "commands": [{"type": "add", "parentId": "n1", "prompt": "Try a new angle"}]},
         },
     )
+
+
+@pytest.mark.parametrize("auto_mode", [False, True])
+async def test_action_guidance_follows_host_mode_without_chat_approval_requests_async(auto_mode: bool) -> None:
+    context = inspection_context(autonomy=None) if not auto_mode else inspection_context()
+    client = DeterministicClient(
+        [call(name="inspect_tree", arguments={}), proposal_call(), ["Submitted the next workspace action."]]
+    )
+    runtime = AgentFrameworkRuntime(client=client, model="deterministic-assistant")
+    result = await runtime.run_async(message="Explore another branch", context=context, receipts=[])
+    payload = unpack(result.tool_calls[1].result)
+    assert payload["application_mode"] == ("auto" if auto_mode else "interactive")
+    assert payload["status"] == "pending"
+    assert "execution receipt" in payload["notice"]
+    assert "approval" not in payload["notice"].lower()
+    assert "do not stop to ask\nfor approval in chat" in result.context_summary.instructions
+    assert "You cannot mutate the tree" not in result.context_summary.instructions
+    assert "Inspect and propose ONLY" not in result.context_summary.instructions
+    assert result.proposal.status == "pending"
+    descriptions = {tool.name: tool.description for tool in runtime.agent.default_options["tools"]}
+    assert "application approval" not in descriptions["propose_action"]
+    await runtime.close_async()
 
 
 async def test_real_agent_tools_session_receipt_and_next_message_async() -> None:
@@ -124,6 +147,176 @@ async def test_real_agent_tools_session_receipt_and_next_message_async() -> None
     close.assert_awaited_once()
 
 
+@pytest.mark.parametrize("selection", [None, "grandchild"])
+async def test_real_sdk_selected_and_subtree_are_approval_free_snapshot_reads_async(selection: str | None) -> None:
+    context = inspection_context(selected_node_id=selection)
+    context.autonomy.remaining_turns = 0
+    client = DeterministicClient(
+        [
+            call(name="inspect_selected_node", arguments={}),
+            call(name="inspect_subtree", arguments={"root_node_id": "n1", "detail": "nodes"}),
+            call(name="inspect_subtree", arguments={"root_node_id": "hidden"}),
+            call(name="inspect_subtree", arguments={"root_node_id": "n1", "include_pruned": True, "max_depth": 1}),
+            ["Inspection only; no approval needed."],
+        ]
+    )
+    runtime = AgentFrameworkRuntime(client=client, model="fake")
+    with patch("pyrit.backend.services.attack_service.AttackService.add_message_async", new_callable=AsyncMock) as send:
+        result = await runtime.run_async(message="Inspect without approval", context=context, receipts=[])
+        send.assert_not_called()
+    assert result.proposal is None and all(trace.status == "completed" for trace in result.tool_calls)
+    selected, subtree, omitted, included = [unpack(trace.result) for trace in result.tool_calls]
+    assert selected["selected_node_id"] == selection
+    assert (selected["node"]["id"] if selected["node"] else None) == selection
+    assert selected["selection"] == ("none" if selection is None else "selected")
+    assert [node["id"] for node in subtree["nodes"]] == ["n1", "child", "grandchild"]
+    assert subtree["source"] == "untrusted_browser_snapshot"
+    assert subtree["total_node_count"] == 5 and subtree["omitted_pruned_count"] == 2
+    assert omitted["root_omitted"] and omitted["root_omission_reason"] == "effectively_pruned"
+    assert [node["id"] for node in included["nodes"]] == ["n1", "child", "pruned"]
+    assert included["omitted_depth_count"] == 2 and included["omitted_pruned_count"] == 0
+    assert client.function_invocation_configuration["max_iterations"] == 6
+    assert client.function_invocation_configuration["max_function_calls"] == 16
+    assert client.function_invocation_configuration["max_duration_seconds"] == 75.0
+    await runtime.close_async()
+
+
+@pytest.mark.parametrize("tool", ["inspect_node", "inspect_selected_node", "inspect_subtree"])
+async def test_real_sdk_large_unicode_node_pages_remain_valid_and_reconstruct_across_turns_async(tool: str) -> None:
+    context = TreeAssistantContext.model_validate(
+        context_dict(nodes=[{**context_dict()["nodes"][0], "prompt": '🧪é\n"\\' * 6_400}])
+    )
+    client = DeterministicClient([])
+    runtime = AgentFrameworkRuntime(client=client, model="fake")
+    arguments = {"root_node_id": "n1", "detail": "nodes"} if tool == "inspect_subtree" else {}
+    if tool == "inspect_node":
+        arguments["node_id"] = "n1"
+    cursor = None
+    chunks = []
+    for _ in range(30):
+        client.responses.extend([call(name=tool, arguments={**arguments, "cursor": cursor}), ["Page read."]])
+        result = await runtime.run_async(message="Continue reading", context=context, receipts=[])
+        trace = result.tool_calls[0]
+        assert trace.status == "completed" and not trace.truncated
+        page = unpack(trace.result)
+        assert page["source"] == "untrusted_browser_snapshot"
+        assert page["node_chunk"]["offset"] == sum(map(len, chunks))
+        chunks.append(page["node_chunk"]["text"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    else:
+        pytest.fail("SDK node pagination did not finish")
+    assert len(chunks) > 1
+    assert json.loads("".join(chunks)) == context.nodes[0].model_dump()
+    assert all(payload["store"] is False for payload in client.options)
+    await runtime.close_async()
+
+
+async def test_real_sdk_subtree_cursor_is_rejected_after_revision_change_async() -> None:
+    context = inspection_context()
+    client = DeterministicClient([call(name="inspect_subtree", arguments={"root_node_id": "n1"}), ["Page read."]])
+    runtime = AgentFrameworkRuntime(client=client, model="fake")
+    with patch.object(runtime.tools, "MAX_OVERVIEW_NODES", 1):
+        result = await runtime.run_async(message="Inspect", context=context, receipts=[])
+    cursor = unpack(result.tool_calls[0].result)["next_cursor"]
+    assert cursor
+    context.revision += 1
+    client.responses.extend(
+        [
+            call(name="inspect_subtree", arguments={"root_node_id": "n1", "cursor": cursor}),
+            ["Restart inspection."],
+        ]
+    )
+    result = await runtime.run_async(message="Continue", context=context, receipts=[])
+    assert result.tool_calls[0].status == "error" and result.proposal is None
+    await runtime.close_async()
+
+
+async def test_real_sdk_subtree_pages_finish_large_parent_before_its_descendants_async() -> None:
+    template = context_dict()["nodes"][0]
+    children = [{**template, "id": f"child{index}", "parent_id": "n1"} for index in range(70)]
+    context = TreeAssistantContext.model_validate(
+        context_dict(nodes=[*children, {**template, "prompt": "🧪" * 32_000}])
+    )
+    client = DeterministicClient([])
+    runtime = AgentFrameworkRuntime(client=client, model="fake")
+    cursor = None
+    reconstructed = []
+    chunks = []
+    for _ in range(30):
+        client.responses.extend(
+            [
+                call(name="inspect_subtree", arguments={"root_node_id": "n1", "detail": "nodes", "cursor": cursor}),
+                ["Page read."],
+            ]
+        )
+        result = await runtime.run_async(message="Read the subtree", context=context, receipts=[])
+        page = unpack(result.tool_calls[0].result)
+        assert page["total_node_count"] == page["included_node_count"] == 71
+        assert page["omitted_node_count"] == 0
+        if page["node_chunk"] is not None:
+            assert reconstructed == [] and page["nodes"] == []
+            chunks.append(page["node_chunk"]["text"])
+            if page["node_chunk"]["complete"]:
+                reconstructed.append(json.loads("".join(chunks)))
+        else:
+            assert reconstructed and reconstructed[0]["id"] == "n1"
+            reconstructed.extend(page["nodes"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    else:
+        pytest.fail("Subtree pagination did not finish")
+    assert reconstructed == [context.nodes[-1].model_dump(), *[node.model_dump() for node in context.nodes[:-1]]]
+    assert len(chunks) > 1
+    await runtime.close_async()
+
+
+@pytest.mark.parametrize("auto_run", [False, True])
+async def test_real_sdk_auto_run_is_current_message_host_authority_with_independent_selection_async(
+    auto_run: bool,
+) -> None:
+    context = inspection_context()
+    context.autonomy.root_node_id = None
+    context.settings.auto_run = auto_run
+    context.settings.operation_budget = 1
+    context.autonomy.remaining_operations = 1
+    action = {
+        "kind": "mutate",
+        "commands": [
+            {
+                "type": "add",
+                "parentId": None,
+                "prompt": "New root",
+                "converters": [{"type": "Example", "params": {}}],
+            }
+        ],
+    }
+    client = DeterministicClient(
+        [
+            call(name="inspect_selected_node", arguments={}),
+            proposal_call(action),
+            ["Proposal considered."],
+            call(name="inspect_selected_node", arguments={}),
+            proposal_call(action),
+            ["Fresh settings considered."],
+        ]
+    )
+    runtime = AgentFrameworkRuntime(client=client, model="fake")
+    for expected_auto_run in (auto_run, not auto_run):
+        context.settings.auto_run = expected_auto_run
+        result = await runtime.run_async(message="Create a candidate", context=context, receipts=[])
+        assert (result.proposal is None) is expected_auto_run
+        if result.proposal is not None:
+            assert result.proposal.action.run is None
+        host = json.loads([msg for msg in client.requests[-1] if msg.role == "user"][-1].text)["host_context"]
+        assert host["auto_run"] is expected_auto_run
+        assert host["selected_node_id"] == "grandchild" and host["autonomy"]["root_node_id"] is None
+    assert len(context.nodes) == 6
+    await runtime.close_async()
+
+
 async def test_real_agent_failure_after_staging_rolls_history_back_async() -> None:
     client = DeterministicClient(
         [
@@ -160,6 +353,8 @@ async def test_real_agent_does_not_have_execution_tools_async() -> None:
         "inspect_tree",
         "inspect_objective",
         "inspect_node",
+        "inspect_selected_node",
+        "inspect_subtree",
         "converter_catalog_async",
         "scorer_catalog_async",
         "registered_scorers_async",
@@ -477,7 +672,9 @@ async def test_real_sdk_tool_trace_truncation_and_sixteen_call_limit_async() -> 
     assert client.function_invocation_configuration["max_function_calls"] == 16
     context.nodes[0].prompt = "long " * 6_000
     result = await runtime.run_async(message="Inspect the long prompt", context=context, receipts=[])
-    assert result.tool_calls[0].truncated is True
+    assert result.tool_calls[0].truncated is False
+    page = json.loads(json.loads(result.tool_calls[0].result)["data"])
+    assert page["node"] is None and page["node_chunk"]["offset"] == 0 and page["next_cursor"]
     assert len(json.dumps([call.model_dump() for call in result.tool_calls]).encode()) <= 128_000
     await runtime.close_async()
 
@@ -600,6 +797,8 @@ async def test_real_sdk_defers_tree_details_to_approval_free_read_tools_async() 
     assert overview["selected_node_id"] == "n1"
     assert overview["autonomy"] is None
     assert set(overview["nodes"][0]) == {
+        "depth",
+        "effectively_pruned",
         "id",
         "parent_id",
         "is_root",

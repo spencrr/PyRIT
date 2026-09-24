@@ -35,7 +35,7 @@ export function createAssistantContext(tree: TreeWorkspace, selectedNodeId: stri
     selected_node_id: workspace.nodes.some((node) => node.id === selectedNodeId) ? selectedNodeId : null,
     settings: {
       traversal: settings.traversal, concurrency: settings.concurrency ?? 1, operation_budget: settings.operationBudget,
-      scorer_ids: settings.scorers.map((scorer) => scorer.scorer_id),
+      scorer_ids: settings.scorers.map((scorer) => scorer.scorer_id), auto_run: settings.autoRun,
     },
     nodes: workspace.nodes.map((node) => {
       const response = node.messages?.filter((message) => message.role === 'assistant')
@@ -105,6 +105,25 @@ function freezeReview<T>(value: T): T {
   return value
 }
 
+function prepareNewDraftExecution(
+  workspace: TreeWorkspace, addedNodeIds: string[], intent: boolean | null | undefined,
+): { run: boolean; nodeIds: string[]; operations: number } {
+  requireCondition(intent === undefined || intent === null || typeof intent === 'boolean', 'Invalid draft run flag.')
+  const settings = getTreeSettings(workspace)
+  const run = (intent ?? settings.autoRun) && addedNodeIds.length > 0
+  let nodeIds: string[] = []
+  if (run) {
+    try { nodeIds = getNewRunNodeIds(workspace, addedNodeIds) }
+    catch (failure: unknown) {
+      throw Object.assign(new Error(`${failure instanceof Error ? failure.message : 'New drafts cannot run'}. Request run: false to create drafts only.`), { cause: failure })
+    }
+  }
+  const ids = new Set(nodeIds)
+  const operations = workspace.nodes.filter((node: TreeNode) => ids.has(node.id)).reduce((count: number, node: TreeNode) =>
+    count + 1 + node.converters.length + (settings.autoScore ? settings.scorers.length : 0), 0)
+  return { run, nodeIds, operations }
+}
+
 /** Revalidate at the save boundary without re-running allocation commands or losing newer presentation. */
 export function applyAssistantReview(
   workspace: TreeWorkspace, proposal: TreeAssistantProposal, review?: TreeAssistantPreparedProposal,
@@ -172,7 +191,8 @@ export function prepareAssistantProposal(
       ? { ...detached, change: { ...detached.change, workspace: detached.workspace } } : detached)
   }
   if (action.kind === 'plan') {
-    requireCondition(Object.keys(action).every((key) => ['kind', 'steps', 'run'].includes(key)) && typeof action.run === 'boolean', 'Invalid plan action.')
+    requireCondition(Object.keys(action).every((key) => ['kind', 'steps', 'run'].includes(key))
+      && (action.run === undefined || action.run === null || typeof action.run === 'boolean'), 'Invalid plan action.')
     requireCondition(Array.isArray(action.steps) && action.steps.length > 0 && action.steps.length <= 20, 'A plan must contain 1 to 20 ordered steps.')
     let candidate = workspace
     const stepNodes = new Map<string, string>()
@@ -193,30 +213,29 @@ export function prepareAssistantProposal(
       stepNodes.set(step.id, change.addedNodeIds[0])
     }
     const nodeIds = [...stepNodes.values()]
-    const runnableIds = action.run ? getNewRunNodeIds(candidate, nodeIds) : []
-    let operations = 0
-    if (action.run) {
-      operations = candidate.nodes.filter((node) => nodeIds.includes(node.id)).reduce((count, node) =>
-        count + 1 + node.converters.length + (settings.autoScore ? settings.scorers.length : 0), 0)
-    }
+    const execution = prepareNewDraftExecution(candidate, nodeIds, action.run)
     const change: TreePreparedChange = {
       workspace: candidate, addedNodeIds: nodeIds, affectedNodeIds: [...affected], selectionId, layoutChanged, undo: null,
     }
     return review({
-      ...base, ...change, change, kind: 'plan', nodeIds: runnableIds,
-      operations, run: action.run,
-      description: `${nodeIds.length} ordered draft steps. ${action.run ? `${operations} planned operations to run only those new steps.` : 'No model calls; creates drafts only.'}`,
+      ...base, ...change, change, kind: 'plan', ...execution,
+      description: `${nodeIds.length} ordered draft steps. ${execution.run ? `${execution.operations} planned operations to run only those new drafts.`
+        : action.run === false ? 'Explicit draft-only override; no model calls.' : 'Creates drafts only; workspace auto-run is off.'}`,
     })
   }
   if (action.kind === 'mutate') {
-    requireCondition(Object.keys(action).every((key) => key === 'kind' || key === 'commands'), 'Invalid mutation action fields.')
+    requireCondition(Object.keys(action).every((key) => ['kind', 'commands', 'run'].includes(key))
+      && (action.run === undefined || action.run === null || typeof action.run === 'boolean'), 'Invalid mutation action fields.')
     requireCondition(Array.isArray(action.commands) && action.commands.length > 0 && action.commands.length <= 20,
       'A proposal must contain between 1 and 20 edits.')
     for (const command of action.commands) validateCommand(command)
     const change = prepareTreeChange(workspace, action.commands)
+    const execution = prepareNewDraftExecution(change.workspace, change.addedNodeIds, action.run)
     return review({
-      ...base, ...change, change, kind: 'mutate',
-      description: `${action.commands.length} tree edits; ${change.addedNodeIds.length} new nodes. No model calls. Auto-run is suppressed.`,
+      ...base, ...change, change, kind: 'mutate', ...execution,
+      description: `${action.commands.length} tree edits; ${change.addedNodeIds.length} new nodes. ${execution.run
+        ? `${execution.operations} planned operations to run only those new drafts.`
+        : action.run === false ? 'Explicit draft-only override; no model calls.' : 'Draft / tree edits only; no model calls.'}`,
     })
   }
   requireCondition(action.kind === 'run' || action.kind === 'score', 'Unknown assistant action.')
@@ -262,6 +281,10 @@ export function validateAutonomousProposal(
   prepared: TreeAssistantPreparedProposal = prepareAssistantProposal(workspace, proposal),
 ): number {
   validatePreparedAssistantProposal(workspace, proposal, prepared)
+  requireCondition(grant.root_node_id === null || typeof grant.root_node_id === 'string', 'Invalid Auto mode scope.')
+  requireCondition(Number.isSafeInteger(grant.remaining_operations) && grant.remaining_operations >= 0
+    && prepared.operations <= grant.remaining_operations, 'The Auto mode operation budget is exhausted.')
+  if (grant.root_node_id === null) return prepared.operations
   const scope = new Set([grant.root_node_id])
   requireCondition(workspace.nodes.some((node) => node.id === grant.root_node_id), 'The granted subtree no longer exists.')
   for (let changed = true; changed;) {
@@ -284,7 +307,6 @@ export function validateAutonomousProposal(
       }
     }
   } else requireCondition(action.node_ids.every((id) => scope.has(id)), 'Execution escapes the granted subtree.')
-  requireCondition(prepared.operations <= grant.remaining_operations, 'The autonomy operation budget is exhausted.')
   return prepared.operations
 }
 

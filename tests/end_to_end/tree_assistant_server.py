@@ -84,26 +84,30 @@ async def model_response_async(request: Request) -> dict[str, Any]:
         name = "inspect_tree"
     else:
         overview = json.loads(json.loads(tools[0]["content"])["data"])
-        node_id = overview["selected_node_id"] or overview["nodes"][0]["id"]
+        node_id = overview["selected_node_id"] or (overview["nodes"][0]["id"] if overview["nodes"] else None)
         if len(tools) == 1:
             if "overview only" in prompt:
                 result["content"] = "Inspected the compact overview without modifying the workspace."
+            elif "selected node only" in prompt:
+                name = "inspect_selected_node"
+            elif "subtree only" in prompt:
+                name, args = "inspect_subtree", {"root_node_id": node_id}
             elif "evidence" in prompt:
                 name, args = "inspect_evidence_async", {"node_id": node_id}
             else:
                 name = "propose_action"
                 autonomy = overview.get("autonomy")
-                root = next(node for node in overview["nodes"] if node["id"] == node_id)
-                if autonomy and root["status"] == "draft":
+                root = next((node for node in overview["nodes"] if node["id"] == node_id), None)
+                if autonomy and root and root["status"] == "draft":
                     action = {"kind": "run", "node_ids": [node_id]}
                 elif "multi-level" in prompt or "branching" in prompt or autonomy:
                     action = {
                         "kind": "plan",
-                        "run": bool(autonomy),
+                        "run": False if "drafts only" in prompt else True if autonomy else None,
                         "steps": [
                             {
                                 "id": "probe-1",
-                                "parent": {"node_id": node_id},
+                                "parent": {"node_id": node_id} if node_id else None,
                                 "prompt": "First ordered probe",
                                 "converters": [],
                             },
@@ -129,6 +133,7 @@ async def model_response_async(request: Request) -> dict[str, Any]:
                 else:
                     action = {
                         "kind": "mutate",
+                        "run": False if "drafts only" in prompt else None,
                         "commands": [
                             {
                                 "type": "add",
@@ -143,7 +148,9 @@ async def model_response_async(request: Request) -> dict[str, Any]:
             result["content"] = (
                 "## Stored evidence\n\n" + tools[-1]["content"]
                 if "evidence" in prompt
-                else ("A proposal is **pending your approval**. No tree action was applied.")
+                else "## Read-only inspection\n\n" + tools[-1]["content"]
+                if "only" in prompt and "drafts only" not in prompt
+                else "A proposal is **pending your approval**. No tree action was applied."
             )
     if name:
         result["content"] = None

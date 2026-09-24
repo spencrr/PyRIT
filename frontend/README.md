@@ -182,16 +182,21 @@ and [Wikipedia](https://en.wikipedia.org/wiki/Jimothy_(Raccoon)) were consulted
 for factual descriptions only. Their displayed artwork and photographs were
 not reused. The existing CoPyRIT logo is unchanged.
 
-## Conversation tree (preview)
+## Workspace (preview)
 
-Open **Conversation tree** in the sidebar (`/tree`). This workspace is for
+Open **Workspace** in the sidebar (`/tree`). This workspace is for
 authorized, human-directed evaluations of multi-turn text targets with editable
 history. It reuses the existing attack, converter, message, and history APIs.
 
-- **Workbench:** the graph stays central, with a collapsible **Branches** outline
-  and one **Inspect / Assistant** detail pane. On wide screens, **Show both detail
-  panes** is an explicit workspace-menu option. Narrow screens use **Graph**,
+- **Workbench:** the graph stays central, with **Branches** hidden by default.
+  Toggle the outline when needed. Both **Inspect / Assistant** detail panes are
+  enabled by default on wide screens when Assistant is open; use the workspace
+  menu to switch to one detail pane. Narrow screens use **Graph**,
   **Inspect**, or **Assistant** without unmounting drafts or conversation state.
+- **New workspace:** choose a first prompt, an objective-only/empty workspace,
+  or an imported plan in the same dialog. Creation never sends target requests.
+  An empty workspace can be populated manually or by the assistant; target
+  identity and system prompt are still chosen at creation.
 - **Workspace options:** the three-dot menu collects new/import/export, display,
   undo/redo, workspace settings and scoring instead of competing with the graph.
   Choose breadth-first (BFS) or depth-first (DFS), an operation budget (default
@@ -238,6 +243,9 @@ history. It reuses the existing attack, converter, message, and history APIs.
 - **Auto-run new branches:** off by default and enabled explicitly for the current
   workspace/session. Newly added child branches, samples and forks run
   without another confirmation, within the configured operation budget.
+  Approved agent additions use the same preference: the approval preview shows
+  the exact new drafts and effective cost before sending. Explicit draft-only
+  proposals override the preference. Receiving a proposal alone never executes it.
   Existing drafts and unrun ancestors are never included automatically; dependent
   branches remain drafts if their existing parent has not run. Errors and stopped
   runs do not resume themselves. It does not run on typing, selection, import, or reload.
@@ -253,6 +261,12 @@ history. It reuses the existing attack, converter, message, and history APIs.
   draft. Replay regenerates descendant history in order. Arbitrary edge
   reconnection is intentionally disallowed: an edge means conversation history,
   not a shader-style data cable.
+- **Fork path from ancestor:** choose a starting ancestor and ending descendant,
+  preview that inclusive path, and rewrite its starting prompt/pipeline. Only
+  those nodes are cloned as fresh drafts, with original provenance retained;
+  side branches and descendants beyond the endpoint are excluded. The unchanged
+  history preceding the starting node is shared. Auto-run, when enabled, applies
+  only to the new path after its existing prefix is ready.
 - **Persistence:** graph state, layouts and evidence snapshots live in this
   browser's local storage. Each executed turn also has a backend attack and
   conversation with source-message lineage, accessible from its inspector.
@@ -365,10 +379,11 @@ The interaction is deliberately **inspect → propose → approve → apply → 
 - Run and scoring proposals name an explicit node set and show planned operations.
   The existing execution engine enforces history, scorer identity, budgets,
   cancellation, and evidence recovery.
-- **Every proposal requires approval**, independent of the workspace's
-  manual-run confirmation setting. Approving ordinary edits never triggers
-  auto-run—even when auto-run is enabled. A multi-level plan explicitly states
-  whether approval also runs its new drafts.
+- By default, **every proposal requires approval**, independent of the workspace's
+  manual-run confirmation setting. New agent drafts inherit workspace auto-run
+  unless the action explicitly requests drafts only. Plans and edit batches show
+  whether approval also executes their new drafts; the saved effective policy
+  and costs are validated again before application.
 - **Multi-level plans** describe ordered steps with a local step ID and an explicit
   existing-node or earlier-step parent reference. The whole plan is validated and
   added atomically. Cycles, forward references, unknown parents and oversized plans
@@ -456,6 +471,60 @@ history; assistant-model calls have their own limits, separate from target-run b
 status, timing and truncation; model/transport, selected node, workspace revision,
 instructions and available tool names; and token usage when supplied by the provider.
 These are observable execution records, not hidden model reasoning.
+
+#### Inspection tools and limits
+
+All inspection calls are approval-free. They share **16 tool calls and 64,000
+payload bytes per planning turn**, with at most six SDK tool-loop iterations,
+75 seconds for that loop, and a 90-second outer request timeout. These limits are
+separate from the target/converter/scorer operation budget.
+
+| Tool | Context returned |
+| --- | --- |
+| `inspect_tree` | Compact paged topology and previews; effectively pruned branches are omitted unless requested. |
+| `inspect_selected_node` | The actual selection captured for this planning turn, or an explicit no-selection result. |
+| `inspect_subtree` | Parent-first subtree pages, with `include_pruned`, `max_depth`, and `detail="summary"` or `"nodes"` controls. |
+| `inspect_node` | One node from the saved browser snapshot, with continuation for oversized content. |
+| `inspect_objective` | Lossless pages of the full workspace objective. |
+| `inspect_evidence_async` | Verified backend text evidence through the node's recorded cutoff; bounded pieces and previews are marked. |
+| `converter_catalog_async` / `scorer_catalog_async` | Available types or safe metadata for one type. |
+| `registered_scorers_async` | The workspace's selected registered scorer identities. |
+| `propose_action` | A typed proposal only, never direct execution. |
+
+Subtree filtering reports counts and depth/pruning information. Omitting a pruned
+ancestor also omits its descendants; reading a pruned branch never restores it.
+Node detail is still snapshot data, not independently verified backend evidence.
+For an oversized node, concatenate `node_chunk.text` across `next_cursor` pages
+and JSON-decode the result. Cursors bind the saved snapshot and inspection options,
+so changes require restarting the read rather than mixing snapshots. A complete
+subtree may take several pages or planning turns; the assistant must not describe
+a partial result as the whole subtree.
+
+### Auto mode
+
+Use the normal chat composer and enable **Auto mode** for a task. Submitting opens
+a budget modal before any planning or execution starts. The default scope is the
+whole workspace; optionally restrict it to the selected subtree. The submitted
+message, scope and semantic workspace state are captured for confirmation, rather
+than retargeting if the selection changes. Within that task the assistant may
+apply validated proposals without repeated approval.
+The orchestrator submits actions to the workspace pipeline instead of asking
+for additional permission in chat. Tool responses distinguish submission from
+completion; execution receipts remain the source of action outcomes.
+
+- The permission applies only to that submitted task, not future messages.
+  Whole-workspace scope can create roots in an empty workspace. For subtree scope,
+  root-level sample/fork/keep operations that affect outside siblings are rejected.
+- The UI selection and execution scope are separate: read tools report the
+  actual selection captured for the planning turn, not the granted root.
+- Target sends, converter applications and scoring requests consume the grant's
+  operation budget; there is also a ten-turn planning cap. Workspace per-run budgets
+  still apply. Provider-internal retries/composite calls and tokens are not an exact
+  monetary budget.
+- Stop pauses after in-flight work settles. Human edits that invalidate a proposal,
+  failed actions, reporting errors and persistence failures pause exploration.
+- Reload/restoration **never rearms Auto mode execution**. Confirm a new task
+  budget to resume automatic work. The toggle is off after reload.
 
 ### Assistant session API
 

@@ -30,6 +30,7 @@ type TurnFlowNode = Node<{
   onResizeState: (resizing: boolean) => void
   focused: boolean
   readOnly: boolean
+  pathPreview: boolean
 }, 'turn'>
 
 function responsePreview(turn: TreeNode): string {
@@ -51,6 +52,7 @@ interface TreeCanvasProps {
   onGroup: (command: TreeCommand) => void
   focusedGroupId?: string | null
   onFocusGroup?: (groupId: string | null) => void
+  highlightedNodeIds?: string[]
 }
 
 const TurnCard = memo(function TurnCard({ data, selected }: NodeProps<TurnFlowNode>) {
@@ -68,7 +70,7 @@ const TurnCard = memo(function TurnCard({ data, selected }: NodeProps<TurnFlowNo
         data.onResizeState(false)
       }} />
     <div className={mergeClasses(styles.card, group?.collapsed ? styles.stackedCard : undefined)}
-      data-selected={selected} data-state={state} data-pruned={data.pruned} data-kept={turn.kept}>
+      data-selected={selected} data-state={state} data-pruned={data.pruned} data-kept={turn.kept} data-path-preview={data.pathPreview}>
       <Handle type="target" position={Position.Left} isConnectable={false} />
       <div className={styles.row}>
         <Badge appearance={state === 'draft' ? 'outline' : 'filled'}
@@ -78,6 +80,7 @@ const TurnCard = memo(function TurnCard({ data, selected }: NodeProps<TurnFlowNo
         </Badge>
         {data.pruned ? <Badge appearance="outline" icon={<DismissCircleRegular />}>Pruned</Badge>
           : turn.kept && <Badge appearance="outline" icon={<PinRegular />}>Kept</Badge>}
+        {data.pathPreview && <Badge appearance="outline" color="brand">Fork path</Badge>}
         {(turn.attempts?.length ?? 0) > 0 && <Text size={100}>Attempt {(turn.attempts?.length ?? 0) + 1}</Text>}
       </div>
       <div className={data.size.height >= 360 ? styles.expandedPrompt : styles.preview}>{turn.prompt.slice(0, data.size.height >= 360 ? 2000 : 400)}</div>
@@ -154,7 +157,7 @@ interface GraphSyncProps extends TreeCanvasProps {
   onResizeStable: (resizing: boolean) => void
 }
 
-function GraphSync({ workspace, selectedId, showPruned, disabled, layoutVersion = 0, queuedIds = EMPTY_NODE_IDS, onGroupStable, onFocusStable, onResizeStable, focusedGroupId }: GraphSyncProps) {
+function GraphSync({ workspace, selectedId, showPruned, disabled, layoutVersion = 0, queuedIds = EMPTY_NODE_IDS, highlightedNodeIds = EMPTY_NODE_IDS, onGroupStable, onFocusStable, onResizeStable, focusedGroupId }: GraphSyncProps) {
   const { setNodes, setEdges, getNodes, getNodesBounds, getViewport, setViewport, viewportInitialized } = useReactFlow<TurnFlowNode>()
   const initialized = useNodesInitialized()
   const didFit = useRef(false)
@@ -244,9 +247,10 @@ function GraphSync({ workspace, selectedId, showPruned, disabled, layoutVersion 
       const queued = queuedIds.includes(turn.id)
       const pruned = isNodeHidden(workspace, turn.id)
       const size = turn.size ?? defaultSize
+      const pathPreview = highlightedNodeIds.includes(turn.id)
       const renderKey = JSON.stringify([turn.prompt.slice(0, 2000), turn.converters.map((converter) => converter.type), turn.status, responsePreview(turn),
         turn.scoreRuns?.map((result) => [result.id, result.status, result.scores.map((score) => [score.score_type, score.score_value, score.status])]),
-        turn.kept, pruned, size, turn.attempts?.length, group, queued, disabled, settings.scorers, settings.primaryScorerId])
+        turn.kept, pruned, size, turn.attempts?.length, group, queued, disabled, settings.scorers, settings.primaryScorerId, pathPreview])
       if (old && old.data.renderKey === renderKey && old.selected === (turn.id === selectedId) &&
         old.position.x === position.x && old.position.y === position.y) return old
       return {
@@ -255,7 +259,7 @@ function GraphSync({ workspace, selectedId, showPruned, disabled, layoutVersion 
         height: old?.resizing ? old.height : size.height,
         style: { width: old?.resizing ? old.width : size.width, height: old?.resizing ? old.height : size.height },
         data: { turn, settings, group, queued, pruned, size, renderKey, onGroup: onGroupStable, onFocusGroup: onFocusStable,
-          onResizeState: onResizeStable, focused: !!focusedGroupId, readOnly: disabled },
+          onResizeState: onResizeStable, focused: !!focusedGroupId, readOnly: disabled, pathPreview },
         ariaLabel: `Prompt: ${turn.prompt.slice(0, 80)} (${queued ? 'queued' : turn.status})`,
       }
     })
@@ -268,7 +272,7 @@ function GraphSync({ workspace, selectedId, showPruned, disabled, layoutVersion 
     setNodes(nextNodes)
     setEdges(edges)
     if (reset) requestAnimationFrame(fit)
-  }, [nodes, groups, workspace, selectedId, disabled, layoutVersion, queuedIds, getNodes, setNodes, setEdges, fit, onGroupStable, onFocusStable, onResizeStable, focusedGroupId])
+  }, [nodes, groups, workspace, selectedId, disabled, layoutVersion, queuedIds, highlightedNodeIds, getNodes, setNodes, setEdges, fit, onGroupStable, onFocusStable, onResizeStable, focusedGroupId])
 
   useEffect(() => {
     if (!initialized || !viewportInitialized) return

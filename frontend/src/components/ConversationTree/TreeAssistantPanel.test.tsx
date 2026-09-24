@@ -13,6 +13,7 @@ import type {
 } from '@/types'
 
 import { createAssistantContext, prepareAssistantProposal } from './treeAssistant'
+import { getTreeSettings } from './treeModel'
 import { saveAssistantCheckpoint } from './treeAssistantStorage'
 import TreeAssistantPanel from './TreeAssistantPanel'
 
@@ -150,6 +151,186 @@ describe('TreeAssistantPanel', () => {
     expect(defaultProps.onBusyChange.mock.calls).toEqual([[true], [false]])
   })
 
+  it('shows Auto mode readiness while checked without granting or persisting permission', async () => {
+    const user = userEvent.setup()
+    render(panel())
+    await start(user)
+    const status = screen.getByRole('status', { name: 'Auto mode status' })
+    const saved = localStorage.getItem('pyrit:tree-assistant:v1:workspace')
+    expect(status).toHaveTextContent('Auto mode is off.')
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    expect(status).toHaveTextContent('Auto mode is ready for this message. Submit to review scope and budget.')
+    expect(status).not.toHaveTextContent('Auto mode is off.')
+    expect(mockApi.sendMessage).not.toHaveBeenCalled()
+    expect(defaultProps.onApply).not.toHaveBeenCalled()
+    expect(localStorage.getItem('pyrit:tree-assistant:v1:workspace')).toBe(saved)
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    expect(status).toHaveTextContent('Auto mode is off.')
+  })
+
+  it('authorizes one normal message for the whole empty workspace and leaves the next message manual', async () => {
+    const user = userEvent.setup()
+    const workspace = { ...WORKSPACE, nodes: [] }
+    mockContext.mockImplementation(jest.requireActual<typeof import('./treeAssistant')>('./treeAssistant').createAssistantContext)
+    mockApi.sendMessage.mockImplementation(async (_id, request) => ({
+      request_id: request.request_id, message: request.message, reply: 'Done', proposals: [],
+    }))
+    render(panel({ workspace, selectedId: null }))
+    expect(screen.getByRole('switch', { name: 'Auto mode' })).not.toBeChecked()
+    await start(user)
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    await send(user, 'Start a branching conversation')
+    const dialog = screen.getByRole('dialog', { name: 'Authorize Auto mode for this message?' })
+    expect(within(dialog).getByText('Start a branching conversation')).toBeVisible()
+    expect(within(dialog).getByRole('combobox', { name: 'Scope' })).toHaveValue('workspace')
+    expect(within(dialog).queryByRole('option', { name: 'Selected subtree' })).not.toBeInTheDocument()
+    expect(within(dialog).getByText(/Planning cap: up to 10 assistant turns/)).toBeVisible()
+    expect(within(dialog).getByText(/automatic and requested scoring/)).toBeVisible()
+    expect(mockApi.sendMessage).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: 'Run task' }))
+    await waitFor(() => expect(mockApi.sendMessage).toHaveBeenCalledTimes(1))
+    expect(mockApi.sendMessage.mock.calls[0][1]).toMatchObject({
+      message: 'Start a branching conversation', context: {
+        nodes: [], selected_node_id: null, settings: { auto_run: false },
+        autonomy: { root_node_id: null, goal: 'Start a branching conversation', remaining_operations: 20, remaining_turns: 9 },
+      },
+    })
+    expect(await screen.findByRole('switch', { name: 'Auto mode' })).not.toBeChecked()
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    expect(screen.getByRole('status', { name: 'Auto mode status' })).toHaveTextContent('Finished: the assistant returned no further action.')
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    await send(user, 'Now explain the next step')
+    await waitFor(() => expect(mockApi.sendMessage).toHaveBeenCalledTimes(2))
+    expect(mockApi.sendMessage.mock.calls[1][1].context).not.toHaveProperty('autonomy')
+  })
+
+  it('binds the chosen subtree and message at submission and exposes Stop during planning', async () => {
+    const user = userEvent.setup()
+    const response = deferred<TreeAssistantTurn>()
+    mockApi.sendMessage.mockReturnValue(response.promise)
+    const onStop = jest.fn()
+    render(panel({ onStop }))
+    await start(user)
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    await send(user, 'Explore this branch')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Scope' }), 'subtree')
+    await user.clear(screen.getByRole('spinbutton', { name: 'Operation budget' }))
+    await user.type(screen.getByRole('spinbutton', { name: 'Operation budget' }), '7')
+    await user.click(screen.getByRole('button', { name: 'Run task' }))
+    const pending = mockApi.sendMessage.mock.calls[0][1]
+    expect(pending).toMatchObject({ message: 'Explore this branch', context: {
+      autonomy: { root_node_id: 'node', goal: 'Explore this branch', remaining_operations: 7 },
+    } })
+    expect(await screen.findByRole('status', { name: 'Auto mode status' })).toHaveTextContent(/Auto mode: running within the granted subtree/)
+    await user.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(onStop).toHaveBeenCalledTimes(1)
+    await act(async () => { response.resolve({ ...TURN, message: pending.message, request_id: pending.request_id }) })
+    expect(await screen.findByRole('button', { name: 'Approve edits' })).toBeEnabled()
+    expect(defaultProps.onApply).not.toHaveBeenCalled()
+    expect(mockApi.sendMessage).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('switch', { name: 'Auto mode' })).not.toBeChecked()
+  })
+
+  it.each(['selection', 'workspace', 'system'] as const)('rejects a changed %s before Auto confirmation instead of retargeting', async (change) => {
+    const user = userEvent.setup()
+    let current = WORKSPACE
+    const getWorkspace = () => current
+    const { rerender } = render(panel({ getWorkspace }))
+    await start(user)
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    await send(user, 'Captured message')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Scope' }), 'subtree')
+    if (change === 'selection') rerender(panel({ getWorkspace, selectedId: null }))
+    else current = change === 'workspace' ? { ...WORKSPACE, id: 'other-workspace' } : { ...WORKSPACE, systemPrompt: 'Changed system prompt' }
+    await user.click(screen.getByRole('button', { name: 'Run task' }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/changed.*submit again/)
+    expect(mockApi.sendMessage).not.toHaveBeenCalled()
+    expect(defaultProps.onApply).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByRole('textbox', { name: 'Message' })).toHaveValue('Captured message')
+    expect(screen.getByRole('switch', { name: 'Auto mode' })).not.toBeChecked()
+  })
+
+  it('retains semantic authorization across presentation-only changes before confirmation', async () => {
+    const user = userEvent.setup()
+    let current = WORKSPACE
+    mockApi.sendMessage.mockImplementation(async (_id, request) => ({
+      request_id: request.request_id, message: request.message, reply: 'Done', proposals: [],
+    }))
+    render(panel({ getWorkspace: () => current }))
+    await start(user)
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    await send(user, 'Captured message')
+    current = { ...WORKSPACE, revision: 13, nodes: WORKSPACE.nodes.map((node) => ({ ...node, position: { x: 10, y: 20 } })) }
+    await user.click(screen.getByRole('button', { name: 'Run task' }))
+    await waitFor(() => expect(mockApi.sendMessage).toHaveBeenCalledTimes(1))
+    expect(mockApi.sendMessage.mock.calls[0][1]).toMatchObject({ message: 'Captured message', context: { revision: 13, autonomy: { root_node_id: null } } })
+  })
+
+  it('does not offer a selected subtree for a pruned selection or grant permission on cancellation', async () => {
+    const user = userEvent.setup()
+    const workspace = { ...WORKSPACE, nodes: WORKSPACE.nodes.map((node) => ({ ...node, pruned: true })) }
+    render(panel({ workspace }))
+    await start(user)
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    await send(user)
+    expect(screen.queryByRole('option', { name: 'Selected subtree' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByRole('switch', { name: 'Auto mode' })).not.toBeChecked()
+    expect(mockApi.sendMessage).not.toHaveBeenCalled()
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Explore')
+  })
+
+  it('never persists or restores the composer Auto mode switch', async () => {
+    const user = userEvent.setup()
+    const first = render(panel())
+    await start(user)
+    await user.click(screen.getByRole('switch', { name: 'Auto mode' }))
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Saved draft')
+    expect(screen.getByRole('switch', { name: 'Auto mode' })).toBeChecked()
+    first.unmount()
+    render(panel())
+    expect(screen.getByRole('switch', { name: 'Auto mode' })).not.toBeChecked()
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Saved draft')
+    expect(mockApi.sendMessage).not.toHaveBeenCalled()
+    expect(defaultProps.onApply).not.toHaveBeenCalled()
+  })
+
+  it.each(['mutate', 'plan'] as const)('labels effective %s auto-run before explicit approval with its exact new set', async (kind) => {
+    const user = userEvent.setup()
+    const workspace = { ...WORKSPACE, settings: { ...getTreeSettings(WORKSPACE), autoRun: true } }
+    const action: TreeAssistantAction = kind === 'mutate'
+      ? { kind, commands: [{ type: 'add', parentId: null, prompt: 'New root' }] }
+      : { kind, run: null, steps: [{ id: 'new', parent: null, prompt: 'New root', converters: [] }] }
+    mockApi.sendMessage.mockImplementation(async (_id, request) => ({
+      ...TURN, request_id: request.request_id, message: request.message, proposals: [{ ...PROPOSAL, action }],
+    }))
+    render(panel({ workspace }))
+    await stage(user)
+    expect(defaultProps.onApply).not.toHaveBeenCalled()
+    expect(screen.getByText('1 planned target / converter / scorer operations.')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Approve and run 1 new drafts' }))
+    await waitFor(() => expect(defaultProps.onApply).toHaveBeenCalledTimes(1))
+    const review = defaultProps.onApply.mock.calls[0][2]
+    expect(review).toMatchObject({ kind, run: true, operations: 1 })
+    expect(review?.nodeIds).toEqual(review?.addedNodeIds)
+    expect(review?.nodeIds).not.toContain('node')
+  })
+
+  it('shows an explicit draft-only request even when workspace auto-run is on', async () => {
+    const user = userEvent.setup()
+    const workspace = { ...WORKSPACE, settings: { ...getTreeSettings(WORKSPACE), autoRun: true } }
+    mockApi.sendMessage.mockImplementation(async (_id, request) => ({
+      ...TURN, request_id: request.request_id, message: request.message,
+      proposals: [{ ...PROPOSAL, action: { ...PROPOSAL.action, run: false } }],
+    }))
+    render(panel({ workspace }))
+    await stage(user)
+    expect(screen.getByText(/Explicit draft-only override/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Approve edits' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: /Approve and run/ })).not.toBeInTheDocument()
+  })
+
   it.each([true, false])('requires confirmation of a saved recovery export before clearing (download=%s)', async (download) => {
     const user = userEvent.setup()
     render(panel())
@@ -228,7 +409,7 @@ describe('TreeAssistantPanel', () => {
     const transcript = screen.getByRole('log', { name: 'Assistant conversation' })
     expect(within(transcript).getByText('Explore')).toBeInTheDocument()
     expect(within(transcript).getByText('comparison')).toBeInTheDocument()
-    expect(screen.getByText('1 tree edits; 1 new nodes. No model calls. Auto-run is suppressed.')).toBeInTheDocument()
+    expect(screen.getByText('1 tree edits; 1 new nodes. Draft / tree edits only; no model calls.')).toBeInTheDocument()
     await user.click(screen.getByText('Action details (JSON)'))
     expect(screen.getByText(/"type": "add"/)).toBeVisible()
     expect(defaultProps.onApply).not.toHaveBeenCalled()
@@ -747,6 +928,8 @@ describe('TreeAssistantPanel', () => {
     await user.tab()
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveFocus()
     await user.keyboard('Explore')
+    await user.tab()
+    expect(screen.getByRole('switch', { name: 'Auto mode' })).toHaveFocus()
     await user.tab()
     expect(screen.getByRole('button', { name: 'Send message' })).toHaveFocus()
     await user.keyboard('{Enter}')

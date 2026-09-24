@@ -27,7 +27,9 @@ export function prepareTreeChange(workspace: TreeWorkspace, commands: TreeComman
     const added = next.nodes.filter((node: TreeNode) => !existingIds.has(node.id))
     if (command.type === 'group' && command.activeNodeId) selectionId = command.activeNodeId
     if (command.type === 'retry' || command.type === 'sample') selectionId = command.nodeId
-    else if (added.length) {
+    else if (command.type === 'fork' || command.type === 'forkPath') {
+      selectionId = added.find((node: TreeNode) => node.forkedFrom === command.nodeId)?.id
+    } else if (added.length) {
       selectionId = added.find((node: TreeNode) => !('nodeId' in command) || node.forkedFrom === command.nodeId)?.id ?? added[0].id
     }
   }

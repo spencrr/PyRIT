@@ -4,11 +4,10 @@
 """Bounded wire contracts for the ephemeral, proposal-only tree assistant."""
 
 import json
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, ClassVar, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
-from typing_extensions import Self
 
 OpaqueId = Annotated[str, Field(min_length=1, max_length=256)]
 Prompt = Annotated[str, Field(max_length=32_000)]
@@ -127,10 +126,11 @@ class MutateAction(AssistantModel):
 
     kind: Literal["mutate"]
     commands: Annotated[list[TreeAssistantMutation], Field(min_length=1, max_length=20)]
+    run: bool | None = Field(default=None, description="Null inherits workspace auto_run; false creates drafts only.")
 
 
 class ExecuteAction(AssistantModel):
-    """Explicit node selection for a human-approved run or score."""
+    """Explicit node selection for an application-approved run or score."""
 
     kind: Literal["run", "score"]
     node_ids: Annotated[list[OpaqueId], Field(min_length=1, max_length=300)]
@@ -174,7 +174,7 @@ class PlanAction(AssistantModel):
 
     kind: Literal["plan"]
     steps: Annotated[list[TreeAssistantPlanStep], Field(min_length=1, max_length=20)]
-    run: bool
+    run: bool | None = Field(default=None, description="Null inherits workspace auto_run; false creates drafts only.")
 
     @model_validator(mode="after")
     def _validate_order(self) -> Self:
@@ -238,12 +238,13 @@ class TreeAssistantSettings(AssistantModel):
     concurrency: Literal[1, 2, 4]
     operation_budget: Annotated[int, Field(ge=1, le=100_000)]
     scorer_ids: Annotated[list[OpaqueId], Field(max_length=30)]
+    auto_run: bool = False
 
 
 class TreeAssistantAutonomy(AssistantModel):
     """Application-reported planning bounds, never backend execution authority."""
 
-    root_node_id: OpaqueId
+    root_node_id: OpaqueId | None = Field(description="Null grants planning scope over the entire workspace.")
     remaining_operations: Annotated[int, Field(ge=0, le=100_000)]
     remaining_turns: Annotated[int, Field(ge=0, le=50)]
     goal: Prompt
@@ -274,7 +275,11 @@ class TreeAssistantContext(AssistantModel):
             raise ValueError("Duplicate node IDs")
         if self.selected_node_id is not None and self.selected_node_id not in nodes:
             raise ValueError("Unknown selected node")
-        if self.autonomy is not None and self.autonomy.root_node_id not in nodes:
+        if (
+            self.autonomy is not None
+            and self.autonomy.root_node_id is not None
+            and self.autonomy.root_node_id not in nodes
+        ):
             raise ValueError("Unknown autonomy root node")
         for node in self.nodes:
             visited = {node.id}

@@ -1,9 +1,10 @@
-import type { BackendMessage, TreeNode, TreeScoreRun, TreeWorkspace } from '@/types'
+import type { BackendMessage, TreeCommand, TreeNode, TreeScoreRun, TreeWorkspace } from '@/types'
 
 import {
   applyTreeCommand, createTreeWorkspace, DEFAULT_TREE_SETTINGS, exportTreePlan, getCurrentAttemptId, getNewRunNodeIds,
-  getRunNodeIds, getTreeLabels, getTreeSettings, importTreePlan, isNodeHidden, MAX_FAN_OUT, MAX_RUN_CALLS,
+  getRunNodeIds, getTreeLabels, getTreePath, getTreeSettings, importTreePlan, isNodeHidden, MAX_FAN_OUT, MAX_RUN_CALLS,
   MAX_TREE_NODES, parseTreeWorkspace, treeSemanticSignature, TREE_ATTEMPT_LABEL, TREE_NODE_LABEL, TREE_WORKSPACE_LABEL,
+  validateTreeForkPath,
 } from './treeModel'
 
 const CONFIGURATION = {
@@ -243,6 +244,166 @@ describe('treeModel', () => {
     expect(variant.lastSequence).toBeUndefined()
     expect(leaf).toMatchObject({ forkedFrom: 'leaf', parentId: variant.id, prompt: 'leaf', status: 'draft' })
     expect(getRunNodeIds(forked, variant.id)).toEqual([variant.id, leaf.id])
+  })
+
+  it('should return an inclusive ordered path independently of storage order and reject unrelated endpoints', () => {
+    const tree = workspace([node('end', 'middle'), node('other'), node('middle', 'start'), node('start')])
+    expect(getTreePath(tree, 'start', 'end').map((item: TreeNode) => item.id)).toEqual(['start', 'middle', 'end'])
+    expect(getTreePath(tree, 'middle', 'middle')).toEqual([tree.nodes[2]])
+    expect(() => getTreePath(tree, 'missing', 'end')).toThrow('node not found')
+    expect(() => getTreePath(tree, 'start', 'missing')).toThrow('node not found')
+    expect(() => getTreePath(tree, 'start', 'other')).toThrow('descendant')
+    expect(() => getTreePath(tree, 'end', 'start')).toThrow('descendant')
+    const cyclic = { ...tree, nodes: [node('start'), node('cycle-a', 'cycle-b'), node('cycle-b', 'cycle-a')] }
+    expect(() => getTreePath(cyclic, 'start', 'cycle-a')).toThrow('cycle')
+  })
+
+  it('should fork exactly the selected path below a branched prefix without copying evidence or sibling branches', () => {
+    const score: TreeScoreRun = {
+      id: 'score-run', scorerId: 'scorer', scorerHash: 'hash', status: 'complete',
+      scores: [{
+        id: 'score', message_piece_id: 'start-piece-1', scorer_type: 'Scorer', score_type: 'float_scale',
+        score_value: '0.7', timestamp: TIME,
+      }],
+    }
+    const before = applyTreeCommand(workspace([
+      complete(node('prefix')),
+      complete({ ...node('start', 'prefix'), kept: true }, 3),
+      complete({ ...node('middle', 'start'), converters: [{ type: 'OriginalConverter', params: { nested: { mode: 'saved' } } }] }, 5),
+      failed(node('end', 'middle'), 7),
+      node('prefix-sibling', 'prefix'),
+      node('side', 'start'),
+      node('side-leaf', 'side'),
+      node('beyond-end', 'end'),
+      { ...node('pruned-side', 'middle'), pruned: true },
+    ]), { type: 'score', nodeId: 'start', attemptId: 'start:initial', result: score })
+    const original = JSON.stringify(before)
+    const command: Extract<TreeCommand, { type: 'forkPath' }> = {
+      type: 'forkPath', nodeId: 'start', descendantId: 'end', prompt: 'Edited first prompt',
+      converters: [{ type: 'NewConverter', params: { mode: 'new' } }],
+    }
+    const forked = applyTreeCommand(before, command)
+    const clones = forked.nodes.slice(before.nodes.length)
+    expect(clones.map((item: TreeNode) => item.forkedFrom)).toEqual(['start', 'middle', 'end'])
+    expect(clones.map((item: TreeNode) => item.parentId)).toEqual(['prefix', clones[0].id, clones[1].id])
+    expect(clones.map((item: TreeNode) => item.parentAttemptId)).toEqual([
+      getCurrentAttemptId(before.nodes[0]), getCurrentAttemptId(clones[0]), getCurrentAttemptId(clones[1]),
+    ])
+    expect(clones.map((item: TreeNode) => item.prompt)).toEqual(['Edited first prompt', 'middle', 'end'])
+    expect(clones[0].converters).toEqual(command.converters)
+    expect(clones[1].converters).toEqual(before.nodes[2].converters)
+    const originalIds = new Set(before.nodes.flatMap((item: TreeNode) => [item.id, getCurrentAttemptId(item)]))
+    const freshIds = clones.flatMap((item: TreeNode) => [item.id, getCurrentAttemptId(item)])
+    expect(new Set(freshIds).size).toBe(clones.length * 2)
+    expect(freshIds.every((id: string) => !originalIds.has(id))).toBe(true)
+    for (const clone of clones) {
+      expect(clone).toMatchObject({ status: 'draft', pruned: false, kept: false })
+      for (const field of [
+        'attackResultId', 'conversationId', 'lastSequence', 'messages', 'error', 'attempts', 'scoreRuns', 'importedFromBackend',
+      ]) expect(clone).not.toHaveProperty(field)
+    }
+    expect(JSON.stringify(before)).toBe(original)
+    expect(forked.nodes.slice(0, before.nodes.length)).toEqual(before.nodes)
+    expect(forked.nodes[1].scoreRuns).toEqual([score])
+    expect(getNewRunNodeIds(forked, clones.map((item: TreeNode) => item.id))).toEqual(clones.map((item: TreeNode) => item.id))
+    command.converters[0].params.mode = 'changed later'
+    clones[1].converters[0].params.nested = { mode: 'changed clone' }
+    expect(forked.nodes[before.nodes.length].converters[0].params.mode).toBe('new')
+    expect(JSON.stringify(before)).toBe(original)
+  })
+
+  it('should preserve the starting node parent attempt even when that prefix was retried', () => {
+    const original = workspace([complete(node('prefix')), node('start', 'prefix'), node('end', 'start')])
+    const retried = applyTreeCommand(original, { type: 'retry', nodeId: 'prefix', scope: 'subtree' })
+    retried.nodes[1].parentAttemptId = getCurrentAttemptId(original.nodes[0])
+    const forked = applyTreeCommand(retried, {
+      type: 'forkPath', nodeId: 'start', descendantId: 'end', prompt: 'Variant', converters: [],
+    })
+    expect(forked.nodes[3].parentAttemptId).toBe(getCurrentAttemptId(original.nodes[0]))
+    expect(forked.nodes[3].parentAttemptId).not.toBe(getCurrentAttemptId(retried.nodes[0]))
+    expect(forked.nodes[4].parentAttemptId).toBe(getCurrentAttemptId(forked.nodes[3]))
+    expect(forked.nodes.slice(0, 3)).toEqual(retried.nodes)
+  })
+
+  it('should support a single-node root fork and discard archived attempts', () => {
+    const retried = applyTreeCommand(workspace([failed(node('root')), node('child', 'root')]), {
+      type: 'retry', nodeId: 'root', scope: 'subtree',
+    })
+    const forked = applyTreeCommand(retried, {
+      type: 'forkPath', nodeId: 'root', descendantId: 'root', prompt: 'One prompt', converters: [],
+    })
+    expect(forked.nodes).toHaveLength(3)
+    expect(forked.nodes[2]).toMatchObject({ parentId: null, forkedFrom: 'root', prompt: 'One prompt', status: 'draft' })
+    expect(forked.nodes[2].parentAttemptId).toBeUndefined()
+    expect(forked.nodes[2].attempts).toBeUndefined()
+    expect(forked.nodes[0].attempts).toHaveLength(1)
+  })
+
+  it.each([
+    ['missing', 'end', 'node not found'],
+    ['start', 'missing', 'node not found'],
+    ['start', 'other', 'descendant'],
+    ['end', 'start', 'descendant'],
+  ])('should reject invalid path endpoints %s to %s', (startId: string, endId: string, error: string) => {
+    const tree = workspace([node('start'), node('end', 'start'), node('other')])
+    const original = JSON.stringify(tree)
+    expect(() => applyTreeCommand(tree, {
+      type: 'forkPath', nodeId: startId, descendantId: endId, prompt: 'Changed', converters: [],
+    })).toThrow(error)
+    expect(JSON.stringify(tree)).toBe(original)
+  })
+
+  it.each(['prefix', 'start', 'middle', 'end'])('should reject paths hidden by pruning %s', (prunedId: string) => {
+    const tree = workspace([
+      node('prefix'), node('start', 'prefix'), node('middle', 'start'), node('end', 'middle'),
+    ].map((item: TreeNode) => ({ ...item, pruned: item.id === prunedId })))
+    const command: Extract<TreeCommand, { type: 'forkPath' }> = {
+      type: 'forkPath', nodeId: 'start', descendantId: 'end', prompt: 'Changed', converters: [],
+    }
+    expect(() => validateTreeForkPath(tree, command)).toThrow('restore hidden branches')
+    expect(() => applyTreeCommand(tree, command)).toThrow('restore hidden branches')
+  })
+
+  it.each(['start', 'middle', 'end'])('should reject running source %s without blocking unrelated running siblings', (runningId: string) => {
+    const originals = [complete(node('start')), complete(node('middle', 'start'), 3), node('end', 'middle')]
+    const runningIndex = originals.findIndex((item: TreeNode) => item.id === runningId)
+    const tree = workspace(originals.map((item: TreeNode, index: number): TreeNode =>
+      index < runningIndex ? item : { ...node(item.id, item.parentId), status: index === runningIndex ? 'running' : 'draft' }))
+    const command: Extract<TreeCommand, { type: 'forkPath' }> = {
+      type: 'forkPath', nodeId: 'start', descendantId: 'end', prompt: 'Changed', converters: [],
+    }
+    expect(() => validateTreeForkPath(tree, command)).toThrow('running source')
+    expect(() => applyTreeCommand(tree, command)).toThrow('running source')
+    const unrelated = workspace([...originals, { ...node('running-side', 'start'), status: 'running' }])
+    expect(applyTreeCommand(unrelated, command).nodes.slice(4).map((item: TreeNode) => item.forkedFrom))
+      .toEqual(['start', 'middle', 'end'])
+    expect(() => applyTreeCommand(unrelated, { type: 'fork', nodeId: 'start', prompt: 'Changed', converters: [] })).toThrow('running descendants')
+  })
+
+  it('should enforce the node limit and validate edited prompts and pipelines before creating a path', () => {
+    const tree = workspace([
+      node('start'), node('end', 'start'),
+      ...Array.from({ length: MAX_TREE_NODES - 4 }, (_: unknown, index: number) => node(`other-${index}`)),
+    ])
+    const command: Extract<TreeCommand, { type: 'forkPath' }> = {
+      type: 'forkPath', nodeId: 'start', descendantId: 'end', prompt: 'Changed', converters: [],
+    }
+    const random = jest.spyOn(crypto, 'getRandomValues')
+    expect(validateTreeForkPath(tree, command).map((item: TreeNode) => item.id)).toEqual(['start', 'end'])
+    expect(random).not.toHaveBeenCalled()
+    random.mockRestore()
+    expect(applyTreeCommand(tree, command).nodes).toHaveLength(MAX_TREE_NODES)
+    const crowded = workspace([...tree.nodes, node('overflow')])
+    expect(() => validateTreeForkPath(crowded, command)).toThrow(`maximum ${MAX_TREE_NODES}`)
+    expect(() => applyTreeCommand(crowded, command)).toThrow(`maximum ${MAX_TREE_NODES}`)
+    for (const invalid of [
+      { ...command, prompt: '  ' },
+      { ...command, converters: [{ type: 'Converter', params: { api_key: 'not-a-real-key' } }] },
+      { ...command, converters: Array.from({ length: MAX_RUN_CALLS + 1 }, () => ({ type: 'Converter', params: {} })) },
+    ]) {
+      expect(() => validateTreeForkPath(tree, invalid)).toThrow('Invalid conversation tree')
+      expect(() => applyTreeCommand(tree, invalid)).toThrow('Invalid conversation tree')
+    }
   })
 
   it('should sample saved nodes as sibling drafts without carrying evidence or state', () => {

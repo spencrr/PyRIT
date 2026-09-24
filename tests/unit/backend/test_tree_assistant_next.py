@@ -482,7 +482,7 @@ def test_tree_overview_is_compact_and_keeps_fixture_fields() -> None:
     context.nodes[2].pruned = True
     tools = TreeAssistantTools()
     tools.begin(context)
-    envelope = json.loads(tools.inspect_tree())
+    envelope = json.loads(tools.inspect_tree(include_pruned=True))
     assert envelope["truncated"] is False
     overview = json.loads(envelope["data"])
     assert overview["selected_node_id"] == "n1"
@@ -523,7 +523,7 @@ def test_tree_overview_pages_without_breaking_json_or_exceeding_output_budget(lo
     seen = []
     offset = 0
     while offset is not None:
-        envelope = json.loads(tools.inspect_tree(offset))
+        envelope = json.loads(tools.inspect_tree(offset=offset))
         assert envelope["truncated"] is False
         assert len(envelope["data"].encode()) <= tools.MAX_OVERVIEW_BYTES
         page = json.loads(envelope["data"])
@@ -536,9 +536,9 @@ def test_tree_overview_pages_without_breaking_json_or_exceeding_output_budget(lo
         offset = next_offset
     assert seen == [node["id"] for node in nodes]
     with pytest.raises(ValueError, match="offset"):
-        tools.inspect_tree(-1)
+        tools.inspect_tree(offset=-1)
     with pytest.raises(ValueError, match="offset"):
-        tools.inspect_tree(count + 1)
+        tools.inspect_tree(offset=count + 1)
 
 
 async def test_fifty_restored_turns_allow_fifty_fresh_turns_and_keep_replay_and_receipts_safe_async() -> None:
