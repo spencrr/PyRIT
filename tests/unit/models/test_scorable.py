@@ -58,7 +58,7 @@ def test_scorables_are_inert():
 
 def test_scorables_are_keyword_only():
     with pytest.raises(TypeError):
-        ContentScorable("hello")  # type: ignore[misc]
+        ContentScorable("hello")  # ty: ignore[too-many-positional-arguments]
 
 
 def test_message_scorable_defaults():
@@ -76,6 +76,27 @@ def test_message_scorable_from_message_names_pieces():
 
     assert scorable.message_piece_ids == (message.get_piece().id,)
     assert not hasattr(scorable, "message")
+
+
+def test_message_scorable_from_message_can_capture_snapshot():
+    message = _message("original")
+
+    scorable = MessageScorable.from_message(message, use_snapshot=True)
+    message.get_piece().converted_value = "mutated"
+
+    assert scorable.message_pieces_snapshot is not None
+    assert scorable.message_pieces_snapshot[0]["converted_value"] == "original"
+
+
+def test_message_scorable_snapshot_is_not_serialized():
+    message = _message("snapshot")
+
+    dumped = MessageScorable.from_message(message, use_snapshot=True).model_dump(mode="json")
+
+    assert dumped == {
+        "scorable_type": "message",
+        "message_piece_ids": [str(message.get_piece().id)],
+    }
 
 
 def test_message_scorable_rejects_empty_ids():
