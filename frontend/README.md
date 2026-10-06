@@ -49,6 +49,12 @@ npm run build
 npm run preview
 ```
 
+For a Windows demo with both services attached to one terminal, run
+`python run_demo.py` from the repository root after installing frontend dependencies
+and making `uv` available on PATH. Press Ctrl+C to stop the launched services.
+The launcher inherits your environment and starts the backend in development mode;
+configure and start any required model proxy separately.
+
 ### Backend CLI
 
 The backend uses `pyrit_backend` CLI which supports initializers:
