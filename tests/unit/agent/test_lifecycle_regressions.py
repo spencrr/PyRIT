@@ -125,3 +125,57 @@ async def test_recorded_evidence_is_bounded(tmp_path: Path) -> None:
     assert record.capture_error is not None
     assert record.event_count == 0
     assert json.loads((tmp_path / str(record.id) / "record.json").read_text())["state"] == "starting"
+
+
+@pytest.mark.parametrize("failed_snapshot", ["pending", "resolved", "both"])
+async def test_approval_journal_commit_survives_snapshot_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, failed_snapshot: str
+) -> None:
+    manager, record = make_manager(tmp_path)
+    await manager.store.save_async(record)
+    live = manager._make_live(record)
+    assert live.approvals is not None
+    approvals = live.approvals
+    save = manager.store.save_async
+
+    async def save_snapshot_async(execution: AgentExecution) -> None:
+        stage = "resolved" if execution.approvals[-1].decision else "pending"
+        if failed_snapshot in (stage, "both"):
+            raise OSError("execution snapshot locked")
+        await save(execution)
+
+    with patch.object(manager.store, "save_async", side_effect=save_snapshot_async):
+        pending = asyncio.create_task(
+            approvals.request_async(
+                tool_call_id="read",
+                title="Read orders",
+                options=[
+                    {"option_id": "yes", "name": "Allow", "kind": "allow_once"},
+                    {"option_id": "no", "name": "Deny", "kind": "reject_once"},
+                ],
+            )
+        )
+        async with asyncio.timeout(3):
+            while not record.approvals:
+                await asyncio.sleep(0)
+        approval = record.approvals[0]
+        await approvals.decide_async(approval_id=approval.id, decision="operator_allow", actor="operator")
+        assert await pending == "yes"
+        await approvals.cancel_async()
+
+    page = await manager.store.events_async(execution_id=record.id)
+    assert [event.payload["type"] for event in page.events] == ["permission.pending", "permission.resolved"]
+    assert page.events[1].payload["approval"]["decision"] == "operator_allow"
+    assert "committed to the journal" in caplog.text
+    assert record.capture_error is None
+
+    # Reload from the actual stale snapshot, not the still-live in-memory record.
+    reloaded = (await manager.store.load_all_async())[0]
+    assert reloaded.approvals == record.approvals
+    assert reloaded.event_count == 2
+    assert reloaded.evidence_bytes == (tmp_path / str(record.id) / "events.jsonl").stat().st_size
+    environment = MagicMock(spec=ExecutionEnvironment)
+    environment.close_async = AsyncMock()
+    with patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment):
+        async with AgentExecutionManager(root=tmp_path) as restarted:
+            assert restarted.records[record.id].approvals[0].decision == "operator_allow"

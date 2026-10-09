@@ -25,6 +25,7 @@ class AgentPermissionPolicy(str, Enum):
 
     DENY = "deny"
     ALLOW_ONCE = "allow_once"
+    ASK = "ask"
 
 
 class AgentConnectionState(str, Enum):
@@ -35,6 +36,20 @@ class AgentConnectionState(str, Enum):
     AUTHENTICATING = "authenticating"
     READY = "ready"
     FAILED = "failed"
+
+
+class AgentApproval(BaseModel):
+    """Journaled, single-winner operator decision for one harness permission request."""
+
+    id: UUID = Field(default_factory=uuid4)
+    turn_id: UUID | None = None
+    tool_call_id: str
+    title: str
+    options: list[dict[str, str]]
+    expires_at: datetime
+    decision: str | None = None
+    option_id: str | None = None
+    actor: str | None = None
 
 
 def _validate_command(value: tuple[str, ...]) -> tuple[str, ...]:
@@ -92,6 +107,8 @@ class AgentProfile(BaseModel):
     idle_timeout_seconds: float = Field(default=300, gt=0, le=86400)
     lifetime_seconds: float = Field(default=900, gt=0, le=86400)
     cancellation_grace_seconds: float = Field(default=10, gt=0, le=60)
+    approval_timeout_seconds: float = Field(default=120, gt=0, le=600)
+    interactive_hold_seconds: float = Field(default=300, gt=0, le=3600)
     max_evidence_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=256 * 1024 * 1024)
     artifact_paths: tuple[str, ...] = ()
     max_artifact_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
@@ -177,6 +194,8 @@ class AgentTargetConfiguration(BaseModel):
     idle_timeout_seconds: float = Field(default=300, gt=0, le=86400)
     lifetime_seconds: float = Field(default=900, gt=0, le=86400)
     cancellation_grace_seconds: float = Field(default=10, gt=0, le=60)
+    approval_timeout_seconds: float = Field(default=120, gt=0, le=600)
+    interactive_hold_seconds: float = Field(default=300, gt=0, le=3600)
     max_evidence_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=256 * 1024 * 1024)
     artifact_paths: tuple[str, ...] = ()
     max_artifact_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
@@ -223,6 +242,7 @@ class AgentExecutionState(str, Enum):
     STARTING = "starting"
     IDLE = "idle"
     WORKING = "working"
+    HELD = "held"
     CLOSING = "closing"
     CLOSED = "closed"
     CLEANUP_FAILED = "cleanup_failed"
@@ -262,7 +282,10 @@ class AgentExecution(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_activity_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     state: AgentExecutionState = AgentExecutionState.STARTING
+    interactive: bool = False
     connection_state: AgentConnectionState = AgentConnectionState.DISCONNECTED
+    held_until: datetime | None = None
+    approvals: list[AgentApproval] = Field(default_factory=list)
     last_event_at: datetime | None = None
     transcript_revision: int = 0
     session_id: str | None = None

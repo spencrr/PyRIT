@@ -84,3 +84,58 @@ async def test_real_transport_cancellation_and_expiry(tmp_path: Path) -> None:
                 await asyncio.sleep(0.02)
         assert record.close_reason == "expired"
         assert not record.cleanup_error
+
+
+async def test_interactive_permission_wait_pauses_work_clock_and_preserves_order(tmp_path: Path) -> None:
+    from pyrit.models.agent_execution import AgentPermissionPolicy
+
+    profile = scripted_profile().model_copy(
+        update={
+            "permission_policy": AgentPermissionPolicy.ASK,
+            "turn_timeout_seconds": 0.3,
+        }
+    )
+    async with AgentExecutionManager(root=tmp_path) as manager:
+        send = asyncio.create_task(
+            manager.send_async(
+                profile=profile,
+                target_id="test",
+                conversation_id="one",
+                request_id="one",
+                prompt="approve",
+                has_history=False,
+                interactive=True,
+            )
+        )
+        async with asyncio.timeout(10):
+            while not manager.records or not next(iter(manager.records.values())).approvals:
+                await asyncio.sleep(0.01)
+            record = next(iter(manager.records.values()))
+            await asyncio.sleep(0.4)
+            assert not send.done()
+            await manager.decide_permission_async(
+                execution_id=record.id,
+                approval_id=record.approvals[0].id,
+                allow=True,
+                actor="test-operator",
+            )
+            _, turn = await send
+        assert turn.status == AgentTurnStatus.COMPLETED
+        assert record.state == AgentExecutionState.IDLE
+        page = await manager.store.events_async(execution_id=record.id)
+        updates = [
+            event.payload.get("params", {}).get("update", {})
+            for event in page.events
+            if event.payload.get("method") == "session/update"
+        ]
+        order = [update.get("sessionUpdate") for update in updates]
+        assert order == [
+            "agent_message_chunk",
+            "tool_call",
+            "tool_call_update",
+            "agent_message_chunk",
+            "tool_call",
+            "tool_call_update",
+            "agent_message_chunk",
+        ]
+        assert turn.response_text == "I will read the order.Now I will write the receipt.Receipt total: 31"

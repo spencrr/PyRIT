@@ -10,21 +10,25 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Self
 from uuid import UUID
 
 from filelock import BaseFileLock, FileLock
 
+from pyrit.agent.approvals import AgentApprovals
 from pyrit.agent.environment import ExecutionEnvironment
 from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.memory.agent_execution_store import AgentExecutionStore
 from pyrit.models.agent_execution import (
+    AgentApproval,
     AgentConnectionState,
     AgentExecution,
     AgentExecutionEvent,
     AgentExecutionState,
+    AgentPermissionPolicy,
     AgentProfile,
     AgentTurn,
     AgentTurnStatus,
@@ -55,6 +59,7 @@ class _LiveExecution:
     close_task: asyncio.Task[None] | None = None
     model_binding: "ResolvedModelBinding | None" = None
     inference_lease: "InferenceLease | None" = None
+    approvals: AgentApprovals | None = None
 
 
 class AgentExecutionManager:
@@ -131,6 +136,9 @@ class AgentExecutionManager:
                 for record in records:
                     self.records[record.id] = record
                     if record.state != AgentExecutionState.CLOSED:
+                        for approval in record.approvals:
+                            if approval.decision is None:
+                                approval.decision, approval.actor = "cancelled", "interrupted_runtime"
                         for turn in record.turns:
                             if turn.status == AgentTurnStatus.RUNNING:
                                 turn.status = AgentTurnStatus.UNKNOWN
@@ -154,6 +162,7 @@ class AgentExecutionManager:
         prompt: str,
         has_history: bool,
         model_binding: "ResolvedModelBinding | None" = None,
+        interactive: bool = False,
     ) -> tuple[AgentExecution, AgentTurn]:
         """
         Execute a new turn once. Closed sessions cannot be resurrected by replay.
@@ -167,6 +176,8 @@ class AgentExecutionManager:
             TimeoutError: The turn exceeded its deadline.
             asyncio.CancelledError: The caller cancelled.
         """
+        if not interactive and profile.permission_policy == AgentPermissionPolicy.ASK:
+            raise ValueError("Automated agent runs require an explicit allow_once or deny permission policy")
         await self.start_async()
         async with self._admission:
             if self._closed:
@@ -176,6 +187,8 @@ class AgentExecutionManager:
                 None,
             )
             if existing:
+                if existing.interactive != interactive:
+                    raise ValueError("Execution interaction mode cannot change within a conversation")
                 if existing.state != AgentExecutionState.IDLE:
                     raise RuntimeError(f"Execution is {existing.state.value}; close or start a new conversation")
                 if existing.session_id and existing.connection_state in (
@@ -198,6 +211,7 @@ class AgentExecutionManager:
                     conversation_id=conversation_id,
                     target_id=target_id,
                     profile=profile,
+                    interactive=interactive,
                 )
                 live = self._make_live(record)
                 live.model_binding = model_binding
@@ -206,6 +220,8 @@ class AgentExecutionManager:
                 self._live[record.id] = live
             record = live.record
             live.cancel_requested = False
+            if live.approvals:
+                live.approvals.cancelled = False
             turn = AgentTurn(request_id=request_id, prompt=self._redact(prompt, live.secrets))
             record.turns.append(turn)
             record.state = AgentExecutionState.WORKING if live.connection else AgentExecutionState.STARTING
@@ -240,8 +256,25 @@ class AgentExecutionManager:
                 stop_reason, text = await self._wait_for_turn_async(live)
             except TimeoutError:
                 await self.cancel_async(record.id)
-                turn.error = "Turn deadline exceeded"
-                raise
+                stop_reason, text = await live.operation
+                if not interactive or stop_reason != "cancelled" or live.close_requested:
+                    turn.error = "Turn deadline exceeded"
+                    raise
+                record.state = AgentExecutionState.HELD
+                record.held_until = min(
+                    datetime.now(UTC) + timedelta(seconds=profile.interactive_hold_seconds),
+                    record.created_at + timedelta(seconds=profile.lifetime_seconds),
+                )
+                turn.error = "Turn deadline exceeded; cancellation confirmed. Execution retained for operator action."
+                await self._record_async(
+                    live,
+                    direction="lifecycle",
+                    payload={
+                        "type": "execution.held",
+                        "until": record.held_until.isoformat(),
+                        "mode": "running",
+                    },
+                )
             turn.stop_reason = stop_reason
             turn.response_text = self._redact(text, live.secrets)
             status = (
@@ -280,14 +313,45 @@ class AgentExecutionManager:
             await asyncio.shield(self.store.save_async(record))
 
     async def _wait_for_turn_async(self, live: _LiveExecution) -> tuple[str, str]:
+        started = monotonic()
+        baseline_wait = live.approvals.wait_seconds if live.approvals else 0
         assert live.operation is not None
-        return await asyncio.wait_for(asyncio.shield(live.operation), timeout=live.record.profile.turn_timeout_seconds)
+        while not live.operation.done():
+            wait = (live.approvals.wait_seconds - baseline_wait) if live.approvals else 0
+            remaining = live.record.profile.turn_timeout_seconds - (monotonic() - started - wait)
+            if remaining <= 0:
+                raise TimeoutError("Agent active-work deadline exceeded")
+            await asyncio.wait((live.operation,), timeout=min(remaining, 0.1))
+        return live.operation.result()
 
     def _make_live(self, record: AgentExecution) -> _LiveExecution:
-        return _LiveExecution(
+        live = _LiveExecution(
             record=record,
             environment=ExecutionEnvironment(execution=record, directory=self.store.directory(record.id)),
         )
+
+        async def approval_changed_async(approval: AgentApproval) -> None:
+            approval.title = self._redact(approval.title, live.secrets)
+            await self._record_async(
+                live,
+                direction="lifecycle",
+                payload={
+                    "type": "permission.pending" if approval.decision is None else "permission.resolved",
+                    "approval": approval.model_dump(mode="json"),
+                },
+            )
+            # The flushed journal is the commit point; a stale snapshot must not reverse it.
+            try:
+                await self.store.save_async(record)
+            except OSError:
+                logger.exception(
+                    "Approval %s committed to the journal, but execution snapshot %s could not be saved",
+                    approval.id,
+                    record.id,
+                )
+
+        live.approvals = AgentApprovals(record=record, changed=approval_changed_async)
+        return live
 
     async def _launch_async(self, live: _LiveExecution) -> None:
         from pyrit.agent.acp_connection import AcpConnection, RecordingTransport
@@ -327,6 +391,7 @@ class AgentExecutionManager:
             live.connection = AcpConnection(
                 transport=transport,
                 permission_policy=live.record.profile.permission_policy,
+                approvals=live.approvals,
                 status_changed=status_changed_async,
             )
             live.stderr_task = asyncio.create_task(self._stderr_async(live, process.stderr))
@@ -458,6 +523,8 @@ class AgentExecutionManager:
             return
         async with live.cancel_lock:
             live.cancel_requested = True
+            if live.approvals:
+                await live.approvals.cancel_async()
             if live.operation is None and live.record.state in (
                 AgentExecutionState.STARTING,
                 AgentExecutionState.WORKING,
@@ -476,6 +543,58 @@ class AgentExecutionManager:
                 await self.close_execution_async(execution_id=execution_id, reason="cancellation_unconfirmed")
                 raise RuntimeError("Agent did not confirm cancellation; its execution was closed") from None
 
+    async def decide_permission_async(self, *, execution_id: UUID, approval_id: UUID, allow: bool, actor: str) -> None:
+        """
+        Resolve a live interactive permission through its single-winner arbiter.
+
+        Raises:
+            ValueError: The execution cannot accept a permission decision.
+        """
+        live = self._live.get(execution_id)
+        if not live or not live.record.interactive or live.close_requested or not live.approvals:
+            raise ValueError("Execution cannot accept permission decisions")
+        await live.approvals.decide_async(
+            approval_id=approval_id, decision="operator_allow" if allow else "operator_deny", actor=actor
+        )
+
+    async def control_held_async(self, *, execution_id: UUID, action: str, actor: str) -> None:
+        """
+        Continue or extend an interactive hold without exceeding its absolute lifetime.
+
+        Raises:
+            ValueError: The execution is not held, expired, or the action is invalid.
+        """
+        async with self._admission:
+            live = self._live.get(execution_id)
+            now = datetime.now(UTC)
+            if not live or live.record.state != AgentExecutionState.HELD or not live.record.interactive:
+                raise ValueError("Execution is not held")
+            if live.operation is not None:
+                raise ValueError("Turn finalization is still in progress")
+            record = live.record
+            cap = record.created_at + timedelta(seconds=record.profile.lifetime_seconds)
+            if record.connection_state != AgentConnectionState.READY or live.close_requested:
+                raise ValueError("Agent session is unavailable; close this execution and start fresh")
+            if record.held_until is None or now >= min(record.held_until, cap):
+                raise ValueError("Hold expired; start a fresh execution")
+            if action not in ("continue", "extend"):
+                raise ValueError("Unknown hold action")
+            await self._record_async(
+                live,
+                direction="lifecycle",
+                payload={
+                    "type": "execution.operator_action",
+                    "action": action,
+                    "actor": actor,
+                },
+            )
+            if action == "continue":
+                record.state, record.held_until = AgentExecutionState.IDLE, None
+                record.last_activity_at = now
+            else:
+                record.held_until = min(cap, now + timedelta(seconds=record.profile.interactive_hold_seconds))
+            await self.store.save_async(record)
+
     async def close_execution_async(self, *, execution_id: UUID, reason: str = "closed_by_user") -> None:
         """Idempotently release resources, recording failures rather than pretending success."""
         live = self._live.get(execution_id)
@@ -490,6 +609,11 @@ class AgentExecutionManager:
             record = live.record
             execution_id = record.id
             live.close_requested = True
+            if live.approvals:
+                try:
+                    await live.approvals.cancel_async()
+                except Exception:
+                    logger.exception("Permission finalization failed; resource cleanup will still proceed")
             record.state = AgentExecutionState.CLOSING
             record.close_reason = reason
             persistence_errors: list[Exception] = []
@@ -566,7 +690,8 @@ class AgentExecutionManager:
                     record.state == AgentExecutionState.IDLE
                     and (now - record.last_activity_at).total_seconds() >= record.profile.idle_timeout_seconds
                 )
-                if (expired or idle) and record.state not in (
+                hold_expired = record.held_until is not None and now >= record.held_until
+                if (expired or idle or hold_expired) and record.state not in (
                     AgentExecutionState.CLOSING,
                     AgentExecutionState.CLEANUP_FAILED,
                 ):

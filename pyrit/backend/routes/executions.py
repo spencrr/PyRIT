@@ -7,17 +7,19 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
+from enum import Enum
 from time import monotonic
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 from starlette.responses import StreamingResponse
 
 from pyrit.agent.runtime import get_agent_execution_manager
-from pyrit.backend.middleware.auth import require_admin
+from pyrit.backend.middleware.auth import AuthenticatedUser, require_admin
 from pyrit.backend.services.agent_execution_service import resolve_conversation_execution_async
 from pyrit.models.agent_execution import (
+    AgentApproval,
     AgentConnectionState,
     AgentEnvironment,
     AgentEventPage,
@@ -44,9 +46,12 @@ class ConversationExecution(BaseModel):
     source_coverage: str
     artifacts: list[str]
     event_count: int
+    interactive: bool = False
     connection_state: AgentConnectionState = AgentConnectionState.DISCONNECTED
+    held_until: datetime | None = None
     expires_at: datetime | None = None
     last_event_at: datetime | None = None
+    approvals: list[AgentApproval] = []
     transcript_revision: int = 0
 
 
@@ -84,9 +89,12 @@ async def get_conversation_execution_async(attack_result_id: str, conversation_i
         source_coverage=record.source_coverage,
         artifacts=list(record.artifacts),
         event_count=record.event_count,
+        interactive=record.interactive,
         connection_state=record.connection_state,
+        held_until=record.held_until,
         expires_at=record.created_at + timedelta(seconds=record.profile.lifetime_seconds),
         last_event_at=record.last_event_at,
+        approvals=[approval.model_copy(deep=True) for approval in record.approvals],
         transcript_revision=record.transcript_revision,
     )
 
@@ -170,6 +178,93 @@ async def stream_conversation_execution_async(
 
 def _sse(event: str, data: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+class PermissionDecision(BaseModel):
+    """Only one-time approvals are accepted from the operator."""
+
+    allow: StrictBool
+
+
+class HeldAction(str, Enum):
+    """Explicit operations allowed on an interactive hold."""
+
+    CONTINUE = "continue"
+    EXTEND = "extend"
+    CLOSE = "close"
+
+
+def _actor(request: Request) -> str:
+    user = getattr(request.state, "user", None)
+    return user.oid if isinstance(user, AuthenticatedUser) else "local-operator"
+
+
+@conversation_router.post(
+    "/{attack_result_id}/conversations/{conversation_id}/execution/{execution_id}/permissions/{approval_id}"
+)
+async def decide_conversation_permission_async(
+    request: Request,
+    attack_result_id: str,
+    conversation_id: str,
+    execution_id: UUID,
+    approval_id: UUID,
+    decision: PermissionDecision,
+) -> ConversationExecution | None:
+    """
+    Resolve a journaled permission exactly once within the conversation boundary.
+
+    Returns:
+        ConversationExecution | None: Updated operator state.
+
+    Raises:
+        HTTPException: Decision is stale or invalid.
+    """
+    await _resolve_async(attack_result_id=attack_result_id, conversation_id=conversation_id, execution_id=execution_id)
+    try:
+        await get_agent_execution_manager().decide_permission_async(
+            execution_id=execution_id,
+            approval_id=approval_id,
+            allow=decision.allow,
+            actor=_actor(request),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return await get_conversation_execution_async(attack_result_id, conversation_id)
+
+
+@conversation_router.post(
+    "/{attack_result_id}/conversations/{conversation_id}/execution/{execution_id}/control/{action}"
+)
+async def control_conversation_execution_async(
+    request: Request,
+    attack_result_id: str,
+    conversation_id: str,
+    execution_id: UUID,
+    action: HeldAction,
+) -> ConversationExecution | None:
+    """
+    Apply explicit interactive execution control, never an implicit resume or restart.
+
+    Returns:
+        ConversationExecution | None: Updated execution.
+
+    Raises:
+        HTTPException: The execution cannot accept this interactive action.
+    """
+    record = await _resolve_async(
+        attack_result_id=attack_result_id, conversation_id=conversation_id, execution_id=execution_id
+    )
+    if record is None or not record.interactive:
+        raise HTTPException(status_code=409, detail="This execution is not operator-controlled")
+    manager = get_agent_execution_manager()
+    try:
+        if action == HeldAction.CLOSE:
+            await manager.close_execution_async(execution_id=execution_id, reason=f"operator:{_actor(request)}")
+        else:
+            await manager.control_held_async(execution_id=execution_id, action=action.value, actor=_actor(request))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return await get_conversation_execution_async(attack_result_id, conversation_id)
 
 
 @conversation_router.get("/{attack_result_id}/conversations/{conversation_id}/execution/{execution_id}/events")

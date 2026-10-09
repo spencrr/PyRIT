@@ -79,6 +79,9 @@ class AgentTarget(PromptTarget):
 
     def _build_identifier(self) -> ComponentIdentifier:
         values = self.profile.model_dump(mode="json")
+        for key, default in (("approval_timeout_seconds", 120), ("interactive_hold_seconds", 300)):
+            if values[key] == default:
+                values.pop(key)
         if self._model_binding is None:
             for key in (
                 "target_registry_name",
@@ -104,6 +107,7 @@ class AgentTarget(PromptTarget):
         request = normalized_conversation[-1].get_piece()
         if request.role != "user" or request.converted_value_data_type != "text":
             raise ValueError("ACP MVP accepts user text only")
+        from pyrit.agent.send_context import is_interactive_agent_send
 
         record, turn = await self._manager().send_async(
             profile=self.profile,
@@ -113,6 +117,7 @@ class AgentTarget(PromptTarget):
             prompt=request.converted_value,
             has_history=len(normalized_conversation) > 1,
             model_binding=self._model_binding,
+            interactive=is_interactive_agent_send(str(request.conversation_id)),
         )
         metadata = {
             "agent_execution_id": str(record.id),

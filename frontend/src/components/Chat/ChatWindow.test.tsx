@@ -428,7 +428,7 @@ describe("ChatWindow Integration", () => {
     jest.clearAllMocks();
     jest.mocked(useAgentExecution).mockReturnValue({
       execution: null, turns: {}, error: null, cancelling: false, cancel: jest.fn(),
-      feed: 'live',
+      feed: 'live', control: jest.fn(), decidePermission: jest.fn(),
     });
     mockedAttacksApi.getMessages.mockReset();
     mockSendResult.mockReset();
@@ -555,7 +555,7 @@ describe("ChatWindow Integration", () => {
       };
       jest.mocked(useAgentExecution).mockReturnValue({
         execution, error: null, cancelling: false, cancel: jest.fn(),
-        feed: "live",
+        feed: "live", control: jest.fn(), decidePermission: jest.fn(),
         turns: { "agent-turn": { text: "Async reply", tools: [],
           blocks: [{ id: "text", kind: "text", text: "Async reply" }] } },
       });
@@ -1060,7 +1060,7 @@ describe("ChatWindow Integration", () => {
     };
     jest.mocked(useAgentExecution).mockReturnValue({
       execution, error: null, cancelling: false, cancel: jest.fn(),
-      feed: 'live',
+      feed: 'live', control: jest.fn(), decidePermission: jest.fn(),
       turns: { turn: { text: "", tools: [{
         id: "tool", title: "Reading orders", status: "in_progress",
         firstSeen: "2026-10-08T00:00:00Z", lastSeen: "2026-10-08T00:00:00Z",
@@ -1090,13 +1090,16 @@ describe("ChatWindow Integration", () => {
     const execution: ConversationExecution = {
       id: "execution", conversation_id: "conversation", state: "working", environment: "docker",
       model: "", capture_error: null, close_reason: null, artifacts: [], event_count: 1,
-      source_coverage: "ACP only",
+      source_coverage: "ACP only", interactive: true,
       turns: [{ id: "turn", request_id: "request", status: "running", response_text: "",
         capture_complete: false, error: null }],
+      approvals: [{ id: "approval", turn_id: "turn", tool_call_id: "tool", title: "Read file",
+        expires_at: "2099-01-01T00:00:00Z", decision: null, option_id: null, actor: null,
+        options: [{ option_id: "allow", name: "Allow once", kind: "allow_once" }] }],
     };
     jest.mocked(useAgentExecution).mockReturnValue({
       execution, turns: {}, error: null, cancelling: false, cancel: jest.fn(),
-      feed: "live",
+      feed: "live", control: jest.fn(), decidePermission: jest.fn(),
     });
     mockedAttacksApi.getMessages.mockResolvedValue({ conversation_id: "conversation", messages: [] });
     mockedMapper.backendMessagesToFrontend.mockReturnValue([]);
@@ -1106,7 +1109,10 @@ describe("ChatWindow Integration", () => {
       attackTarget={lock === "target" ? { target_type: "AgentTarget", identifier_hash: "other-target" } : null}
       targetResolutionStatus={lock === "resolution" ? "unavailable" : "resolved"}
     /></TestWrapper>);
-    expect(await screen.findByRole("button", { name: "Cancel turn" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Allow once" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Deny" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel turn" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Close execution" })).toBeDisabled();
   });
 
   it("should render chat window with all components", () => {

@@ -40,7 +40,7 @@ describe('AgentTargetDialog', () => {
     expect(targetsApi.createTarget).toHaveBeenCalledWith({
       name: 'receipt', type: 'AgentTarget', params: { agent_configuration: expect.objectContaining({
         model_binding: { model: 'test-model' },
-        harness_profile: expect.objectContaining({ permission_policy: 'deny' }),
+        harness_profile: expect.objectContaining({ permission_policy: 'ask' }),
         environment_template: expect.objectContaining({ environment: 'docker' }),
       }) },
     })

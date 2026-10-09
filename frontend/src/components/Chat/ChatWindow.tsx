@@ -660,6 +660,7 @@ export default function ChatWindow({
   const agent = useAgentExecution(attackResultId, viewedConversationId, Boolean(isAgentTarget), refreshAgentTranscript)
   const agentExecutionClosed = agent.execution?.state === 'closed'
     || agent.execution?.state === 'closing' || agent.execution?.state === 'cleanup_failed'
+  const agentExecutionHeld = agent.execution?.state === 'held'
   const agentTurnForMessage = (message: Message, index: number): AgentTurn | undefined => {
     if (message.role !== 'user' || !agent.execution) return undefined
     return agent.execution.turns.find((turn: AgentTurn) => message.pieceIds?.includes(turn.request_id))
@@ -1833,7 +1834,7 @@ export default function ChatWindow({
           </MessageBar>
         )}
         {editDraft === null && isAgentTarget && <AgentExecutionStatus execution={agent.execution} feed={agent.feed}
-          disabled={isMutationLocked} cancelling={agent.cancelling} onCancel={agent.cancel} />}
+          disabled={isMutationLocked} cancelling={agent.cancelling} onCancel={agent.cancel} onControl={agent.control} />}
         {editDraft === null && agent.error && <MessageBar intent="error"><MessageBarBody>Agent activity unavailable: {agent.error}</MessageBarBody></MessageBar>}
         {editDraft === null && <MessageList
           messages={messages}
@@ -1845,12 +1846,13 @@ export default function ChatWindow({
           renderAfterMessage={isAgentTarget ? (message: Message, index: number) => {
             const turn = agentTurnForMessage(message, index)
             return turn ? <AgentActivity key={turn.id} turn={turn} activity={agent.turns[turn.id]}
-              /> : null
+              approvals={agent.execution?.approvals} onDecision={agent.decidePermission} disabled={isMutationLocked} /> : null
           } : undefined}
           trailingContent={unmatchedAgentTurns.length > 0 ? unmatchedAgentTurns.map((turn: AgentTurn) => (
             <section key={turn.id} aria-label="Execution awaiting transcript">
               <Text block>Request retained in execution evidence: {turn.prompt ?? 'Transcript pending'}</Text>
-              <AgentActivity turn={turn} activity={agent.turns[turn.id]} />
+              <AgentActivity turn={turn} activity={agent.turns[turn.id]} approvals={agent.execution?.approvals}
+                onDecision={agent.decidePermission} disabled={isMutationLocked} />
             </section>
           )) : undefined}
           onCopyToInput={handleCopyToInput}
@@ -1924,6 +1926,7 @@ export default function ChatWindow({
           disabled={
             !runtime.ready
             || agentExecutionClosed
+            || agentExecutionHeld
             || isSending
             || editDraft !== null
             || !activeTarget

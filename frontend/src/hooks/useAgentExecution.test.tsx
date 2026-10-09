@@ -7,7 +7,7 @@ import type { ConversationExecution } from '@/types'
 import { useAgentExecution } from './useAgentExecution'
 
 jest.mock('@/services/executions', () => ({ executionsApi: {
-  stream: jest.fn(), cancelConversation: jest.fn(),
+  stream: jest.fn(), cancelConversation: jest.fn(), permission: jest.fn(), control: jest.fn(),
 } }))
 jest.mock('@/services/eventStream', () => ({ consumeEventStream: jest.fn() }))
 
