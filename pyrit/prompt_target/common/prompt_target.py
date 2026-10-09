@@ -22,6 +22,7 @@ from pyrit.models import (
     TargetIdentifier,
 )
 from pyrit.models.messages.tool_content import validate_tool_conversation
+from pyrit.models.target_response import TargetResponse
 from pyrit.prompt_target.common.target_capabilities import (
     CapabilityName,
     TargetCapabilities,
@@ -275,7 +276,8 @@ class PromptTarget(Identifiable):
                 if send_context:
                     send_context.mark_target_invoked()
                 response = await self._send_prompt_to_target_async(normalized_conversation=normalized_conversation)
-            for response_message in response:
+            response_messages = response.messages if isinstance(response, TargetResponse) else response
+            for response_message in response_messages:
                 for piece in response_message.message_pieces:
                     piece.prompt_metadata = {
                         key: value
