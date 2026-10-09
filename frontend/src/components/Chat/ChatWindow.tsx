@@ -38,13 +38,17 @@ import ConversationPanel from './ConversationPanel'
 import ConverterPanel from './ConverterPanel'
 import TargetBadge from './TargetBadge'
 import ChatTargetPicker from './ChatTargetPicker'
-import { sameTarget } from '@/utils/targetIdentity'
+import { sameTarget, targetType } from '@/utils/targetIdentity'
 import ObjectiveHeader from './ObjectiveHeader'
 import type { PieceConversion } from './converterTypes'
 import { useChatConverters } from '@/hooks/useChatConverters'
 import { useRuntime } from '@/hooks/useRuntime'
 import { useUserPreferences } from '@/hooks/useUserPreferences'
 import TargetSelect from '@/components/Config/TargetSelect'
+import AgentTargetDialog from '@/components/Config/AgentTargetDialog'
+import { useAgentExecution } from '@/hooks/useAgentExecution'
+import AgentActivity from './AgentActivity'
+import AgentExecutionStatus from './AgentExecutionStatus'
 import {
   basenameFromValue,
   applyConvertedValues,
@@ -65,6 +69,7 @@ import {
 import { exportConversation } from '../../utils/conversationExport'
 import type { ExportFormat } from '../../utils/conversationExport'
 import type {
+  AgentTurn,
   AddMessageRequest,
   AttackOutcome,
   AttackSummary,
@@ -73,6 +78,7 @@ import type {
   BackendScore,
   ChatSendOutcome,
   ConversationMessagesResponse,
+  ConversationExecution,
   CreateAttackRequest,
   CreateConversationRequest,
   Message,
@@ -194,6 +200,8 @@ function matchesNarrowScreen(): boolean {
 }
 
 interface ChatWindowProps {
+  canConfigureAgents?: boolean
+  onAgentTargetCreated?: (target: TargetInstance) => void
   /** Shared layout slot; standalone chat renders its toolbar inline. */
   toolbarContainer?: HTMLElement | null
   onNewAttack: () => void
@@ -243,6 +251,8 @@ interface ChatWindowProps {
 }
 
 export default function ChatWindow({
+  canConfigureAgents = false,
+  onAgentTargetCreated,
   toolbarContainer,
   onNewAttack,
   activeTarget,
@@ -276,6 +286,7 @@ export default function ChatWindow({
   scenarioResultId,
 }: ChatWindowProps) {
   const styles = useChatWindowStyles()
+  const [agentDialogOpen, setAgentDialogOpen] = useState(false)
   const restoreFocusTargetAttributes = useRestoreFocusTarget()
   const restoreFocusSourceAttributes = useRestoreFocusSource()
   const [messages, setMessages] = useState<Message[]>([])
@@ -317,6 +328,8 @@ export default function ChatWindow({
   const inputBoxRef = useRef<ChatInputAreaHandle>(null)
   const recoveryInFlightRef = useRef(false)
   const viewedConversationId = activeConversationId ?? conversationId
+  const isAgentTarget = (activeTarget && targetType(activeTarget) === 'AgentTarget')
+    || attackTarget?.target_type === 'AgentTarget'
   const recoverableSend = viewedConversationId
     ? recoverableSends[viewedConversationId]
     : undefined
@@ -515,6 +528,33 @@ export default function ChatWindow({
       }
     }
   }, [markConversationLoaded])
+
+  const refreshAgentTranscript = async (execution: ConversationExecution): Promise<void> => {
+    if (!attackResultId || !viewedConversationId || execution.conversation_id !== viewedConversationId
+      || sendingConvIdsRef.current.has(viewedConversationId) || activeConversationLoadRequestRef.current) return
+    const last = execution.turns[execution.turns.length - 1]
+    if (!last || last.status === 'running') return
+    const requestPresent = messages.some((message: Message) => message.pieceIds?.includes(last.request_id))
+    const replyPresent = !last.response_text || messages.some((message: Message) => (
+      message.role === 'assistant' && message.agentTurnId === last.id
+    ))
+    if (!requestPresent || !replyPresent) {
+      await loadConversation(attackResultId, viewedConversationId)
+    }
+  }
+  const agent = useAgentExecution(attackResultId, viewedConversationId, Boolean(isAgentTarget), refreshAgentTranscript)
+  const agentExecutionClosed = agent.execution?.state === 'closed'
+    || agent.execution?.state === 'closing' || agent.execution?.state === 'cleanup_failed'
+  const agentExecutionHeld = agent.execution?.state === 'held'
+  const agentTurnForMessage = (message: Message, index: number): AgentTurn | undefined => {
+    if (message.role !== 'user' || !agent.execution) return undefined
+    return agent.execution.turns.find((turn: AgentTurn) => message.pieceIds?.includes(turn.request_id))
+      ?? (!message.pieceIds
+        ? agent.execution.turns[messages.slice(0, index + 1).filter((item: Message) => item.role === 'user').length - 1]
+        : undefined)
+  }
+  const anchoredAgentTurns = new Set(messages.map(agentTurnForMessage).filter(Boolean).map((turn) => turn?.id))
+  const unmatchedAgentTurns = agent.execution?.turns.filter((turn: AgentTurn) => !anchoredAgentTurns.has(turn.id)) ?? []
 
   // Reload messages when activeConversationId changes
   useEffect(() => {
@@ -1230,6 +1270,9 @@ export default function ChatWindow({
         )}
       </div>
       <div className={mergeClasses(styles.ribbonActions, toolbarContainer ? styles.sharedActions : undefined)}>
+        {!attackResultId && canConfigureAgents && onAgentTargetCreated && (
+          <Button disabled={isSending} onClick={() => setAgentDialogOpen(true)}>Configure agent</Button>
+        )}
         <Tooltip content="Render all messages as Markdown by default" relationship="label">
           <Switch
             checked={globalMarkdown}
@@ -1302,6 +1345,12 @@ export default function ChatWindow({
 
   return (
     <div className={styles.root}>
+      {agentDialogOpen && onAgentTargetCreated && <AgentTargetDialog selectForChat
+        initialConfiguration={activeTarget?.agent_configuration}
+        onClose={() => setAgentDialogOpen(false)} onCreated={(target: TargetInstance) => {
+          setAgentDialogOpen(false)
+          onAgentTargetCreated(target)
+        }} />}
       <h1 className={styles.pageHeading}>Chat</h1>
       <Dialog
         open={branchRequest !== null && branchRequest.conversationId === activeConversationId}
@@ -1395,8 +1444,39 @@ export default function ChatWindow({
           onAdd={handleAddObjective}
         />
         {systemMessage && <SystemPromptBanner content={systemMessage.content} />}
+        {isAgentTarget && (
+          <MessageBar intent="info">
+            <MessageBarBody>
+              {agentExecutionClosed ? 'Start a new conversation; this execution cannot be resumed.' : 'Model, harness profile, and environment template are fixed for this conversation.'}
+              {canConfigureAgents && <> {' '}<Link target="_blank" rel="noopener noreferrer"
+                to={`/registry/executions${viewedConversationId ? `?conversation=${encodeURIComponent(viewedConversationId)}` : ''}`}>
+                Manage resources
+              </Link></>}
+            </MessageBarBody>
+          </MessageBar>
+        )}
+        {isAgentTarget && <AgentExecutionStatus execution={agent.execution} feed={agent.feed}
+          disabled={isOperatorLocked} cancelling={agent.cancelling} onCancel={agent.cancel} onControl={agent.control} />}
+        {agent.error && <MessageBar intent="error"><MessageBarBody>Agent activity unavailable: {agent.error}</MessageBarBody></MessageBar>}
         <MessageList
           messages={messages}
+          isTextInActivity={isAgentTarget ? (message: Message) => Boolean(
+            message.role === 'assistant' && message.agentTurnId && !message.originalContent
+            && agent.turns[message.agentTurnId]?.blocks?.length
+            && agent.turns[message.agentTurnId]?.text === message.content
+          ) : undefined}
+          renderAfterMessage={isAgentTarget ? (message: Message, index: number) => {
+            const turn = agentTurnForMessage(message, index)
+            return turn ? <AgentActivity key={turn.id} turn={turn} activity={agent.turns[turn.id]}
+              approvals={agent.execution?.approvals} onDecision={agent.decidePermission} disabled={isOperatorLocked} /> : null
+          } : undefined}
+          trailingContent={unmatchedAgentTurns.length > 0 ? unmatchedAgentTurns.map((turn: AgentTurn) => (
+            <section key={turn.id} aria-label="Execution awaiting transcript">
+              <Text block>Request retained in execution evidence: {turn.prompt ?? 'Transcript pending'}</Text>
+              <AgentActivity turn={turn} activity={agent.turns[turn.id]} approvals={agent.execution?.approvals}
+                onDecision={agent.decidePermission} disabled={isOperatorLocked} />
+            </section>
+          )) : undefined}
           onCopyToInput={handleCopyToInput}
           onCopyToNewConversation={attackResultId ? handleCopyToNewConversation : undefined}
           onBranchConversation={attackResultId && activeConversationId ? handleBranchConversation : undefined}
@@ -1431,6 +1511,8 @@ export default function ChatWindow({
           onSystemPromptChange={setSystemPrompt}
           disabled={
             !runtime.ready
+            || agentExecutionClosed
+            || agentExecutionHeld
             || isSending
             || !activeTarget
             || isLoadingAttack

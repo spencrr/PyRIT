@@ -58,6 +58,10 @@ class RuntimeAdmissionMiddleware:
         if apply_route:
             await self.app(scope, receive, send)
             return
+        if scope["method"] == "GET" and path.endswith("/execution/stream"):
+            # Observers must disconnect promptly and must not block runtime replacement.
+            await self.app(scope, receive, send)
+            return
 
         async def execute_async() -> None:
             try:

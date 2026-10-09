@@ -138,6 +138,25 @@ apiClient.interceptors.response.use(
 
 export { apiClient }
 
+export async function openApiEventStream(path: string, signal: AbortSignal): Promise<Response> {
+  const request = async (forceRefresh: boolean): Promise<Response> => {
+    const token = await getAccessToken(forceRefresh)
+    const headers: Record<string, string> = { Accept: 'text/event-stream', 'X-Request-ID': generateClientId() }
+    if (token) headers.Authorization = `Bearer ${token}`
+    return fetch(`${API_BASE_URL}${path}`, { headers, signal })
+  }
+  let response = await request(false)
+  if (response.status === 401) {
+    await response.body?.cancel()
+    response = await request(true)
+  }
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw new Error(`Execution stream failed (${response.status}). Check access and runtime readiness.`)
+  }
+  return response
+}
+
 export const healthApi = {
   checkHealth: async () => {
     const response = await apiClient.get('/health')

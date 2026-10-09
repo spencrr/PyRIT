@@ -3,7 +3,8 @@
 
 import abc
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import Any, ClassVar, Literal, final
 
 from pyrit.memory import CentralMemory, MemoryInterface
@@ -18,6 +19,9 @@ from pyrit.models import (
     RequestTraceContext,
     TargetIdentifier,
 )
+from pyrit.models.model_inference import InferenceCapabilities, InferenceRequirements
+from pyrit.models.target_response import TargetResponse
+from pyrit.prompt_target.common.model_inference import InferenceResponse
 from pyrit.prompt_target.common.target_capabilities import (
     CapabilityName,
     TargetCapabilities,
@@ -47,6 +51,27 @@ class PromptTarget(Identifiable):
     """
 
     _memory: MemoryInterface
+
+    @property
+    def inference_capabilities(self) -> InferenceCapabilities | None:
+        """Optional single-inference support; ordinary prompt support does not imply eligibility."""
+        return None
+
+    @asynccontextmanager
+    async def open_inference_async(
+        self, *, body: dict[str, Any], requirements: InferenceRequirements, request_id: str
+    ) -> AsyncIterator[InferenceResponse]:
+        """
+        Open one provider inference without replaying memory or executing tools.
+
+        Yields:
+            InferenceResponse: The raw provider response.
+
+        Raises:
+            NotImplementedError: This target has no inference implementation.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement model inference")
+        yield  # pragma: no cover
 
     # A list of Converters that are supported by the prompt target.
     # An empty list implies that the prompt target supports all converters.
@@ -200,7 +225,8 @@ class PromptTarget(Identifiable):
                 if send_context:
                     send_context.mark_target_invoked()
                 response = await self._send_prompt_to_target_async(normalized_conversation=normalized_conversation)
-            for response_message in response:
+            response_messages = response.messages if isinstance(response, TargetResponse) else response
+            for response_message in response_messages:
                 for piece in response_message.message_pieces:
                     piece.prompt_metadata = {
                         key: value
@@ -396,6 +422,9 @@ class PromptTarget(Identifiable):
         Args:
             conversation_id (str): The conversation id to release state for.
         """
+
+    async def cleanup_target_async(self) -> None:
+        """Release target-owned resources at runtime shutdown; safe to call repeatedly."""
 
     def dispose_db_engine(self) -> None:
         """

@@ -33,6 +33,7 @@ from pyrit.models import (
     PromptDataType,
     PromptResponseError,
 )
+from pyrit.models.model_inference import InferenceWireApi
 from pyrit.prompt_target.common.target_capabilities import TargetCapabilities
 from pyrit.prompt_target.common.target_configuration import TargetConfiguration
 from pyrit.prompt_target.common.tool_provider import Tool, ToolProvider, _ScopedToolProvider, collect_tools_async
@@ -109,6 +110,21 @@ class OpenAIResponseTarget(OpenAITarget):
         )
     )
     _response_adapter = ResponsesResponseAdapter()
+
+    _INFERENCE_WIRE_API = InferenceWireApi.RESPONSES
+
+    def _inference_blocked_reason(self) -> str | None:
+        if self._extra_body_parameters or self._direct_tools or self._tool_providers or self._custom_functions:
+            return "Target-side tools or custom body configuration cannot be silently reused for agent inference"
+        return None
+
+    def _inference_defaults(self) -> dict[str, Any]:
+        return {
+            "temperature": self._temperature,
+            "top_p": self._top_p,
+            "max_output_tokens": self._max_output_tokens,
+            "reasoning": self._build_reasoning_config() or None,
+        }
 
     @forward_init_parameters
     def __init__(

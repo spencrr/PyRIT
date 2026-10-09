@@ -6,6 +6,8 @@ import ChatWindow from "./ChatWindow";
 import { makeTarget } from "@/test-utils/targetFixtures";
 import { UserPreferencesProvider } from "@/hooks/useUserPreferences";
 import { readUserPreferences } from "@/utils/userPreferences";
+import { useAgentExecution } from "@/hooks/useAgentExecution";
+import type { ConversationExecution } from "@/types";
 import {
   AddMessageResponse,
   BackendMessage,
@@ -38,6 +40,8 @@ const buildCapabilities = (
 
 // Fluent UI Combobox portal interactions are slow in JSDOM under full test load
 jest.setTimeout(60000);
+
+jest.mock("@/hooks/useAgentExecution", () => ({ useAgentExecution: jest.fn() }));
 
 jest.mock("../../services/api", () => ({
   attacksApi: {
@@ -390,6 +394,10 @@ describe("ChatWindow Integration", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.mocked(useAgentExecution).mockReturnValue({
+      execution: null, turns: {}, error: null, cancelling: false, cancel: jest.fn(),
+      feed: 'live', control: jest.fn(), decidePermission: jest.fn(),
+    });
     mockedAttacksApi.getMessages.mockReset();
     mockedAttacksApi.addMessage.mockReset();
     mockedMapper.backendMessageToFrontend.mockReset();
@@ -422,6 +430,41 @@ describe("ChatWindow Integration", () => {
   // -----------------------------------------------------------------------
   // Basic rendering
   // -----------------------------------------------------------------------
+
+  it("shows active execution tools after reopening before the request enters the transcript", async () => {
+    const execution: ConversationExecution = {
+      id: "execution", conversation_id: "conversation", state: "working", environment: "docker",
+      model: "", capture_error: null, close_reason: null, artifacts: [], event_count: 1,
+      source_coverage: "ACP only",
+      turns: [{ id: "turn", request_id: "request", prompt: "Wait for cancellation",
+        status: "running", response_text: "", capture_complete: false, error: null }],
+    };
+    jest.mocked(useAgentExecution).mockReturnValue({
+      execution, error: null, cancelling: false, cancel: jest.fn(),
+      feed: 'live', control: jest.fn(), decidePermission: jest.fn(),
+      turns: { turn: { text: "", tools: [{
+        id: "tool", title: "Reading orders", status: "in_progress",
+        firstSeen: "2026-10-08T00:00:00Z", lastSeen: "2026-10-08T00:00:00Z",
+      }] } },
+    });
+    mockedAttacksApi.getMessages.mockResolvedValue({ conversation_id: "conversation", messages: [] });
+    mockedMapper.backendMessagesToFrontend.mockReturnValue([]);
+    render(<TestWrapper><ChatWindow {...defaultProps}
+      activeTarget={makeTarget({ target_type: "AgentTarget" })}
+      attackResultId="attack" conversationId="conversation" activeConversationId="conversation"
+    /></TestWrapper>);
+    expect(await screen.findByText("Reading orders — in_progress")).toBeInTheDocument();
+    expect(screen.getByText(/Request retained in execution evidence: Wait for cancellation/)).toBeInTheDocument();
+
+    mockedAttacksApi.getMessages.mockClear();
+    const callback = jest.mocked(useAgentExecution).mock.calls.slice(-1)[0][3];
+    await act(async () => {
+      await callback?.({ ...execution, state: "idle",
+        turns: [{ ...execution.turns[0], status: "completed", response_text: "Done", capture_complete: true }],
+      });
+    });
+    expect(mockedAttacksApi.getMessages).toHaveBeenCalledWith("attack", "conversation");
+  });
 
   it("should render chat window with all components", () => {
     render(

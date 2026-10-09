@@ -12,10 +12,12 @@ import { toApiError } from '@/services/errors'
 import { listRegisteredTargets } from '@/services/targetRegistry'
 import type { TargetInstance } from '@/types'
 import CreateTargetDialog from './CreateTargetDialog'
+import AgentTargetDialog from './AgentTargetDialog'
 import TargetTable from './TargetTable'
 import { useTargetConfigStyles } from './TargetConfig.styles'
 
 interface TargetConfigProps {
+  canConfigureAgents?: boolean
   defaultObjectiveTarget: TargetInstance | null
   defaultAdversarialTarget: TargetInstance | null
   onSetDefaultObjectiveTarget: (target: TargetInstance | null) => void
@@ -29,6 +31,7 @@ export default function TargetConfig({
   onSetDefaultObjectiveTarget,
   onSetDefaultAdversarialTarget,
   onTargetsLoaded,
+  canConfigureAgents = false,
 }: TargetConfigProps) {
   const { generation, ready } = useRuntime()
   const styles = useTargetConfigStyles()
@@ -36,6 +39,7 @@ export default function TargetConfig({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [agentDialogOpen, setAgentDialogOpen] = useState(false)
   // Counter used to re-trigger the fetch effect from event handlers (Refresh,
   // dialog close) without invoking setState synchronously in the effect body.
   const [refetchCount, setRefetchCount] = useState(0)
@@ -95,6 +99,7 @@ export default function TargetConfig({
           </Text>
         </div>
         <div className={styles.headerActions}>
+          {canConfigureAgents && <Button onClick={() => setAgentDialogOpen(true)}>New agent target</Button>}
           <Button
             className={styles.headerAction}
             appearance="subtle"
@@ -172,6 +177,8 @@ export default function TargetConfig({
         onCreated={handleTargetCreated}
         existingTargets={targets}
       />
+      {agentDialogOpen && <AgentTargetDialog onClose={() => setAgentDialogOpen(false)}
+        onCreated={() => { setAgentDialogOpen(false); fetchTargets() }} />}
     </div>
   )
 }

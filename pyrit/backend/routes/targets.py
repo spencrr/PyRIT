@@ -8,8 +8,9 @@ Provides endpoints for managing target instances.
 Target types are set at app startup via initializers - you cannot add new types at runtime.
 """
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from pyrit.backend.middleware.auth import require_admin
 from pyrit.backend.models.common import ProblemDetail
 from pyrit.backend.models.targets import (
     CreateTargetRequest,
@@ -20,6 +21,12 @@ from pyrit.backend.services.target_service import get_target_service
 from pyrit.models.catalog.target import TargetInstance
 
 router = APIRouter(prefix="/targets", tags=["targets"])
+
+
+def require_agent_target_admin(request: CreateTargetRequest, http_request: Request) -> None:
+    """Restrict configuration of executable agent profiles to administrators."""
+    if request.type == "AgentTarget":
+        require_admin(http_request)
 
 
 @router.get(
@@ -65,6 +72,7 @@ async def list_target_types() -> TargetTypeResponse:  # pyrit-async-suffix-exemp
 
 @router.post(
     "",
+    dependencies=[Depends(require_agent_target_admin)],
     response_model=TargetInstance,
     status_code=status.HTTP_201_CREATED,
     responses={

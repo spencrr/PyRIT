@@ -24,8 +24,10 @@ embedded ``TargetCapabilities``.
 
 from pydantic import BaseModel, Field
 
+from pyrit.models.agent_execution import AgentTargetConfiguration
 from pyrit.models.identifiers.component_identifier import JSONValue
 from pyrit.models.identifiers.target_identifier import TargetIdentifier
+from pyrit.models.model_inference import InferenceCapabilities
 from pyrit.models.target.target_capabilities import TargetCapabilities
 
 
@@ -53,6 +55,12 @@ class TargetInstance(BaseModel):
         ),
     )
     capabilities: TargetCapabilities = Field(..., description="Structured snapshot of target capabilities")
+    inference_capabilities: InferenceCapabilities | None = Field(default=None, exclude_if=lambda value: value is None)
+    agent_configuration: AgentTargetConfiguration | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Resolved model binding, harness profile and environment template, when this is an agent target.",
+    )
     target_specific_params: dict[str, JSONValue] | None = Field(
         None,
         description="Non-promoted constructor parameters, curated for display (e.g., RoundRobin weights)",

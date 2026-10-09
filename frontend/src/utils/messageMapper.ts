@@ -366,6 +366,9 @@ export function backendMessageToFrontend(msg: BackendMessage): Message {
 
   return {
     role: role as Message['role'],
+    pieceIds: msg.message_pieces.map((piece: BackendMessagePiece) => piece.id),
+    agentTurnId: typeof msg.message_pieces[0]?.prompt_metadata?.agent_turn_id === 'string'
+      ? msg.message_pieces[0].prompt_metadata.agent_turn_id : undefined,
     content: convertedContent,
     timestamp: msg.created_at,
     attachments: attachments.length > 0 ? attachments : undefined,

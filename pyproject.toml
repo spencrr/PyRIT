@@ -102,6 +102,11 @@ dev = [
 
 [project.optional-dependencies]
 # always make sure the individual ones are in sync with the all group
+agents = [
+    "agent-client-protocol>=0.12.1,<0.13",
+    "filelock>=3.20.3",
+    "psutil>=7.2.1",
+]
 huggingface = [
     "sentencepiece>=0.2.0",
     "torch>=2.7.0",
@@ -138,6 +143,9 @@ litellm = [
 
 # all includes all functional dependencies excluding the ones from the "dev" dependency group
 all = [
+    "agent-client-protocol>=0.12.1,<0.13",
+    "filelock>=3.20.3",
+    "psutil>=7.2.1",
     "accelerate>=1.7.0",
     "azure-ai-ml>=1.32.0",
     "azure-cognitiveservices-speech>=1.44.0",

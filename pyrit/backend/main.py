@@ -28,6 +28,7 @@ from pyrit.backend.routes import (
     configuration,
     converters,
     datasets,
+    executions,
     health,
     initializers,
     labels,
@@ -118,6 +119,8 @@ app.include_router(configuration.router, prefix="/api", tags=["config"])
 app.include_router(targets.router, prefix="/api", tags=["targets"])
 app.include_router(converters.router, prefix="/api", tags=["converters"])
 app.include_router(datasets.router, prefix="/api", tags=["datasets"])
+app.include_router(executions.router, prefix="/api", tags=["executions"])
+app.include_router(executions.conversation_router, prefix="/api", tags=["attacks"])
 app.include_router(scenarios.router, prefix="/api", tags=["scenarios"])
 app.include_router(initializers.router, prefix="/api", tags=["initializers"])
 app.include_router(labels.router, prefix="/api", tags=["labels"])

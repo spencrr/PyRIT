@@ -258,6 +258,30 @@ If you are contributing to PyRIT, that work will most likely land in one of the 
 - Better agent support may require extra pieces attached to a Message
 - Better surface support may require expanding the return types
 
+**ACP agents**: [Agent targets](./targets/agent_target.md) adapt a running harness
+without replacing its tool loop. A runtime-owned execution manager provisions and
+releases per-conversation local/Docker resources and records execution evidence;
+it does not select prompts, score, or branch. Profiles describe reusable starting
+conditions, not live sessions. The prompt normalizer remains the owner of chat
+message persistence, while the memory execution store retains protocol evidence.
+Explicit target outcomes distinguish tool-only completion and cancellation from
+legacy write-only responses.
+
+Agent configuration separates **model binding** (compatible model access),
+**harness profile** (agent behavior/tools), and **environment template** (starting
+filesystem and execution policy). Their composition is a **configured agent target**;
+an **execution** is its live stateful instance, and **provisioning** acquires/releases
+owned resources. Saving configuration does not provision or mutate an execution.
+Registry and New Chat share the same setup form; conversation-scoped tool activity
+is an operator view of retained evidence, separate from resource administration.
+
+An agent model binding may reference another registered target's optional
+single-inference capability. An execution-scoped relay invokes that target's
+provider transport/authentication while the harness retains ownership of its
+tools and conversation. This path does not call a target's high-level tool loop,
+replay attack history, or apply prompt converters. Eligibility is capability-based,
+and inference evidence is distinct from agent-reported tool execution.
+
 **Contributing (difficulty low)**:
 
 - The pattern is well-defined.

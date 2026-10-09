@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
   Text,
   Avatar,
@@ -50,6 +51,9 @@ interface ProcessingErrorRecovery {
 }
 
 interface MessageListProps {
+  isTextInActivity?: (message: Message) => boolean
+  renderAfterMessage?: (message: Message, index: number) => ReactNode
+  trailingContent?: ReactNode
   messages: Message[]
   /** Copy this message to the input box of the current conversation */
   onCopyToInput?: (messageIndex: number) => void
@@ -565,7 +569,7 @@ function getRenderMessagePieces(message: Message, messageIndex: number): RenderM
   return pieces
 }
 
-export default function MessageList({ messages, onCopyToInput, onCopyToNewConversation, onBranchConversation, onBranchAttack, isLoading, isSingleTurn, isOperatorLocked, isCrossTarget, noTargetSelected, globalMarkdown = false, processingErrorRecovery }: MessageListProps) {
+export default function MessageList({ messages, onCopyToInput, onCopyToNewConversation, onBranchConversation, onBranchAttack, isLoading, isSingleTurn, isOperatorLocked, isCrossTarget, noTargetSelected, globalMarkdown = false, processingErrorRecovery, renderAfterMessage, trailingContent, isTextInActivity }: MessageListProps) {
   const styles = useMessageListStyles()
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -601,7 +605,7 @@ export default function MessageList({ messages, onCopyToInput, onCopyToNewConver
     )
   }
 
-  if (messages.length === 0) {
+  if (messages.length === 0 && !trailingContent) {
     return (
       <div className={styles.emptyState}>
         <Text size={300} style={{ color: tokens.colorNeutralForeground3 }}>
@@ -624,8 +628,8 @@ export default function MessageList({ messages, onCopyToInput, onCopyToNewConver
         const renderPieces = getRenderMessagePieces(message, index)
 
         return (
+          <Fragment key={message.pieceIds?.[0] ?? index}>
           <div
-            key={index}
             className={mergeClasses(styles.message, isUser && styles.userMessage)}
           >
             <Avatar
@@ -726,7 +730,9 @@ export default function MessageList({ messages, onCopyToInput, onCopyToNewConver
                           className={styles.pieceRow}
                           data-testid={`message-piece-${index}-${piece.pieceIndex}`}
                         >
-                          {message.isLoading ? (
+                          {isTextInActivity?.(message) ? (
+                            <Text size={200}>Response shown in the ordered agent activity above.</Text>
+                          ) : message.isLoading ? (
                             <Text className={styles.loadingEllipsis}>{piece.content}</Text>
                           ) : globalMarkdown ? (
                             <MarkdownContent content={piece.content} testId={markdownTestId} />
@@ -949,8 +955,11 @@ export default function MessageList({ messages, onCopyToInput, onCopyToNewConver
               </div>
             </div>
           </div>
+          {renderAfterMessage?.(message, index)}
+          </Fragment>
         )
       })}
+      {trailingContent}
       <div ref={messagesEndRef} />
     </div>
   )

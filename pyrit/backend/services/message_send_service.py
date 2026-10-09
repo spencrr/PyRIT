@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
+from pyrit.agent.runtime import peek_agent_execution_manager
+from pyrit.agent.send_context import interactive_agent_send
 from pyrit.backend.mappers import request_piece_to_pyrit_message_piece, request_to_pyrit_message
 from pyrit.backend.models.attacks import AddMessageRequest, ConverterConfigurationRequest, MessagePieceRequest
 from pyrit.backend.services.converter_service import get_converter_service
@@ -29,6 +31,7 @@ from pyrit.models import (
     ConverterIdentifier,
 )
 from pyrit.prompt_normalizer import ConverterConfiguration, PromptNormalizer
+from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import PromptTarget
 
 logger = logging.getLogger(__name__)
@@ -164,6 +167,12 @@ class MessageSendService:
                     preconverted_indexes=preconverted_indexes,
                     applied_converter_identifiers=applied_converter_identifiers,
                 )
+            except TargetResponseUnavailableError as outcome:
+                logger.info(
+                    "Recorded %s target operation for conversation %s without a completed message.",
+                    outcome.outcome.status.value,
+                    msg_conversation_id,
+                )
             except Exception:
                 # PromptNormalizer persists a full error piece (response_error +
                 # traceback) to memory *before* re-raising. Surface that stored
@@ -187,7 +196,13 @@ class MessageSendService:
                 conversation_id=msg_conversation_id,
             )
             last_response = next(
-                (piece for piece in current_pieces if piece.id not in prior_ids and piece.role == "assistant"),
+                (
+                    piece
+                    for piece in current_pieces
+                    if piece.id not in prior_ids
+                    and piece.role == "assistant"
+                    and piece.prompt_metadata.get("target_response_status", "completed") == "completed"
+                ),
                 None,
             )
             last_response_id = str(last_response.id) if last_response else None
@@ -218,6 +233,9 @@ class MessageSendService:
                     applied_converter_identifiers=applied_converter_identifiers,
                 )
             )
+        manager = peek_agent_execution_manager()
+        if manager is not None:
+            await manager.transcript_updated_async(msg_conversation_id)
 
     def _validate_target_match(
         self, *, attack_identifier: ComponentIdentifier | None, target: PromptTarget | None
@@ -494,13 +512,14 @@ class MessageSendService:
         )
 
         normalizer = PromptNormalizer(converter_guard=self._scheduler.conversion_async)
-        await normalizer.send_prompt_async(
-            message=pyrit_message,
-            target=target,
-            conversation_id=conversation_id,
-            request_converter_configurations=request_converter_configurations,
-            response_converter_configurations=response_converter_configurations,
-        )
+        with interactive_agent_send(conversation_id):
+            await normalizer.send_prompt_async(
+                message=pyrit_message,
+                target=target,
+                conversation_id=conversation_id,
+                request_converter_configurations=request_converter_configurations,
+                response_converter_configurations=response_converter_configurations,
+            )
         # PromptNormalizer stores both request and response in memory automatically
 
     async def _store_message_only_async(
