@@ -23,6 +23,20 @@ from pyrit.registry import TargetRegistry
 
 @pytest.mark.usefixtures("patch_central_database")
 class TestAgentTarget:
+    def test_composed_configuration_preserves_identity_and_registry_projection(self) -> None:
+        from pyrit.backend.mappers.target_mappers import target_object_to_instance
+
+        legacy = AgentProfile(environment="local", local_execution_acknowledged=True, model="test-model")
+        configuration = AgentTargetConfiguration.from_profile(legacy)
+        old = AgentTarget(profile=legacy)
+        new = TargetRegistry.get_registry_singleton().create_instance(
+            "AgentTarget", agent_configuration=configuration.model_dump(mode="json")
+        )
+        assert new.get_identifier().hash == old.get_identifier().hash
+        view = target_object_to_instance("composed", new)
+        assert view.agent_configuration == configuration
+        assert view.model_dump()["agent_configuration"]["model_binding"]["model"] == "test-model"
+
     def test_rejects_ambiguous_configuration(self) -> None:
         configuration = AgentTargetConfiguration.from_profile(
             AgentProfile(environment="local", local_execution_acknowledged=True)

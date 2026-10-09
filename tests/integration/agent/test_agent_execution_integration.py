@@ -84,5 +84,3 @@ async def test_real_transport_cancellation_and_expiry(tmp_path: Path) -> None:
                 await asyncio.sleep(0.02)
         assert record.close_reason == "expired"
         assert not record.cleanup_error
-
-

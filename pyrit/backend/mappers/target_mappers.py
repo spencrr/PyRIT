@@ -15,6 +15,7 @@ composite ``inner_targets`` (full instances, not bare identifiers), and a curate
 from typing import Any
 
 from pyrit.models import TargetIdentifier
+from pyrit.models.agent_execution import AgentTargetConfiguration
 from pyrit.models.catalog.target import TargetInstance
 from pyrit.prompt_target import PromptTarget
 from pyrit.prompt_target.common.target_capabilities import CapabilityName
@@ -69,11 +70,13 @@ def target_object_to_instance(target_registry_name: str, target_obj: PromptTarge
         TargetInstance DTO with metadata derived from the object.
     """
     target_identifier = TargetIdentifier.from_component_identifier(target_obj.get_identifier())
+    agent_configuration = getattr(target_obj, "agent_configuration", None)
 
     return TargetInstance(
         target_registry_name=target_registry_name,
         identifier=target_identifier,
         capabilities=target_obj.capabilities,
+        agent_configuration=agent_configuration if isinstance(agent_configuration, AgentTargetConfiguration) else None,
         target_specific_params=_target_specific_params(target_identifier),
         inner_targets=_build_inner_targets(target_obj),
     )

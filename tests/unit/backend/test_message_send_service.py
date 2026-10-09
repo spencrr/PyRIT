@@ -227,8 +227,6 @@ async def test_cancelled_partial_response_is_retained_without_conversion(
     assert not messages[-1].get_piece().has_error()
 
 
-
-
 async def _send_message_and_get_update_fields(
     *,
     message_send_service: MessageSendService,
