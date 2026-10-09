@@ -85,6 +85,61 @@ export interface AgentEventPage {
   readonly next_cursor: number
 }
 
+export interface AgentTurn {
+  readonly id: string
+  readonly request_id: string
+  readonly prompt?: string
+  readonly status: 'running' | 'completed' | 'cancelled' | 'failed' | 'unknown'
+  readonly response_text: string
+  readonly capture_complete: boolean
+  readonly error: string | null
+}
+
+export interface ConversationExecution {
+  readonly id: string
+  readonly conversation_id: string
+  readonly state: AgentExecution['state']
+  readonly environment: 'local' | 'docker'
+  readonly model: string
+  readonly turns: AgentTurn[]
+  readonly capture_error: string | null
+  readonly close_reason: string | null
+  readonly source_coverage: string
+  readonly artifacts: string[]
+  readonly event_count: number
+  readonly connection_state?: 'disconnected' | 'connecting' | 'authenticating' | 'ready' | 'failed'
+}
+
+export type AgentActivityBlock =
+  | { readonly kind: 'text'; readonly id: string; readonly text: string; readonly messageId?: string }
+  | { readonly kind: 'tool'; readonly id: string; readonly toolId: string }
+  | { readonly kind: 'plan'; readonly id: string; readonly entries: unknown }
+
+export interface AgentStreamFrame {
+  readonly event: string
+  readonly data: string
+}
+
+export interface AgentToolActivity {
+  readonly id: string
+  readonly title: string
+  readonly status: string
+  readonly kind?: string
+  readonly name?: string
+  readonly rawInput?: unknown
+  readonly rawOutput?: unknown
+  readonly content?: unknown
+  readonly locations?: unknown
+  readonly firstSeen: string
+  readonly lastSeen: string
+}
+
+export interface AgentTurnActivity {
+  readonly text: string
+  readonly tools: AgentToolActivity[]
+  readonly blocks?: AgentActivityBlock[]
+  readonly lastSequence?: number
+}
 // ============================================================================
 // Frontend UI Types
 // ============================================================================
@@ -217,6 +272,8 @@ export interface MessageMediaDisplayPiece {
 export type MessageDisplayPiece = MessageTextDisplayPiece | MessageMediaDisplayPiece
 
 export interface Message {
+  pieceIds?: string[]
+  agentTurnId?: string
   role: 'user' | 'assistant' | 'simulated_assistant' | 'tool' | 'simulated_tool' | 'system' | 'developer'
   content: string
   timestamp: string

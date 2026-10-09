@@ -353,6 +353,7 @@ class AgentExecutionManager:
                     record.last_event_at = event.timestamp
                     if payload.get("type") == "connection.closed":
                         record.connection_state = AgentConnectionState.DISCONNECTED
+                    self.store.notify()
 
                 await await_task_completion_async(asyncio.create_task(append_and_count_async()))
             except Exception as error:
@@ -489,6 +490,14 @@ class AgentExecutionManager:
             if record.target_id == target_id and record.conversation_id == conversation_id:
                 await self.close_execution_async(execution_id=record.id, reason="conversation_finished")
 
+    async def transcript_updated_async(self, conversation_id: str) -> None:
+        """Publish the caller's completed memory write so reconnected viewers can reload safely."""
+        for record in self.records.values():
+            if record.conversation_id == conversation_id:
+                record.transcript_revision += 1
+                await self.store.save_async(record)
+                return
+
     async def _expire_async(self) -> None:
         while True:
             await asyncio.sleep(1)
@@ -523,6 +532,7 @@ class AgentExecutionManager:
     async def _close_async(self) -> None:
         async with self._admission:
             self._closed = True
+            self.store.notify()
         if self._reaper:
             self._reaper.cancel()
             with contextlib.suppress(asyncio.CancelledError):

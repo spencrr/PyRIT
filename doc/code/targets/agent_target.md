@@ -21,3 +21,12 @@ Registry and New Chat use the same agent setup. Definitions are runtime-only;
 initializers recreate persistent recipes. Administrators can inspect and close
 executions. No API key values belong in saved profiles. Model targets and
 compatible scenarios continue to use the existing normalizer/target contracts.
+
+## Live evidence
+
+Chat shows deterministic text/tool interleaving from the journal. Tool cards
+remain anchored while their status changes. SSE uses normal HTTP authorization,
+bounded subscriptions and durable cursors, reconnecting every60 seconds to
+reauthorize. Observer disconnect does not cancel a run or extend resource lifetime.
+Connection status distinguishes browser feed, ACP session and environment.
+Provider event omissions do not prove a tool was not executed.
