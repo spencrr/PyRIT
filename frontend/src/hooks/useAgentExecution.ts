@@ -74,6 +74,18 @@ export function useAgentExecution(
 
   const visible = enabled && snapshot?.key === key ? snapshot : null
   const execution = visible?.execution ?? null
+  const act = useCallback(async (
+    operation: (id: string) => Promise<ConversationExecution | null>,
+  ): Promise<void> => {
+    if (!execution) return
+    setActionError(null)
+    try {
+      const updated = await operation(execution.id)
+      setSnapshot((previous) => previous?.key === key ? { ...previous, execution: updated } : previous)
+    } catch (cause: unknown) {
+      setActionError({ key, message: toApiError(cause).detail })
+    }
+  }, [execution, key])
   const cancel = useCallback(async (): Promise<void> => {
     if (!attackId || !conversationId || !execution) return
     setCancellingKey(key)
@@ -94,5 +106,13 @@ export function useAgentExecution(
     feed: visible?.feed ?? 'connecting',
     error: actionError?.key === key ? actionError.message : visible?.error ?? null,
     cancelling: cancellingKey === key, cancel,
+    decidePermission: (approvalId: string, allow: boolean) => act((id) => {
+      if (!attackId || !conversationId) throw new Error('No active conversation')
+      return executionsApi.permission(attackId, conversationId, id, approvalId, allow)
+    }),
+    control: (action: 'continue' | 'extend' | 'close') => act((id) => {
+      if (!attackId || !conversationId) throw new Error('No active conversation')
+      return executionsApi.control(attackId, conversationId, id, action)
+    }),
   }
 }

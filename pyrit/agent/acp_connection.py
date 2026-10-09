@@ -21,6 +21,7 @@ from acp.schema import (
     ToolCallUpdate,
 )
 
+from pyrit.agent.approvals import AgentApprovals
 from pyrit.models.agent_execution import AgentConnectionState, AgentPermissionPolicy
 
 logger = logging.getLogger(__name__)
@@ -95,15 +96,33 @@ class RecordingTransport:
 
 
 class _AcpClient(Client):
-    def __init__(self, policy: AgentPermissionPolicy) -> None:
+    def __init__(self, policy: AgentPermissionPolicy, *, approvals: AgentApprovals | None = None) -> None:
         self.policy = policy
         self.cancelled = False
+        self.approvals = approvals
 
     async def request_permission(  # pyrit-async-suffix-exempt
         self, session_id: str, tool_call: ToolCallUpdate, options: list[PermissionOption], **kwargs: Any
     ) -> RequestPermissionResponse:
         if self.cancelled:
             return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+        if self.policy == AgentPermissionPolicy.ASK:
+            if self.approvals is None:
+                raise RequestError.invalid_params({"details": "Interactive approval owner is not available"})
+            option_id = await self.approvals.request_async(
+                tool_call_id=tool_call.tool_call_id,
+                title=tool_call.title or "Tool permission requested",
+                options=[
+                    {"option_id": option.option_id, "name": option.name, "kind": option.kind} for option in options
+                ],
+            )
+            return RequestPermissionResponse(
+                outcome=(
+                    AllowedOutcome(outcome="selected", option_id=option_id)
+                    if option_id is not None
+                    else DeniedOutcome(outcome="cancelled")
+                )
+            )
         kind = "allow_once" if self.policy == AgentPermissionPolicy.ALLOW_ONCE else "reject_once"
         selected = next((option for option in options if option.kind == kind), None)
         if selected is None:
@@ -145,11 +164,12 @@ class AcpConnection:
         *,
         transport: RecordingTransport,
         permission_policy: AgentPermissionPolicy,
+        approvals: AgentApprovals | None = None,
         status_changed: Callable[[AgentConnectionState], Awaitable[None]] | None = None,
     ) -> None:
         """Start the SDK reader after the caller has installed the recorder."""
         self.transport = transport
-        self.client = _AcpClient(permission_policy)
+        self.client = _AcpClient(permission_policy, approvals=approvals)
         self.connection = connect_to_agent(self.client, transport)
         self.session_id: str | None = None
         self.status_changed = status_changed

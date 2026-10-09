@@ -28,7 +28,7 @@ export interface HarnessProfile {
   readonly command: string[]
   readonly credential_env: string[]
   readonly authentication_method: string | null
-  readonly permission_policy: 'deny' | 'allow_once'
+  readonly permission_policy: 'deny' | 'allow_once' | 'ask'
   readonly inference_requirements?: InferenceRequirements
 }
 
@@ -54,6 +54,8 @@ export interface AgentTargetConfiguration {
   readonly artifact_paths?: string[]
   readonly capture_inference_content?: boolean
   readonly max_inference_requests?: number
+  readonly approval_timeout_seconds?: number
+  readonly interactive_hold_seconds?: number
 }
 
 export interface AgentProfile {
@@ -76,7 +78,7 @@ export interface AgentExecution {
   readonly configuration: AgentTargetConfiguration
   readonly created_at: string
   readonly last_activity_at: string
-  readonly state: 'starting' | 'idle' | 'working' | 'closing' | 'closed' | 'cleanup_failed'
+  readonly state: 'starting' | 'idle' | 'working' | 'held' | 'closing' | 'closed' | 'cleanup_failed'
   readonly turns: Array<{
     readonly id: string
     readonly status: string
@@ -128,7 +130,24 @@ export interface ConversationExecution {
   readonly source_coverage: string
   readonly artifacts: string[]
   readonly event_count: number
+  readonly interactive?: boolean
   readonly connection_state?: 'disconnected' | 'connecting' | 'authenticating' | 'ready' | 'failed'
+  readonly held_until?: string | null
+  readonly expires_at?: string | null
+  readonly last_event_at?: string | null
+  readonly approvals?: AgentApproval[]
+}
+
+export interface AgentApproval {
+  readonly id: string
+  readonly turn_id: string | null
+  readonly tool_call_id: string
+  readonly title: string
+  readonly options: Array<{ option_id: string; name: string; kind: string }>
+  readonly expires_at: string
+  readonly decision: string | null
+  readonly option_id: string | null
+  readonly actor: string | null
 }
 
 export type AgentActivityBlock =

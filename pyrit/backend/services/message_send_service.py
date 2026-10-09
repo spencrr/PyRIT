@@ -18,6 +18,7 @@ from functools import lru_cache, partial
 from typing import Any
 
 from pyrit.agent.runtime import peek_agent_execution_manager
+from pyrit.agent.send_context import interactive_agent_send
 from pyrit.backend.mappers import request_piece_to_pyrit_message_piece, request_to_pyrit_message
 from pyrit.backend.models.attacks import AddMessageRequest, ConverterConfigurationRequest, MessagePieceRequest
 from pyrit.backend.models.message_sends import (
@@ -924,14 +925,15 @@ class MessageSendService:
             end_token=request.end_token,
             converter_guard=self._scheduler.conversion_async,
         )
-        await normalizer.send_prompt_async(
-            message=pyrit_message,
-            target=target,
-            conversation_id=conversation_id,
-            request_converter_configurations=request_converter_configurations,
-            response_converter_configurations=response_converter_configurations,
-            send_context=send_context,
-        )
+        with interactive_agent_send(conversation_id):
+            await normalizer.send_prompt_async(
+                message=pyrit_message,
+                target=target,
+                conversation_id=conversation_id,
+                request_converter_configurations=request_converter_configurations,
+                response_converter_configurations=response_converter_configurations,
+                send_context=send_context,
+            )
         # PromptNormalizer stores both request and response in memory automatically
 
     async def _prepare_message_async(

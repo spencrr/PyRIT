@@ -39,8 +39,8 @@ export default function AgentTargetDialog({
   const [credential, setCredential] = useState(
     initialConfiguration?.harness_profile.credential_env.join(', ') ?? 'COPILOT_GITHUB_TOKEN',
   )
-  const [permissionPolicy, setPermissionPolicy] = useState<'deny' | 'allow_once'>(
-    initialConfiguration?.harness_profile.permission_policy ?? 'deny',
+  const [permissionPolicy, setPermissionPolicy] = useState<'ask' | 'deny' | 'allow_once'>(
+    initialConfiguration?.harness_profile.permission_policy ?? 'ask',
   )
   const [acknowledged, setAcknowledged] = useState(false)
   const [turnTimeout, setTurnTimeout] = useState(String(initialConfiguration?.turn_timeout_seconds ?? 180))
@@ -138,13 +138,14 @@ export default function AgentTargetDialog({
                 </Field>}
                 <Field label="Tool permission policy">
                   <Select value={permissionPolicy} onChange={(_, data) => setPermissionPolicy(
-                    data.value === 'allow_once' ? 'allow_once' : 'deny',
+                    data.value === 'allow_once' ? 'allow_once' : data.value === 'deny' ? 'deny' : 'ask',
                   )}>
+                    <option value="ask">Ask operator (interactive chat)</option>
                     <option value="deny">Deny all requests (automation compatible)</option>
                     <option value="allow_once">Allow all requests once (automation compatible)</option>
                   </Select>
                 </Field>
-                <Text size={200}>Permission policy is not a sandbox or a tool allowlist.</Text>
+                <Text size={200}>Automated runs must select allow or deny. Approval is not a sandbox or a tool allowlist.</Text>
               </section>
               <section className={styles.section} aria-label="Model binding">
                 <Text weight="semibold">Model binding</Text>

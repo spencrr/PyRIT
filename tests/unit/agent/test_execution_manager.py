@@ -229,3 +229,65 @@ async def test_cancel_during_provisioning_does_not_dispatch_and_next_turn_can_co
             )
             assert next_turn.status == AgentTurnStatus.COMPLETED
             connection.prompt_async.assert_awaited_once()
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+async def test_deadline_holds_interactive_but_closes_automated(
+    tmp_path: Path, profile: AgentProfile, connection: MagicMock, environment: MagicMock, interactive: bool
+) -> None:
+    cancelled = asyncio.Event()
+
+    async def prompt_async(prompt: str) -> tuple[str, str]:
+        await cancelled.wait()
+        return "cancelled", "Partial"
+
+    async def cancel_async() -> None:
+        cancelled.set()
+
+    connection.prompt_async.side_effect = prompt_async
+    connection.cancel_async.side_effect = cancel_async
+    profile = profile.model_copy(update={"turn_timeout_seconds": 0.03, "interactive_hold_seconds": 1})
+    with (
+        patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment),
+        patch("pyrit.agent.acp_connection.AcpConnection", return_value=connection),
+    ):
+        async with AgentExecutionManager(root=tmp_path) as manager:
+            arguments = {
+                "profile": profile,
+                "target_id": "target",
+                "conversation_id": "one",
+                "request_id": "first",
+                "prompt": "Wait",
+                "has_history": False,
+                "interactive": interactive,
+            }
+            if interactive:
+                record, turn = await manager.send_async(**arguments)
+                assert record.state == AgentExecutionState.HELD
+                assert record.held_until is not None
+                assert turn.status == AgentTurnStatus.CANCELLED
+                environment.close_async.assert_not_awaited()
+                await manager.control_held_async(execution_id=record.id, action="extend", actor="operator")
+                await manager.control_held_async(execution_id=record.id, action="continue", actor="operator")
+                assert record.state == AgentExecutionState.IDLE
+            else:
+                with pytest.raises(TimeoutError):
+                    await manager.send_async(**arguments)
+                record = next(iter(manager.records.values()))
+                assert record.state == AgentExecutionState.CLOSED
+
+
+async def test_automation_rejects_ask_before_provisioning(tmp_path: Path, profile: AgentProfile) -> None:
+    from pyrit.models.agent_execution import AgentPermissionPolicy
+
+    manager = AgentExecutionManager(root=tmp_path)
+    with pytest.raises(ValueError, match="Automated"):
+        await manager.send_async(
+            profile=profile.model_copy(update={"permission_policy": AgentPermissionPolicy.ASK}),
+            target_id="target",
+            conversation_id="one",
+            request_id="one",
+            prompt="Hi",
+            has_history=False,
+        )
+    assert not manager.records
