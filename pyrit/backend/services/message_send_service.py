@@ -50,6 +50,7 @@ from pyrit.models import (
     MessagePiece,
 )
 from pyrit.prompt_normalizer import ConverterConfiguration, PromptNormalizer
+from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import PromptTarget
 from pyrit.prompt_target.common.target_send_context import TargetSendContext
 
@@ -620,6 +621,12 @@ class MessageSendService:
                     send_context=_MessageSendContext(progress=progress) if progress is not None else None,
                     prepared_message=prepared_message,
                 )
+            except TargetResponseUnavailableError as outcome:
+                logger.info(
+                    "Recorded %s target operation for conversation %s without a completed message.",
+                    outcome.outcome.status.value,
+                    msg_conversation_id,
+                )
             except Exception:
                 if progress is not None:
                     self._record_failure(progress=progress)
@@ -642,7 +649,13 @@ class MessageSendService:
                 progress.state = MessageSendState.FINALIZING
             current_pieces = await self._memory.get_message_pieces_async(conversation_id=msg_conversation_id)
             last_response = next(
-                (piece for piece in current_pieces if piece.id not in prior_ids and piece.role == "assistant"),
+                (
+                    piece
+                    for piece in current_pieces
+                    if piece.id not in prior_ids
+                    and piece.role == "assistant"
+                    and piece.prompt_metadata.get("target_response_status", "completed") == "completed"
+                ),
                 None,
             )
             last_response_id = str(last_response.id) if last_response else None
