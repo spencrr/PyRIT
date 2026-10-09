@@ -18,6 +18,7 @@ from pyrit.models import (
     Message,
     MessagePiece,
 )
+from pyrit.models.model_inference import InferenceWireApi
 from pyrit.prompt_target.common.chat_completions_message_builder import (
     build_multimodal_chat_messages_async,
     build_response_format,
@@ -91,6 +92,25 @@ class OpenAIChatTarget(OpenAITarget):
         )
     )
     _response_adapter = ChatCompletionsResponseAdapter()
+    _INFERENCE_WIRE_API = InferenceWireApi.CHAT_COMPLETIONS
+
+    def _inference_blocked_reason(self) -> str | None:
+        if self._extra_body_parameters or self._audio_response_config:
+            return "Custom body/audio configuration requires a dedicated inference adapter"
+        if self._n not in (None, 1):
+            return "Agent inference requires one completion choice"
+        return None
+
+    def _inference_defaults(self) -> dict[str, Any]:
+        return {
+            "temperature": self._temperature,
+            "top_p": self._top_p,
+            "max_completion_tokens": self._max_completion_tokens,
+            "frequency_penalty": self._frequency_penalty,
+            "presence_penalty": self._presence_penalty,
+            "seed": self._seed,
+            "n": self._n,
+        }
 
     @forward_init_parameters
     def __init__(

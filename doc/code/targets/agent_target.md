@@ -30,3 +30,12 @@ bounded subscriptions and durable cursors, reconnecting every60 seconds to
 reauthorize. Observer disconnect does not cancel a run or extend resource lifetime.
 Connection status distinguishes browser feed, ACP session and environment.
 Provider event omissions do not prove a tool was not executed.
+
+## Single-inference targets
+
+Targets may implement `inference_capabilities` and `open_inference_async`.
+This returns raw provider bytes/status/headers, not reconstructed chat text,
+and does not execute tools or replay target history. OpenAI Chat/Responses
+implementations reuse their authentication and HTTP transport. Inference has
+bounded rate admission and no retries or redirects. Unsupported capabilities
+and conflicting configured parameters fail explicitly.

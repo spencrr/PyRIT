@@ -3,7 +3,8 @@
 
 import abc
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from typing import Any, ClassVar, Literal, final
 
 from pyrit.common.async_compatibility import legacy_sync_override
@@ -22,7 +23,9 @@ from pyrit.models import (
     TargetIdentifier,
 )
 from pyrit.models.messages.tool_content import validate_tool_conversation
+from pyrit.models.model_inference import InferenceCapabilities, InferenceRequirements
 from pyrit.models.target_response import TargetResponse
+from pyrit.prompt_target.common.model_inference import InferenceResponse
 from pyrit.prompt_target.common.target_capabilities import (
     CapabilityName,
     TargetCapabilities,
@@ -52,6 +55,27 @@ class PromptTarget(Identifiable):
     """
 
     _memory: MemoryInterface
+
+    @property
+    def inference_capabilities(self) -> InferenceCapabilities | None:
+        """Optional single-inference support; ordinary prompt support does not imply eligibility."""
+        return None
+
+    @asynccontextmanager
+    async def open_inference_async(
+        self, *, body: dict[str, Any], requirements: InferenceRequirements, request_id: str
+    ) -> AsyncGenerator[InferenceResponse, None]:
+        """
+        Open one provider inference without replaying memory or executing tools.
+
+        Yields:
+            InferenceResponse: The raw provider response.
+
+        Raises:
+            NotImplementedError: This target has no inference implementation.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement model inference")
+        yield  # pragma: no cover
 
     # A list of Converters that are supported by the prompt target.
     # An empty list implies that the prompt target supports all converters.
