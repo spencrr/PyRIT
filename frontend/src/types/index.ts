@@ -2,6 +2,89 @@ import type { Theme } from '@fluentui/react-components'
 
 import type { THEME_PRESETS } from '@/themes/themePresets'
 
+export interface ModelBinding {
+  readonly model: string
+}
+
+export interface HarnessProfile {
+  readonly command: string[]
+  readonly credential_env: string[]
+  readonly authentication_method: string | null
+  readonly permission_policy: 'deny' | 'allow_once'
+}
+
+export interface EnvironmentTemplate {
+  readonly environment: 'local' | 'docker'
+  readonly image: string | null
+  readonly fixture_directory?: string | null
+  readonly expected_fixture_sha256?: string | null
+  readonly local_execution_acknowledged: boolean
+  readonly docker_network?: string
+  readonly docker_memory?: string
+  readonly docker_cpus?: number
+}
+
+export interface AgentTargetConfiguration {
+  readonly name: string
+  readonly model_binding: ModelBinding
+  readonly harness_profile: HarnessProfile
+  readonly environment_template: EnvironmentTemplate
+  readonly turn_timeout_seconds?: number
+  readonly idle_timeout_seconds?: number
+  readonly lifetime_seconds?: number
+  readonly artifact_paths?: string[]
+}
+
+export interface AgentProfile {
+  readonly name: string
+  readonly environment: 'local' | 'docker'
+  readonly image?: string | null
+  readonly model: string
+  readonly idle_timeout_seconds: number
+  readonly lifetime_seconds: number
+  readonly [key: string]: unknown
+}
+
+export interface AgentExecution {
+  readonly id: string
+  readonly conversation_id: string
+  readonly target_id: string
+  readonly image_id?: string | null
+  readonly fixture_sha256?: string | null
+  readonly profile: AgentProfile
+  readonly configuration: AgentTargetConfiguration
+  readonly created_at: string
+  readonly last_activity_at: string
+  readonly state: 'starting' | 'idle' | 'working' | 'closing' | 'closed' | 'cleanup_failed'
+  readonly turns: Array<{
+    readonly id: string
+    readonly status: string
+    readonly capture_complete: boolean
+    readonly stop_reason: string | null
+    readonly error: string | null
+  }>
+  readonly capture_error: string | null
+  readonly cleanup_error: string | null
+  readonly close_reason: string | null
+  readonly artifacts: string[]
+  readonly artifact_errors: string[]
+  readonly source_coverage: string
+}
+
+export interface AgentExecutionEvent {
+  readonly execution_id: string
+  readonly sequence: number
+  readonly timestamp: string
+  readonly turn_id: string | null
+  readonly direction: string
+  readonly payload: Record<string, unknown>
+}
+
+export interface AgentEventPage {
+  readonly events: AgentExecutionEvent[]
+  readonly next_cursor: number
+}
+
 // ============================================================================
 // Frontend UI Types
 // ============================================================================
@@ -272,6 +355,7 @@ export interface TargetIdentifier {
 }
 
 export interface TargetInstance {
+  agent_configuration?: AgentTargetConfiguration
   target_registry_name: string
   /** Typed identity: class name, endpoint, model name, generation params, content hash. */
   identifier: TargetIdentifier
@@ -288,6 +372,7 @@ export interface TargetListResponse {
 }
 
 export interface CreateTargetRequest {
+  name?: string
   type: string
   params: Record<string, unknown>
   auth_mode?: 'api_key' | 'identity'

@@ -44,6 +44,7 @@ import type { PieceConversion } from './converterTypes'
 import { useChatConverters } from '@/hooks/useChatConverters'
 import { useRuntime } from '@/hooks/useRuntime'
 import { useUserPreferences } from '@/hooks/useUserPreferences'
+import AgentTargetDialog from '@/components/Config/AgentTargetDialog'
 import {
   basenameFromValue,
   applyConvertedValues,
@@ -250,6 +251,8 @@ function matchesNarrowScreen(): boolean {
 }
 
 interface ChatWindowProps {
+  canConfigureAgents?: boolean
+  onAgentTargetCreated?: (target: TargetInstance) => void
   /** Shared layout slot; standalone chat renders its toolbar inline. */
   toolbarContainer?: HTMLElement | null
   onNewAttack: () => void
@@ -301,6 +304,8 @@ interface ChatWindowProps {
 }
 
 export default function ChatWindow({
+  canConfigureAgents = false,
+  onAgentTargetCreated,
   toolbarContainer,
   onNewAttack,
   activeTarget,
@@ -335,6 +340,7 @@ export default function ChatWindow({
   scenarioResultId,
 }: ChatWindowProps) {
   const styles = useChatWindowStyles()
+  const [agentDialogOpen, setAgentDialogOpen] = useState(false)
   const restoreFocusTargetAttributes = useRestoreFocusTarget()
   const restoreFocusSourceAttributes = useRestoreFocusSource()
   const [messages, setMessages] = useState<Message[]>([])
@@ -1622,6 +1628,9 @@ export default function ChatWindow({
           disabled={isSavingEditor} onClick={() => editorRef.current?.convertConversation()}>Convert Conversation</Button>}
       </div>
       <div className={mergeClasses(styles.ribbonActions, toolbarContainer ? styles.sharedActions : undefined)}>
+        {!attackResultId && editDraft === null && canConfigureAgents && onAgentTargetCreated && (
+          <Button disabled={isSending} onClick={() => setAgentDialogOpen(true)}>Configure agent</Button>
+        )}
         <Tooltip content="Render all messages as Markdown by default" relationship="label">
           <Switch
             checked={globalMarkdown}
@@ -1701,6 +1710,12 @@ export default function ChatWindow({
 
   return (
     <div className={styles.root}>
+      {agentDialogOpen && onAgentTargetCreated && <AgentTargetDialog selectForChat
+        initialConfiguration={activeTarget?.agent_configuration}
+        onClose={() => setAgentDialogOpen(false)} onCreated={(target: TargetInstance) => {
+          setAgentDialogOpen(false)
+          onAgentTargetCreated(target)
+        }} />}
       <h1 className={styles.pageHeading}>Chat</h1>
       {isConverterPanelOpen && (
         <ConverterPanel

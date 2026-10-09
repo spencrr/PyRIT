@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from pyrit.agent.runtime import peek_agent_execution_manager, reconcile_agent_executions_async
 from pyrit.backend.models.initializers import ConfiguredInitializerSetting
 from pyrit.backend.services.configuration_file_service import ConfigurationFileService
 from pyrit.backend.services.environment_file_service import EnvironmentFileService
@@ -130,6 +131,7 @@ class RuntimeLifecycle:
                 logger.warning("Custom initializer registration is ENABLED (allow_custom_initializers: true).")
                 await asyncio.to_thread(registry.register_stored_initializers, strict=True)
             await config.initialize_pyrit_async(raise_on_initializer_error=True)
+            await reconcile_agent_executions_async()
             await get_scenario_run_service().reconcile_interrupted_runs_async()
             _, self.version = await self.source.read_with_version_async()
             self._publish(config)
@@ -237,8 +239,10 @@ class RuntimeLifecycle:
     def _has_active_work(self) -> bool:
         """Return whether any admitted or background runtime operation remains."""
         service = peek_scenario_run_service()
+        agents = peek_agent_execution_manager()
         return bool(
             (service and service.has_active_work())
+            or (agents and agents.has_live_executions)
             or self.operations
             or outstanding_estimates()
             or has_active_manual_sends()
