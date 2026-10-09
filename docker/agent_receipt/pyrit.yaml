@@ -1,0 +1,13 @@
+# Local ACP demo configuration. This overlays, but never edits, ~/.pyrit/.pyrit_conf.
+memory_db_type: sqlite
+initializers:
+  - technique
+initialization_scripts: []
+allow_custom_initializers: false
+enable_live_reinitialization: false
+max_concurrent_scenario_runs: 1
+
+# Use credentials explicitly supplied to the backend process, not shared bootstrap sources.
+env_files: []
+env_akv_ref: []
+extensions: {}
