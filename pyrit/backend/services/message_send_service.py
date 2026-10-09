@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from functools import lru_cache, partial
 from typing import Any
 
+from pyrit.agent.runtime import peek_agent_execution_manager
 from pyrit.backend.mappers import request_piece_to_pyrit_message_piece, request_to_pyrit_message
 from pyrit.backend.models.attacks import AddMessageRequest, ConverterConfigurationRequest, MessagePieceRequest
 from pyrit.backend.models.message_sends import (
@@ -684,6 +685,9 @@ class MessageSendService:
                     applied_converter_identifiers=applied_converter_identifiers,
                 )
             )
+        manager = peek_agent_execution_manager()
+        if manager is not None:
+            await manager.transcript_updated_async(msg_conversation_id)
 
     def _validate_target_match(
         self, *, attack_identifier: ComponentIdentifier | None, target: PromptTarget | None

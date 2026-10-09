@@ -7,13 +7,25 @@ import asyncio
 import json
 import logging
 import os
+from bisect import bisect_right
+from collections.abc import Generator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from uuid import UUID
 
 from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.models.agent_execution import AgentEventPage, AgentExecution, AgentExecutionEvent
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _JournalIndex:
+    offsets: list[int] = field(default_factory=list)
+    sequences: list[int] = field(default_factory=list)
+    end: int = 0
 
 
 class AgentExecutionStore:
@@ -23,6 +35,34 @@ class AgentExecutionStore:
         """Bind storage without creating directories or starting processes."""
         self.root = root
         self._save_lock = asyncio.Lock()
+        self._listeners: set[asyncio.Event] = set()
+        self._indexes: dict[UUID, _JournalIndex] = {}
+        self._index_lock = Lock()
+
+    def notify(self) -> None:
+        """Wake observers after a durable state change; slow observers do not buffer events in memory."""
+        for listener in self._listeners:
+            listener.set()
+
+    @contextmanager
+    def subscribe(self) -> Generator[asyncio.Event, None, None]:
+        """
+        Subscribe to bounded wakeups; the journal remains the source of replay.
+
+        Yields:
+            asyncio.Event: A coalesced change notification.
+
+        Raises:
+            RuntimeError: Observer admission is exhausted.
+        """
+        if len(self._listeners) >= 64:
+            raise RuntimeError("Execution observer capacity reached")
+        event = asyncio.Event()
+        self._listeners.add(event)
+        try:
+            yield event
+        finally:
+            self._listeners.discard(event)
 
     def directory(self, execution_id: UUID) -> Path:
         """
@@ -45,6 +85,7 @@ class AgentExecutionStore:
             await await_task_completion_async(
                 asyncio.create_task(self._save_with_retry_async(execution_id=execution.id, data=data))
             )
+            self.notify()
 
     async def _save_with_retry_async(self, *, execution_id: UUID, data: str) -> None:
         for attempt in range(10):
@@ -120,13 +161,20 @@ class AgentExecutionStore:
         events: list[AgentExecutionEvent] = []
         path = self.directory(execution_id) / "events.jsonl"
         if path.exists():
-            with path.open("rb") as stream:
-                for line in stream:
+            with self._index_lock, path.open("rb") as stream:
+                index = self._indexes.setdefault(execution_id, _JournalIndex())
+                stream.seek(index.end)
+                while line := stream.readline():
                     if not line.endswith(b"\n"):
                         break
-                    event = AgentExecutionEvent.model_validate(json.loads(line))
-                    if event.sequence > after:
-                        events.append(event)
-                        if len(events) >= limit:
-                            break
+                    sequence = AgentExecutionEvent.model_validate(json.loads(line)).sequence
+                    if index.sequences and sequence <= index.sequences[-1]:
+                        raise ValueError("Execution journal sequence is not strictly increasing")
+                    index.offsets.append(index.end)
+                    index.sequences.append(sequence)
+                    index.end = stream.tell()
+                start = bisect_right(index.sequences, after)
+                for offset in index.offsets[start : start + limit]:
+                    stream.seek(offset)
+                    events.append(AgentExecutionEvent.model_validate(json.loads(stream.readline())))
         return AgentEventPage(events=events, next_cursor=events[-1].sequence if events else after)

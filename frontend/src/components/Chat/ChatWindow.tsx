@@ -34,6 +34,7 @@ import ConverterPanel from './ConverterPanel'
 import TargetBadge from './TargetBadge'
 import ChatTargetPicker from './ChatTargetPicker'
 import { generateClientId } from '@/utils/clientId'
+import { targetType } from '@/utils/targetIdentity'
 import ObjectiveHeader from './ObjectiveHeader'
 import ConversationEditor from './ConversationEditor'
 import type { ConversationEditorHandle } from './ConversationEditor'
@@ -45,6 +46,9 @@ import { useChatConverters } from '@/hooks/useChatConverters'
 import { useRuntime } from '@/hooks/useRuntime'
 import { useUserPreferences } from '@/hooks/useUserPreferences'
 import AgentTargetDialog from '@/components/Config/AgentTargetDialog'
+import { useAgentExecution } from '@/hooks/useAgentExecution'
+import AgentActivity from './AgentActivity'
+import AgentExecutionStatus from './AgentExecutionStatus'
 import {
   basenameFromValue,
   applyConvertedValues,
@@ -68,6 +72,7 @@ import { exportConversation } from '../../utils/conversationExport'
 import type { ExportFormat } from '../../utils/conversationExport'
 import type {
   AddMessageResponse,
+  AgentTurn,
   AttackOutcome,
   AttackSummary,
   AttackTargetResolutionStatus,
@@ -76,6 +81,7 @@ import type {
   ChatSendOutcome,
   ConversationMessagesResponse,
   ConverterPipelineStage,
+  ConversationExecution,
   CreateAttackRequest,
   CreateConversationRequest,
   Message,
@@ -393,6 +399,8 @@ export default function ChatWindow({
   const inputBoxRef = useRef<ChatInputAreaHandle>(null)
   const recoveryInFlightRef = useRef(false)
   const viewedConversationId = activeConversationId ?? conversationId
+  const isAgentTarget = (activeTarget && targetType(activeTarget) === 'AgentTarget')
+    || attackTarget?.target_type === 'AgentTarget'
   useEffect(() => {
     if (editDraft && (editDraft.sourceConversationId !== viewedConversationId || editDraft.sourceAttackId !== attackResultId)) {
       discardEditor()
@@ -635,6 +643,32 @@ export default function ChatWindow({
       }
     }
   }, [markConversationLoaded])
+
+  const refreshAgentTranscript = async (execution: ConversationExecution): Promise<void> => {
+    if (!attackResultId || !viewedConversationId || execution.conversation_id !== viewedConversationId
+      || sendingConvIdsRef.current.has(viewedConversationId) || activeConversationLoadRequestRef.current) return
+    const last = execution.turns[execution.turns.length - 1]
+    if (!last || last.status === 'running') return
+    const requestPresent = messages.some((message: Message) => message.pieceIds?.includes(last.request_id))
+    const replyPresent = !last.response_text || messages.some((message: Message) => (
+      message.role === 'assistant' && message.agentTurnId === last.id
+    ))
+    if (!requestPresent || !replyPresent) {
+      await loadConversation(attackResultId, viewedConversationId)
+    }
+  }
+  const agent = useAgentExecution(attackResultId, viewedConversationId, Boolean(isAgentTarget), refreshAgentTranscript)
+  const agentExecutionClosed = agent.execution?.state === 'closed'
+    || agent.execution?.state === 'closing' || agent.execution?.state === 'cleanup_failed'
+  const agentTurnForMessage = (message: Message, index: number): AgentTurn | undefined => {
+    if (message.role !== 'user' || !agent.execution) return undefined
+    return agent.execution.turns.find((turn: AgentTurn) => message.pieceIds?.includes(turn.request_id))
+      ?? (!message.pieceIds
+        ? agent.execution.turns[messages.slice(0, index + 1).filter((item: Message) => item.role === 'user').length - 1]
+        : undefined)
+  }
+  const anchoredAgentTurns = new Set(messages.map(agentTurnForMessage).filter(Boolean).map((turn) => turn?.id))
+  const unmatchedAgentTurns = agent.execution?.turns.filter((turn: AgentTurn) => !anchoredAgentTurns.has(turn.id)) ?? []
 
   // Reload messages when activeConversationId changes
   useEffect(() => {
@@ -1787,8 +1821,38 @@ export default function ChatWindow({
           newAttackDisabledReason={newAttackDisabledReason}
           onSaved={handleEditorSaved}
         />}
+        {editDraft === null && isAgentTarget && (
+          <MessageBar intent="info">
+            <MessageBarBody>
+              {agentExecutionClosed ? 'Start a new conversation; this execution cannot be resumed.' : 'Model, harness profile, and environment template are fixed for this conversation.'}
+              {canConfigureAgents && <> {' '}<Link target="_blank" rel="noopener noreferrer"
+                to={`/registry/executions${viewedConversationId ? `?conversation=${encodeURIComponent(viewedConversationId)}` : ''}`}>
+                Manage resources
+              </Link></>}
+            </MessageBarBody>
+          </MessageBar>
+        )}
+        {editDraft === null && isAgentTarget && <AgentExecutionStatus execution={agent.execution} feed={agent.feed}
+          disabled={isMutationLocked} cancelling={agent.cancelling} onCancel={agent.cancel} />}
+        {editDraft === null && agent.error && <MessageBar intent="error"><MessageBarBody>Agent activity unavailable: {agent.error}</MessageBarBody></MessageBar>}
         {editDraft === null && <MessageList
           messages={messages}
+          isTextInActivity={isAgentTarget ? (message: Message) => Boolean(
+            message.role === 'assistant' && message.agentTurnId && !message.originalContent
+            && agent.turns[message.agentTurnId]?.blocks?.length
+            && agent.turns[message.agentTurnId]?.text === message.content
+          ) : undefined}
+          renderAfterMessage={isAgentTarget ? (message: Message, index: number) => {
+            const turn = agentTurnForMessage(message, index)
+            return turn ? <AgentActivity key={turn.id} turn={turn} activity={agent.turns[turn.id]}
+              /> : null
+          } : undefined}
+          trailingContent={unmatchedAgentTurns.length > 0 ? unmatchedAgentTurns.map((turn: AgentTurn) => (
+            <section key={turn.id} aria-label="Execution awaiting transcript">
+              <Text block>Request retained in execution evidence: {turn.prompt ?? 'Transcript pending'}</Text>
+              <AgentActivity turn={turn} activity={agent.turns[turn.id]} />
+            </section>
+          )) : undefined}
           onCopyToInput={handleCopyToInput}
           onCopyToNewConversation={(index: number) => { void copyConversation(index, 'same_attack') }}
           onCopyToNewAttack={newAttackDisabledReason ? undefined : (index: number) => { void copyConversation(index, 'new_attack') }}
@@ -1859,6 +1923,7 @@ export default function ChatWindow({
           onSystemPromptChange={setSystemPrompt}
           disabled={
             !runtime.ready
+            || agentExecutionClosed
             || isSending
             || editDraft !== null
             || !activeTarget
