@@ -48,6 +48,16 @@ def test_legacy_recipe_roundtrip_and_saved_execution_projection() -> None:
     assert reloaded.profile == profile
 
 
+def test_inference_request_budget_is_bounded() -> None:
+    for maximum in (0, 101):
+        with pytest.raises(ValidationError):
+            AgentProfile(environment="local", local_execution_acknowledged=True, max_inference_requests=maximum)
+        with pytest.raises(ValidationError):
+            AgentTargetConfiguration(
+                environment_template=EnvironmentTemplate(image="test"), max_inference_requests=maximum
+            )
+
+
 @pytest.mark.parametrize(
     "fields",
     [

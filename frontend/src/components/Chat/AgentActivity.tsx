@@ -33,6 +33,13 @@ export default function AgentActivity({ turn, activity }: AgentActivityProps) {
   return (
     <section className={styles.root} aria-label="Agent turn activity">
       <Text weight="semibold">Agent activity <Badge appearance="tint">{turn.status}</Badge></Text>
+      {activity?.inference && <details>
+        <summary>Model inference through PyRIT ({Object.keys(activity.inference).length} requests)</summary>
+        {Object.entries(activity.inference).map(([id, inference]) => <Text key={id} block size={200}>
+          {id.slice(0, 8)} · {inference.status} · target {inference.target?.slice(0, 8) ?? 'not reported'}
+          {inference.bytes !== undefined ? ` · ${inference.bytes} bytes` : ''}
+        </Text>)}
+      </details>}
       {activity?.blocks ? activity.blocks.map((block) => {
         if (block.kind === 'text') return <div key={block.id}><MarkdownContent content={block.text} /></div>
         if (block.kind === 'plan') return <details key={block.id}><summary>Agent plan</summary><pre className={styles.raw}>{details(block.entries)}</pre></details>

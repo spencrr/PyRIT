@@ -4,6 +4,24 @@ import type { THEME_PRESETS } from '@/themes/themePresets'
 
 export interface ModelBinding {
   readonly model: string
+  readonly target_registry_name?: string | null
+  readonly target_identifier_hash?: string | null
+  readonly wire_api?: 'completions' | 'responses' | null
+}
+
+export interface InferenceRequirements {
+  readonly wire_api: 'completions' | 'responses'
+  readonly streaming: boolean
+  readonly tool_calls: boolean
+  readonly input_modalities: string[]
+}
+
+export interface InferenceCapabilities {
+  readonly wire_apis: Array<'completions' | 'responses'>
+  readonly streaming: boolean
+  readonly tool_calls: boolean
+  readonly input_modalities: string[]
+  readonly blocked_reason: string | null
 }
 
 export interface HarnessProfile {
@@ -11,6 +29,7 @@ export interface HarnessProfile {
   readonly credential_env: string[]
   readonly authentication_method: string | null
   readonly permission_policy: 'deny' | 'allow_once'
+  readonly inference_requirements?: InferenceRequirements
 }
 
 export interface EnvironmentTemplate {
@@ -33,6 +52,8 @@ export interface AgentTargetConfiguration {
   readonly idle_timeout_seconds?: number
   readonly lifetime_seconds?: number
   readonly artifact_paths?: string[]
+  readonly capture_inference_content?: boolean
+  readonly max_inference_requests?: number
 }
 
 export interface AgentProfile {
@@ -137,6 +158,7 @@ export interface AgentToolActivity {
 export interface AgentTurnActivity {
   readonly text: string
   readonly tools: AgentToolActivity[]
+  readonly inference?: Record<string, { status: string; target?: string; bytes?: number }>
   readonly blocks?: AgentActivityBlock[]
   readonly lastSequence?: number
 }
@@ -412,6 +434,7 @@ export interface TargetIdentifier {
 }
 
 export interface TargetInstance {
+  inference_capabilities?: InferenceCapabilities
   agent_configuration?: AgentTargetConfiguration
   target_registry_name: string
   /** Typed identity: class name, endpoint, model name, generation params, content hash. */

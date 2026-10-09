@@ -10,6 +10,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, field_validator, model_validator
 
+from pyrit.models.model_inference import InferenceRequirements, InferenceWireApi
+
 
 class AgentEnvironment(str, Enum):
     """Where the tested harness runs."""
@@ -78,6 +80,12 @@ class AgentProfile(BaseModel):
     authentication_method: str | None = None
     permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY
     model: str = ""
+    target_registry_name: str | None = None
+    target_identifier_hash: str | None = None
+    wire_api: InferenceWireApi | None = None
+    inference_requirements: InferenceRequirements = Field(default_factory=InferenceRequirements)
+    capture_inference_content: bool = False
+    max_inference_requests: int = Field(default=100, ge=1, le=100)
     local_execution_acknowledged: bool = False
     startup_timeout_seconds: float = Field(default=60, gt=0, le=600)
     turn_timeout_seconds: float = Field(default=180, gt=0, le=3600)
@@ -108,6 +116,17 @@ class ModelBinding(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     model: str = ""
+    target_registry_name: str | None = None
+    target_identifier_hash: str | None = None
+    wire_api: InferenceWireApi | None = None
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "ModelBinding":
+        if self.target_registry_name is None and (self.target_identifier_hash is not None or self.wire_api is not None):
+            raise ValueError("Target identity and wire API require a registered target binding")
+        if self.target_registry_name is not None and not self.target_registry_name.strip():
+            raise ValueError("Target registry name must not be empty")
+        return self
 
 
 class HarnessProfile(BaseModel):
@@ -118,6 +137,7 @@ class HarnessProfile(BaseModel):
     credential_env: tuple[str, ...] = ()
     authentication_method: str | None = None
     permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY
+    inference_requirements: InferenceRequirements = Field(default_factory=InferenceRequirements)
 
     _command_validator = field_validator("command")(_validate_command)
     _credentials_validator = field_validator("credential_env")(_validate_credentials)
@@ -160,6 +180,8 @@ class AgentTargetConfiguration(BaseModel):
     max_evidence_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=256 * 1024 * 1024)
     artifact_paths: tuple[str, ...] = ()
     max_artifact_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
+    capture_inference_content: bool = False
+    max_inference_requests: int = Field(default=100, ge=1, le=100)
 
     _artifact_validator = field_validator("artifact_paths")(_validate_artifacts)
 
@@ -257,6 +279,8 @@ class AgentExecution(BaseModel):
     close_reason: str | None = None
     cleanup_error: str | None = None
     artifacts: list[str] = Field(default_factory=list)
+    inference_target_hash: str | None = None
+    inference_protocol: InferenceWireApi | None = None
     artifact_errors: list[str] = Field(default_factory=list)
     source_coverage: str = "ACP-exposed events only; internal tool coverage is not guaranteed."
 
