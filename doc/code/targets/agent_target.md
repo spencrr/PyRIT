@@ -39,3 +39,19 @@ and does not execute tools or replay target history. OpenAI Chat/Responses
 implementations reuse their authentication and HTTP transport. Inference has
 bounded rate admission and no retries or redirects. Unsupported capabilities
 and conflicting configured parameters fail explicitly.
+
+## Target-backed BYOK
+
+Select a capability-compatible registered target as the agent model source.
+Copilot calls an execution-scoped authenticated relay, which invokes the bound
+target; provider credentials never enter the tested environment. Binding identity
+is pinned, budgets are bounded, and revocation cancels/joins in-flight requests.
+Tool execution remains in the harness. Other harnesses require their own
+provider-configuration adapter; they are not silently treated as Copilot.
+
+Use `python -m build_scripts.agent_byok_demo --results dbdata\byok-demo` for
+real Copilot against a synthetic authenticated provider (no live model billing).
+Docker requires explicitly configured `PYRIT_INFERENCE_RELAY_HOST` and
+`PYRIT_INFERENCE_RELAY_ADVERTISED_HOST`; restrict the inference-only listener to
+trusted networks. Response protocol adapters are tested; actual model/harness
+compatibility and live identity renewal require deployment verification.

@@ -30,6 +30,7 @@ class ExecutionEnvironment:
         self.workspace = directory / "workspace"
         self.home = directory / "home"
         self.process: asyncio.subprocess.Process | None = None
+        self.runtime_environment: dict[str, str] = {}
 
     async def prepare_async(self) -> None:
         """
@@ -127,6 +128,8 @@ class ExecutionEnvironment:
         ]
         for name in profile.credential_env:
             args.extend(["--env", name])
+        for name in self.runtime_environment:
+            args.extend(["--env", name])
         args.extend(["--entrypoint", profile.command[0], self.execution.image_id, *profile.command[1:]])
         await self._docker_async(*args, credentials=True)
         # Only a fresh, private copy is mounted/copied; never the operator's repository or home.
@@ -149,6 +152,7 @@ class ExecutionEnvironment:
             command = ("docker", "start", "--attach", "--interactive", str(self.execution.provider_id))
         else:
             environment.update(self.credential_values())
+            environment.update(self.runtime_environment)
             environment.update(
                 HOME=str(self.home),
                 USERPROFILE=str(self.home),
@@ -319,6 +323,7 @@ class ExecutionEnvironment:
         environment = dict(os.environ)
         if credentials:
             environment.update(self.credential_values())
+            environment.update(self.runtime_environment)
         process = await asyncio.create_subprocess_exec(
             "docker", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=environment
         )

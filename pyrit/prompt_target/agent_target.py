@@ -46,6 +46,14 @@ class AgentTarget(PromptTarget):
         else:
             self.profile = profile if isinstance(profile, AgentProfile) else AgentProfile.model_validate(profile)
             self.agent_configuration = AgentTargetConfiguration.from_profile(self.profile)
+        from pyrit.agent.model_binding import pinned_configuration, resolve_model_binding
+
+        self._model_binding = resolve_model_binding(self.agent_configuration)
+        if self._model_binding is not None:
+            self.agent_configuration = pinned_configuration(
+                configuration=self.agent_configuration, binding=self._model_binding
+            )
+            self.profile = self.agent_configuration.to_profile()
         super().__init__(model_name=self.profile.model, custom_configuration=custom_configuration)
         if self.capabilities.supports_editable_history or self.capabilities.supports_system_prompt:
             raise ValueError("ACP AgentTarget does not support editable history or system prompts")
@@ -70,7 +78,18 @@ class AgentTarget(PromptTarget):
         return self._execution_manager
 
     def _build_identifier(self) -> ComponentIdentifier:
-        return self._create_identifier(params={"profile": self.profile.model_dump(mode="json")})
+        values = self.profile.model_dump(mode="json")
+        if self._model_binding is None:
+            for key in (
+                "target_registry_name",
+                "target_identifier_hash",
+                "wire_api",
+                "inference_requirements",
+                "capture_inference_content",
+                "max_inference_requests",
+            ):
+                values.pop(key)
+        return self._create_identifier(params={"profile": values})
 
     async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> TargetResponse:
         """
@@ -93,6 +112,7 @@ class AgentTarget(PromptTarget):
             request_id=str(request.id),
             prompt=request.converted_value,
             has_history=len(normalized_conversation) > 1,
+            model_binding=self._model_binding,
         )
         metadata = {
             "agent_execution_id": str(record.id),

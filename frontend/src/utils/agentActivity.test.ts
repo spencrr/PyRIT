@@ -32,7 +32,7 @@ describe('reduceAgentEvents', () => {
   it('keeps Markdown in one text block across journal gaps and non-content events', () => {
     const events: AgentExecutionEvent[] = [
       event(1, { sessionUpdate: 'agent_message_chunk', messageId: 'reply', content: { type: 'text', text: '```python\n' } }),
-      { ...event(3, {}), direction: 'outgoing', payload: { method: 'session/prompt' } },
+      { ...event(3, {}), direction: 'inference', payload: { type: 'inference.chunk', request_id: 'inference' } },
       event(5, { sessionUpdate: 'usage_update' }),
       event(8, { sessionUpdate: 'agent_message_chunk', messageId: 'reply', content: { type: 'text', text: 'print(31)\n' } }),
       { ...event(9, {}), direction: 'lifecycle', payload: { type: 'session.connected' } },

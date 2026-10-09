@@ -5,12 +5,14 @@ import userEvent from '@testing-library/user-event'
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 
 import { targetsApi } from '@/services/api'
+import { listRegisteredTargets } from '@/services/targetRegistry'
 import { makeTarget } from '@/test-utils/targetFixtures'
 import type { AgentTargetConfiguration } from '@/types'
 
 import AgentTargetDialog from './AgentTargetDialog'
 
 jest.mock('@/services/api', () => ({ targetsApi: { createTarget: jest.fn() } }))
+jest.mock('@/services/targetRegistry', () => ({ listRegisteredTargets: jest.fn() }))
 
 function TestWrapper({ children }: { children: ReactNode }) {
   return <FluentProvider theme={webLightTheme}>{children}</FluentProvider>
@@ -19,6 +21,7 @@ function TestWrapper({ children }: { children: ReactNode }) {
 describe('AgentTargetDialog', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    jest.mocked(listRegisteredTargets).mockResolvedValue([])
   })
 
   it('registers separate configuration primitives and selects the result for chat', async () => {
@@ -73,4 +76,24 @@ describe('AgentTargetDialog', () => {
     expect(onCreated).not.toHaveBeenCalled()
   })
 
+  it('selects an existing target by inference capabilities and never copies its credentials', async () => {
+    const source = makeTarget({ target_registry_name: 'source', target_type: 'CustomInferenceTarget' })
+    source.inference_capabilities = {
+      wire_apis: ['completions'], streaming: true, tool_calls: true, input_modalities: ['text'], blocked_reason: null,
+    }
+    jest.mocked(listRegisteredTargets).mockResolvedValue([source, makeTarget({ target_registry_name: 'unsupported' })])
+    jest.mocked(targetsApi.createTarget).mockResolvedValue(makeTarget({ target_type: 'AgentTarget' }))
+    const user = userEvent.setup()
+    render(<TestWrapper><AgentTargetDialog onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
+    await screen.findByRole('option', { name: 'source — inference compatible' })
+    expect(screen.getByRole('option', { name: /unsupported — No inference implementation/ })).toBeDisabled()
+    await user.selectOptions(screen.getByLabelText('Model source'), 'source')
+    await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'bound-agent')
+    await user.click(screen.getByRole('button', { name: 'Register target' }))
+    await waitFor(() => expect(targetsApi.createTarget).toHaveBeenCalled())
+    expect(jest.mocked(targetsApi.createTarget).mock.calls[0][0].params.agent_configuration).toMatchObject({
+      model_binding: { target_registry_name: 'source', target_identifier_hash: source.identifier.hash, wire_api: 'completions' },
+      harness_profile: { credential_env: [], authentication_method: null },
+    })
+  })
 })

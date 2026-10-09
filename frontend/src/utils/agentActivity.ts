@@ -10,6 +10,17 @@ export function reduceAgentEvents(
   const next = { ...current }
   for (const event of events) {
     if (event.turn_id && event.sequence <= (next[event.turn_id]?.lastSequence ?? 0)) continue
+    if (event.turn_id && event.direction === 'inference' && typeof event.payload.request_id === 'string') {
+      const turn = next[event.turn_id] ?? { text: '', tools: [] }
+      const id = event.payload.request_id
+      const prior = turn.inference?.[id]
+      next[event.turn_id] = { ...turn, lastSequence: event.sequence, inference: { ...turn.inference, [id]: {
+        ...prior, status: typeof event.payload.outcome === 'string' ? event.payload.outcome : prior?.status ?? 'running',
+        target: typeof event.payload.target_hash === 'string' ? event.payload.target_hash : prior?.target,
+        bytes: typeof event.payload.bytes === 'number' ? event.payload.bytes : prior?.bytes,
+      } } }
+      continue
+    }
     if (!event.turn_id || event.direction !== 'incoming' || !isObject(event.payload.params)) continue
     const params = event.payload.params
     const update = params.update

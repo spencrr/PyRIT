@@ -8,6 +8,7 @@ import codecs
 import contextlib
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pyrit.agent.acp_connection import AcpConnection
+    from pyrit.agent.inference_relay import InferenceLease, InferenceRelay
+    from pyrit.agent.model_binding import ResolvedModelBinding
 
 
 @dataclass
@@ -50,6 +53,8 @@ class _LiveExecution:
     close_requested: bool = False
     cancel_requested: bool = False
     close_task: asyncio.Task[None] | None = None
+    model_binding: "ResolvedModelBinding | None" = None
+    inference_lease: "InferenceLease | None" = None
 
 
 class AgentExecutionManager:
@@ -74,6 +79,8 @@ class AgentExecutionManager:
         self._file_lock: BaseFileLock | None = None
         self._reaper: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[None] | None = None
+        self._relay: InferenceRelay | None = None
+        self._relay_lock = asyncio.Lock()
 
     async def __aenter__(self) -> Self:
         """
@@ -146,6 +153,7 @@ class AgentExecutionManager:
         request_id: str,
         prompt: str,
         has_history: bool,
+        model_binding: "ResolvedModelBinding | None" = None,
     ) -> tuple[AgentExecution, AgentTurn]:
         """
         Execute a new turn once. Closed sessions cannot be resurrected by replay.
@@ -192,6 +200,7 @@ class AgentExecutionManager:
                     profile=profile,
                 )
                 live = self._make_live(record)
+                live.model_binding = model_binding
                 live.secrets = tuple(live.environment.credential_values().values())
                 self.records[record.id] = record
                 self._live[record.id] = live
@@ -285,6 +294,8 @@ class AgentExecutionManager:
 
         async with asyncio.timeout(live.record.profile.startup_timeout_seconds):
             live.secrets = tuple(live.environment.credential_values().values())
+            if live.model_binding is not None:
+                await self._bind_inference_async(live)
             # Container names are deterministic, so a crash during create remains reconcilable.
             if live.record.profile.environment == "docker":
                 live.record.provider_id = f"pyrit-agent-{live.record.id}"
@@ -321,11 +332,55 @@ class AgentExecutionManager:
             live.stderr_task = asyncio.create_task(self._stderr_async(live, process.stderr))
             live.record.agent_info = await live.connection.initialize_async(
                 cwd=live.environment.agent_cwd,
-                model=live.record.profile.model,
-                authentication_method=live.record.profile.authentication_method,
+                model="" if live.model_binding else live.record.profile.model,
+                authentication_method=None if live.model_binding else live.record.profile.authentication_method,
             )
             live.record.session_id = live.connection.session_id
             live.record.connection_state = AgentConnectionState.READY
+
+    async def _bind_inference_async(self, live: _LiveExecution) -> None:
+        from pyrit.agent.inference_relay import InferenceLease, InferenceRelay
+
+        binding = live.model_binding
+        assert binding is not None
+        async with self._relay_lock:
+            if self._relay is None:
+                self._relay = InferenceRelay(
+                    host=os.getenv("PYRIT_INFERENCE_RELAY_HOST", "127.0.0.1"),
+                    advertised_host=os.getenv("PYRIT_INFERENCE_RELAY_ADVERTISED_HOST", "127.0.0.1"),
+                )
+            if live.record.profile.environment == "docker" and self._relay.advertised_host in (
+                "127.0.0.1",
+                "localhost",
+            ):
+                raise ValueError(
+                    "Docker BYOK requires an explicitly reachable PYRIT_INFERENCE_RELAY_HOST and "
+                    "PYRIT_INFERENCE_RELAY_ADVERTISED_HOST (for example host.docker.internal on Docker Desktop)"
+                )
+            await self._relay.start_async()
+
+            async def record_async(payload: dict[str, Any]) -> None:
+                await self._record_async(live, direction="inference", payload=payload)
+
+            lease = InferenceLease(
+                binding=binding,
+                record=record_async,
+                timeout_seconds=live.record.profile.turn_timeout_seconds,
+                max_calls=live.record.profile.max_inference_requests,
+                capture_content=live.record.profile.capture_inference_content,
+            )
+            self._relay.add(lease)
+            live.inference_lease = lease
+            live.secrets = (*live.secrets, lease.token)
+            live.record.inference_target_hash = binding.identifier_hash
+            live.record.inference_protocol = binding.requirements.wire_api
+            live.environment.runtime_environment = {
+                "COPILOT_PROVIDER_BASE_URL": self._relay.url,
+                "COPILOT_PROVIDER_TYPE": "openai",
+                "COPILOT_PROVIDER_WIRE_API": binding.requirements.wire_api.value,
+                "COPILOT_PROVIDER_API_KEY": lease.token,
+                "COPILOT_MODEL": binding.model,
+            }
 
     async def _record_async(self, live: _LiveExecution, *, direction: str, payload: dict[str, Any]) -> None:
         async with live.event_lock:
@@ -449,6 +504,8 @@ class AgentExecutionManager:
                     await asyncio.shield(live.startup)
                 except Exception:
                     logger.exception("Agent startup did not complete before close")
+            if live.inference_lease and self._relay:
+                await self._relay.revoke_async(live.inference_lease)
             if live.connection:
                 try:
                     await live.connection.cancel_async()
@@ -547,6 +604,8 @@ class AgentExecutionManager:
                 except Exception as error:
                     errors.append(error)
         finally:
+            if self._relay:
+                await self._relay.close_async()
             if self._file_lock:
                 await asyncio.to_thread(self._file_lock.release)
                 self._file_lock = None
