@@ -564,6 +564,9 @@ class PromptTarget(Identifiable):
             conversation_id (str): The conversation id to release state for.
         """
 
+    async def cleanup_target_async(self) -> None:
+        """Release target-owned resources at runtime shutdown; safe to call repeatedly."""
+
     def dispose_db_engine(self) -> None:
         """
         Dispose database engine to release database connections and resources.
