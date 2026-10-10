@@ -4,6 +4,7 @@ import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 import { MemoryRouter } from 'react-router'
 
 import { executionsApi } from '@/services/executions'
+import { targetsApi } from '@/services/api'
 import type { AgentExecution } from '@/types'
 
 import Executions from './Executions'
@@ -11,7 +12,9 @@ import Executions from './Executions'
 jest.mock('@/services/executions', () => ({
   executionsApi: { list: jest.fn(), get: jest.fn(), events: jest.fn(), cancel: jest.fn(), close: jest.fn() },
 }))
-jest.mock('@/services/api', () => ({ targetsApi: { createTarget: jest.fn() } }))
+jest.mock('@/services/api', () => ({
+  targetsApi: { createTarget: jest.fn(), listTargetTypes: jest.fn(), listAgentPresets: jest.fn(), listTargets: jest.fn() },
+}))
 
 const record: AgentExecution = {
   id: '12345678-0000-0000-0000-000000000001', conversation_id: 'conversation', target_id: 'target',
@@ -40,12 +43,30 @@ describe('Executions', () => {
     jest.mocked(executionsApi.get).mockResolvedValue(record)
     jest.mocked(executionsApi.events).mockResolvedValue({ events: [], next_cursor: 0 })
     jest.mocked(executionsApi.cancel).mockResolvedValue({ ...record, state: 'idle' })
+    jest.mocked(targetsApi.listTargetTypes).mockResolvedValue({ items: [] })
+    jest.mocked(targetsApi.listTargets).mockResolvedValue({
+      items: [], pagination: { limit: 200, has_more: false, next_cursor: null, prev_cursor: null },
+    })
+    jest.mocked(targetsApi.listAgentPresets).mockResolvedValue({
+      harness_profiles: [], environment_templates: [], unavailable_targets: {},
+    })
   })
 
   it('does not fetch administration data without permission', () => {
     renderPage(false)
     expect(screen.getByText(/Administrator access is required/)).toBeInTheDocument()
     expect(executionsApi.list).not.toHaveBeenCalled()
+  })
+
+  it('opens copied execution settings in the shared Create Target dialog', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: '12345678' }))
+    await user.click(screen.getByRole('button', { name: 'Copy configuration to new target' }))
+    expect(await screen.findByRole('heading', { name: 'Create Target', exact: true })).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Target Type' })).toHaveTextContent('Agent (ACP)')
+    expect(screen.getByRole('textbox', { name: /Docker image/ })).toHaveValue('test')
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
   })
 
   it('shows live resource state and cancels the turn separately from closing', async () => {

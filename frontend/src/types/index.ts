@@ -2,6 +2,8 @@ import type { Theme } from '@fluentui/react-components'
 
 import type { THEME_PRESETS } from '@/themes/themePresets'
 
+export type InferenceWireApi = 'completions' | 'responses'
+
 export interface ModelBinding {
   readonly model: string
   readonly target_registry_name?: string | null
@@ -62,6 +64,7 @@ export interface AgentPresetCatalog {
   readonly harness_profiles: RegisteredHarnessProfile[]
   readonly environment_templates: RegisteredEnvironmentTemplate[]
   readonly unavailable_targets: Record<string, string>
+  readonly environment_parameters?: Partial<Record<EnvironmentTemplate['environment'], Parameter[]>>
 }
 
 export interface AgentPresetSelection {

@@ -23,6 +23,7 @@ import {
   MessageBar,
   MessageBarBody,
   Tooltip,
+  mergeClasses,
 } from '@fluentui/react-components'
 import { DeleteRegular } from '@fluentui/react-icons'
 
@@ -41,7 +42,7 @@ import {
   targetUnderlyingModelName,
 } from '@/utils/targetIdentity'
 import { useCreateTargetDialogStyles } from './CreateTargetDialog.styles'
-import AgentTargetDialog from './AgentTargetDialog'
+import AgentTargetForm from './AgentTargetForm'
 import type { AgentTargetConfiguration } from '@/types'
 import {
   canConfigureTargetType,
@@ -72,6 +73,7 @@ const FALLBACK_IDENTITY_TARGET_TYPES = new Set([
 ])
 
 const TARGET_DISPLAY_NAMES: Record<string, string> = {
+  AgentTarget: 'Agent (ACP)',
   AzureMLChatTarget: 'Azure Machine Learning chat',
   OpenAIChatTarget: 'OpenAI chat',
   OpenAICompletionTarget: 'OpenAI text completion',
@@ -227,8 +229,12 @@ export default function CreateTargetDialog({
   open, onClose, onCreated, existingTargets, canConfigureAgents = false, initialAgentConfiguration, selectForChat = false,
 }: CreateTargetDialogProps) {
   const styles = useCreateTargetDialogStyles()
-  const [targetType, setTargetType] = useState('')
-  const [agentSelected, setAgentSelected] = useState(Boolean(initialAgentConfiguration))
+  const [targetType, setTargetType] = useState(initialAgentConfiguration && canConfigureAgents ? 'AgentTarget' : '')
+  const [ordinaryDraftType, setOrdinaryDraftType] = useState('')
+  const [agentVisited, setAgentVisited] = useState(Boolean(initialAgentConfiguration))
+  const [agentBusy, setAgentBusy] = useState(false)
+  const [agentActions, setAgentActions] = useState<HTMLDivElement | null>(null)
+  const isAgent = targetType === 'AgentTarget' && canConfigureAgents
   const [endpoint, setEndpoint] = useState('')
   const [modelName, setModelName] = useState('')
   const [hasDifferentUnderlying, setHasDifferentUnderlying] = useState(false)
@@ -269,7 +275,8 @@ export default function CreateTargetDialog({
   if (open !== seenOpen) {
     setSeenOpen(open)
     if (open) {
-      setAgentSelected(Boolean(initialAgentConfiguration))
+      setTargetType(initialAgentConfiguration && canConfigureAgents ? 'AgentTarget' : '')
+      setAgentVisited(Boolean(initialAgentConfiguration))
       setTargetTypeEntries([])
       setTypeMetadataStatus('loading')
     }
@@ -301,9 +308,16 @@ export default function CreateTargetDialog({
   }, [targetTypeEntries])
   const typeMetadataAvailable = registeredTargetTypeOptions.length > 0
   const typeMetadataUnavailable = typeMetadataStatus !== 'loading' && !typeMetadataAvailable
-  const targetTypeOptions = typeMetadataAvailable
+  const ordinaryTypeOptions = typeMetadataAvailable
     ? registeredTargetTypeOptions
     : FALLBACK_TARGET_TYPE_ENTRIES
+  const targetTypeOptions: TargetTypeEntry[] = [
+    ...(canConfigureAgents ? [{
+      target_type: 'AgentTarget', parameters: [], supported_auth_modes: [],
+      description: 'Test an agent with a model, harness and execution environment.',
+    }] : []),
+    ...ordinaryTypeOptions,
+  ]
 
   const isRoundRobin = targetType === 'RoundRobinTarget'
   const isAzureML = targetType === 'AzureMLChatTarget'
@@ -442,6 +456,7 @@ export default function CreateTargetDialog({
 
   const resetForm = () => {
     setTargetType('')
+    setOrdinaryDraftType('')
     setEndpoint('')
     setModelName('')
     setHasDifferentUnderlying(false)
@@ -455,11 +470,14 @@ export default function CreateTargetDialog({
   }
 
   const handleClose = () => {
+    if (submitting || agentBusy) return
     resetForm()
+    setAgentVisited(false)
     onClose()
   }
 
   const handleSubmit = async () => {
+    if (submitting || agentBusy || isAgent) return
     // For RoundRobinTarget, validation is different: we need ≥2 selected targets, not endpoint
     if (isRoundRobin) {
       if (selectedInnerTargets.length < 2) {
@@ -570,27 +588,13 @@ export default function CreateTargetDialog({
     }
   }
 
-  if (open && agentSelected && canConfigureAgents) {
-    return <AgentTargetDialog onClose={onClose} onCreated={onCreated}
-      initialConfiguration={initialAgentConfiguration} selectForChat={selectForChat}
-      onBack={() => setAgentSelected(false)} />
-  }
-
   return (
     <Dialog open={open} onOpenChange={(_, data) => { if (!data.open) handleClose() }}>
-      <DialogSurface className={styles.dialogSurface}>
+      <DialogSurface className={mergeClasses(styles.dialogSurface, isAgent && styles.agentSurface)}>
         <DialogBody>
-          <DialogTitle>Create New Target</DialogTitle>
+          <DialogTitle>Create Target</DialogTitle>
           <DialogContent className={styles.dialogContent}>
-            {canConfigureAgents && <Button onClick={() => setAgentSelected(true)}>
-              Tool-capable agent (ACP)
-            </Button>}
-            <form
-              className={styles.form}
-              data-testid="create-target-form"
-              onSubmit={(e) => { e.preventDefault(); handleSubmit() }}
-            >
-              {error && (
+              {!isAgent && error && (
                 <MessageBar intent="error">
                   <MessageBarBody>{error}</MessageBarBody>
                 </MessageBar>
@@ -612,13 +616,13 @@ export default function CreateTargetDialog({
               <Field
                 className={styles.formField}
                 label="Target Type"
-                hint="Each option shows what the target does, its implementation class, and how it authenticates."
                 required
                 validationMessage={fieldErrors.targetType}
                 validationState={fieldErrors.targetType ? 'error' : 'none'}
               >
                 <Dropdown
                   aria-label="Target Type"
+                  disabled={submitting || agentBusy}
                   className={styles.fullWidthSelect}
                   listbox={{ className: styles.targetTypeListbox }}
                   placeholder="Select a target type"
@@ -629,6 +633,12 @@ export default function CreateTargetDialog({
                     const next = data.optionValue
                     if (!next) return
                     setTargetType(next)
+                    if (next === 'AgentTarget') {
+                      setAgentVisited(true)
+                      return
+                    }
+                    if (next === ordinaryDraftType) return
+                    setOrdinaryDraftType(next)
                     setParameterValues({})
                     const nextEntry = targetTypeByName.get(next)
                     const nextSupportsIdentity = nextEntry
@@ -678,6 +688,17 @@ export default function CreateTargetDialog({
                 </Dropdown>
               </Field>
 
+              {open && agentVisited && canConfigureAgents && <div hidden={!isAgent}>
+                <AgentTargetForm onClose={handleClose} onCreated={onCreated} onBusyChange={setAgentBusy}
+                  initialConfiguration={initialAgentConfiguration} selectForChat={selectForChat} actionsContainer={agentActions} />
+              </div>}
+            <form
+              className={styles.form}
+              hidden={isAgent}
+              data-testid="create-target-form"
+              onSubmit={(e) => { e.preventDefault(); void handleSubmit() }}
+            >
+              <fieldset className={styles.ordinaryFields} disabled={isAgent || submitting}>
               {targetType && (
                 <section
                   aria-label="Selected target details"
@@ -691,7 +712,7 @@ export default function CreateTargetDialog({
                   {targetType === 'GitHubCopilotTarget' && <Text size={200}>
                     Native Copilot SDK harness with tools disabled, for text responses and compatible judges.
                     Model access is Copilot-managed; the working directory is local, not a sandbox.
-                    To test tool behavior in an owned local or Docker environment, choose Tool-capable agent (ACP).
+                    To test tool behavior in an owned local or Docker environment, choose Agent (ACP).
                   </Text>}
                   {targetTypeEntry?.description ? (
                     <Text size={200} className={styles.targetTypeDescription}>
@@ -1025,9 +1046,11 @@ export default function CreateTargetDialog({
                 </Link>.
               </Label>
               )}
+              </fieldset>
             </form>
           </DialogContent>
-          <DialogActions>
+          {isAgent && <DialogActions ref={setAgentActions} />}
+          {!isAgent && <DialogActions>
             <Button appearance="secondary" onClick={handleClose} disabled={submitting}>
               Cancel
             </Button>
@@ -1049,7 +1072,7 @@ export default function CreateTargetDialog({
             >
               {submitting ? 'Creating...' : 'Create Target'}
             </Button>
-          </DialogActions>
+          </DialogActions>}
         </DialogBody>
       </DialogSurface>
     </Dialog>

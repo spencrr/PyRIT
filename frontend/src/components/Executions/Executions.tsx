@@ -7,7 +7,7 @@ import {
 } from '@fluentui/react-components'
 import { Link as RouterLink, useSearchParams } from 'react-router'
 
-import AgentTargetDialog from '@/components/Config/AgentTargetDialog'
+import CreateTargetDialog from '@/components/Config/CreateTargetDialog'
 import { executionsApi } from '@/services/executions'
 import { toApiError } from '@/services/errors'
 import type { AgentExecution, AgentExecutionEvent, AgentTargetConfiguration, TargetInstance } from '@/types'
@@ -181,7 +181,7 @@ export default function Executions({ canManage, onTargetCreated }: ExecutionsPro
           <pre className={styles.event}>{JSON.stringify(event.payload, null, 2)}</pre>
         </details>)}
       </section>}
-      {copyConfiguration && <AgentTargetDialog initialConfiguration={copyConfiguration}
+      {copyConfiguration && <CreateTargetDialog open canConfigureAgents={canManage} initialAgentConfiguration={copyConfiguration}
         onClose={() => setCopyConfiguration(null)} onCreated={(target: TargetInstance) => {
           setCopyConfiguration(null)
           onTargetCreated(target)

@@ -38,13 +38,25 @@ Chat / scenario -> Active execution -> ACP -> Tested harness
   harness; it does not provide sandboxing.
 
 **New Target** is shared by the registry and New Chat. Choose an ordinary target
-type or **Tool-capable agent (ACP)**. The latter requires permission to configure
+type or **Agent (ACP)** in the same target-type dropdown. The latter requires permission to configure
 executable targets; existing registered targets remain selectable without that
 configuration privilege. The native tools-off SDK target stays in the ordinary
 target type picker.
 
-The form separates model binding, harness profile, and environment template.
-Advanced fields expose operation/lifetime limits and selected retained artifacts.
+The dialog expands in place to show **Model**, **Harness**, and **Environment**.
+Switching to Agent and back retains the ordinary target's authentication and
+parameters; selecting a different ordinary target type keeps its normal reset behavior.
+The model picker lists registered connections using their model and registry
+names, or **Use harness default**. A sole compatible inference protocol is selected
+automatically; multiple compatible protocols are available in **Connection details**.
+The optional harness model hint does not override the selected provider deployment.
+**Environment settings** shows only parameters relevant to local/Docker execution,
+using backend parameter metadata for defaults and types.
+Edited environment policies are retained across runtime refresh. If their metadata
+is unavailable, creation is blocked until those edits can be validated again.
+Directory imports and artifact-path lists are not authored in this modal. Existing
+initializer-defined or copied values are preserved unchanged; a summary identifies
+retained non-default settings. Execution deadlines remain under **Execution settings**.
 Registration does not provision resources. A new chat can derive a different
 model binding from its selected agent's configuration without mutating the
 original. Each registration is reusable within the current backend runtime;
@@ -83,7 +95,7 @@ closure, idle expiry, maximum lifetime, or backend shutdown.
 
 Use **Create Target -> GitHubCopilotTarget** for native text or compatible
 self-contained judge calls (`uv sync --extra github-copilot`). Use **New Target ->
-Tool-capable agent (ACP)** to test a tool-capable harness. The native SDK
+Agent (ACP)** to test a tool-capable harness. The native SDK
 target is not wrapped inside ACP or advertised as an inference-only source.
 Its existing judge retries and session retirement remain native SDK behavior.
 An agent under test and a tools-off Copilot judge can therefore be separate targets
@@ -214,7 +226,7 @@ provider credential or token callback. The harness receives only a revocable,
 execution-scoped relay credential. No GitHub model-routing credential is needed
 in BYOK mode; GitHub-dependent tools may have their own authentication needs.
 
-In **New Target -> Tool-capable agent (ACP)**, select an
+In **New Target -> Agent (ACP)**, select an
 **existing PyRIT target** as the model source. Options expose capability-based
 incompatibility reasons. Target class names are not used for eligibility.
 An adapter claiming compatibility is not proof that the selected model reliably

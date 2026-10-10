@@ -220,7 +220,7 @@ setup lifecycle; it is not automatically proven safe by this validator.
 Existing local/Blob custom-initializer code storage and environment/Key Vault
 sources remain the source of truth. No new catalog file or generated Python is
 required. CoPyRIT's Initializers view discovers the three initializers. **New Target
--> Tool-capable agent (ACP)** lists their registered harness profiles and
+-> Agent (ACP)** lists their registered harness profiles and
 environment templates. Custom initializers may pass `initializer=type(self).__name__`
 to registration to identify their source; omitted source metadata is displayed as
 Python registration.
@@ -230,7 +230,7 @@ selected. Customization retains copied advanced settings but no longer claims an
 exact preset match. A copied target likewise keeps its own resolved snapshot; it
 does not automatically select a newer preset with the same name.
 
-**Reload presets** refreshes the current runtime catalog without rerunning
+**Refresh options** refreshes model connections and presets without rerunning
 initializers. A changed/removed selection blocks registration until the operator
 explicitly accepts the new values or customizes the copied settings. The backend
 also verifies submitted settings against the selected preset before creating a

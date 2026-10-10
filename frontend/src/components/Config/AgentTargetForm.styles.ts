@@ -1,9 +1,8 @@
 import { makeStyles, tokens } from '@fluentui/react-components'
 
-import { mobileTouchTarget } from '@/styles/touchTargets'
+import { mobileTouchTarget, NARROW_VIEWPORT_QUERY } from '@/styles/touchTargets'
 
-export const useAgentTargetDialogStyles = makeStyles({
-  surface: { width: '72rem', maxWidth: `calc(100vw - ${tokens.spacingHorizontalXXL})` },
+export const useAgentTargetFormStyles = makeStyles({
   form: { gridColumn: '1 / -1', minWidth: 0 },
   content: {
     display: 'flex', flexDirection: 'column', gap: tokens.spacingVerticalM,
@@ -34,5 +33,12 @@ export const useAgentTargetDialogStyles = makeStyles({
     ...mobileTouchTarget,
     flexShrink: 0,
     alignSelf: 'flex-start',
+  },
+  toolbar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: tokens.spacingHorizontalS },
+  actions: {
+    gridColumn: '1 / -1',
+    display: 'flex', justifyContent: 'flex-end', gap: tokens.spacingHorizontalS, marginTop: tokens.spacingVerticalS,
+    '& button': { ...mobileTouchTarget },
+    [NARROW_VIEWPORT_QUERY]: { flexWrap: 'wrap' },
   },
 })
