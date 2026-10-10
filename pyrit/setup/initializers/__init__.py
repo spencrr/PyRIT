@@ -10,7 +10,10 @@ from pyrit.common.lazy_imports import get_lazy_dir, resolve_lazy_export
 
 if TYPE_CHECKING:
     from pyrit.models.parameter import Parameter
+    from pyrit.setup.initializers.agent_target import AgentTargetInitializer
     from pyrit.setup.initializers.converters import ConverterInitializer
+    from pyrit.setup.initializers.environment_template import EnvironmentTemplateInitializer
+    from pyrit.setup.initializers.harness_profile import HarnessProfileInitializer
     from pyrit.setup.initializers.load_default_datasets import LoadDefaultDatasets
     from pyrit.setup.initializers.preload_scenario_metadata import PreloadScenarioMetadata
     from pyrit.setup.initializers.refresh_datasets import RefreshDatasets
@@ -20,6 +23,9 @@ if TYPE_CHECKING:
     from pyrit.setup.pyrit_initializer import PyRITInitializer
 
 _LAZY_EXPORTS: dict[str, str | tuple[str, str | None]] = {
+    "AgentTargetInitializer": "pyrit.setup.initializers.agent_target",
+    "EnvironmentTemplateInitializer": "pyrit.setup.initializers.environment_template",
+    "HarnessProfileInitializer": "pyrit.setup.initializers.harness_profile",
     "Parameter": "pyrit.models.parameter",
     "PyRITInitializer": "pyrit.setup.pyrit_initializer",
     "ConverterInitializer": "pyrit.setup.initializers.converters",

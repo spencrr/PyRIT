@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from pyrit.common.lazy_imports import get_lazy_dir, resolve_lazy_export
 
 if TYPE_CHECKING:
+    from pyrit.registry.agent_configuration_registry import AgentConfigurationRegistry
     from pyrit.registry.components import (
         AttackRegistry,
         AttackTechniqueMetadata,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from pyrit.registry.tag_query import TagQuery
 
 _LAZY_EXPORTS: dict[str, str | tuple[str, str | None]] = {
+    "AgentConfigurationRegistry": "pyrit.registry.agent_configuration_registry",
     "AttackRegistry": "pyrit.registry.components",
     "AttackTechniqueRegistry": "pyrit.registry.components",
     "AttackTechniqueMetadata": "pyrit.registry.components",

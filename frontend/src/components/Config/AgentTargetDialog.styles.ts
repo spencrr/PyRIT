@@ -1,5 +1,7 @@
 import { makeStyles, tokens } from '@fluentui/react-components'
 
+import { mobileTouchTarget } from '@/styles/touchTargets'
+
 export const useAgentTargetDialogStyles = makeStyles({
   surface: { width: '72rem', maxWidth: `calc(100vw - ${tokens.spacingHorizontalXXL})` },
   form: { gridColumn: '1 / -1', minWidth: 0 },
@@ -23,5 +25,14 @@ export const useAgentTargetDialogStyles = makeStyles({
     minWidth: 0,
     width: '100%',
     maxWidth: '100%',
+  },
+  settingsFields: {
+    minWidth: 0, border: 0, margin: 0, padding: 0,
+    display: 'flex', flexDirection: 'column', gap: tokens.spacingVerticalS,
+  },
+  presetAction: {
+    ...mobileTouchTarget,
+    flexShrink: 0,
+    alignSelf: 'flex-start',
   },
 })

@@ -27,9 +27,12 @@ from pyrit.backend.models.targets import (
     TargetTypeResponse,
 )
 from pyrit.common import REQUIRED_VALUE
+from pyrit.models.agent_execution import AgentTargetConfiguration
+from pyrit.models.agent_setup import AgentPresetSelection, AgentTargetOrigin, AgentTargetProvenance
 from pyrit.models.catalog.target import TargetInstance
 from pyrit.models.parameter import Parameter
-from pyrit.registry import TargetRegistry
+from pyrit.prompt_target import AgentTarget
+from pyrit.registry import AgentConfigurationRegistry, TargetRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +66,12 @@ class TargetService:
         Returns:
             TargetInstance with metadata derived from the object.
         """
-        return target_object_to_instance(target_registry_name, target_obj)
+        entry = self._registry.instances.get_entry(target_registry_name)
+        return target_object_to_instance(
+            target_registry_name,
+            target_obj,
+            registry_metadata=entry.metadata if entry else None,
+        )
 
     async def list_targets_async(
         self,
@@ -260,14 +268,30 @@ class TargetService:
                     if parameter.identity_conflicting:
                         params.pop(parameter.name, None)
         params.update(target_cls.get_auth_mode_parameters(auth_mode=request.auth_mode))
+        provenance: AgentTargetProvenance | None = None
+        if request.agent_presets is not None:
+            if not issubclass(target_cls, AgentTarget) or "agent_configuration" not in params:
+                raise ValueError("Preset references require an AgentTarget with resolved agent_configuration")
+            AgentConfigurationRegistry.get_registry_singleton().validate_selection(
+                selection=request.agent_presets,
+                configuration=AgentTargetConfiguration.model_validate(params["agent_configuration"]),
+            )
+        if issubclass(target_cls, AgentTarget):
+            provenance = AgentTargetProvenance(
+                origin=AgentTargetOrigin.RUNTIME,
+                presets=request.agent_presets or AgentPresetSelection(),
+            )
 
         # LEGACY COMPATIBILITY: The current configuration UI omits the name.
         # Remove this generated fallback after that UI sends an explicit name.
         target_registry_name = request.name or f"compat_{uuid.uuid4().hex}"
         self._registry.instances.validate_name_available(target_registry_name)
         target_obj = self._registry.create_instance(request.type, **params)
-        target = self._build_instance_from_object(target_registry_name=target_registry_name, target_obj=target_obj)
-        self._registry.instances.register(target_obj, name=target_registry_name)
+        registration_metadata = (
+            {"agent_configuration_provenance": provenance.model_dump(mode="json")} if provenance else {}
+        )
+        target = target_object_to_instance(target_registry_name, target_obj, registry_metadata=registration_metadata)
+        self._registry.instances.register(target_obj, name=target_registry_name, metadata=registration_metadata)
         return target
 
 

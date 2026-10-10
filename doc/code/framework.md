@@ -453,6 +453,16 @@ See [message normalizers](./targets/11_message_normalizer) for capability behavi
 - Configuration files are the core way to drive setup. `ConfigurationLoader` / `initialize_from_config_async` read a config that declares the memory backend and a list of initializers to run, so a session can be reproduced without code.
 - By default these files live under the PyRIT home directory `~/.pyrit/`: the config file at `~/.pyrit/.pyrit_conf`, and environment variables from `~/.pyrit/.env` and `~/.pyrit/.env.local` (loaded if present).
 - A `PyRITInitializer` is a class-based unit of configuration: each one configures part of PyRIT (e.g. registering targets, scorers, scenario techniques, or loading default datasets) and runs in the order provided. Built-in initializers live in the `initializers/` package.
+- `harness_profile`, `environment_template`, and `agent_target` separate reusable agent settings
+  from composition. `AgentConfigurationRegistry` holds only inert copied presets; the target
+  registry still constructs and holds the composed target. Profile names belong to registration
+  provenance, not target identity. Environment presets do not grant local-execution consent.
+  The admin configuration API exposes detached preset snapshots and origins for CoPyRIT.
+  Creating from a named preset verifies the submitted snapshot; customizing it removes
+  the preset claim without modifying the source. Initializer-defined and runtime-created
+  targets remain in the same registry, with provenance separate from target identity.
+  Isolated declarative preflight never executes a model initializer; unsupported live
+  replacement fails before resetting services. Private initializers can use the same APIs.
 - Users can bring their own: subclass `PyRITInitializer`, implement `initialize_async`, and reference it from config or pass it in — letting teams package their own defaults and components.
 
 # Application surfaces

@@ -693,6 +693,9 @@ class ConfigurationLoader(YamlLoadable):
                     f"Initializer '{type(initializer).__name__}' has missing required environment variables."
                 )
 
+        from pyrit.setup.agent_initialization import preflight_agent_initializers
+
+        preflight_agent_initializers(initializers=initializers, environment=effective_environment)
         return PreparedReinitialization(
             environment_values=dict(environment_values),
             initializer_registry=registry,

@@ -442,6 +442,9 @@ export default function TargetTable({
                   </TableCell>
                   <TableCell className={styles.registryNameCell}>
                     <Text size={200} className={styles.registryNameText}>{target.target_registry_name}</Text>
+                    {target.agent_configuration_provenance && <Text block size={200}>
+                      {target.agent_configuration_provenance.origin === 'initializer' ? 'Initializer-defined' : 'Session-only'}
+                    </Text>}
                     {(isDefaultObjective(target) || isDefaultAdversarial(target)) && (
                       <div className={styles.defaultIndicators}>
                         {isDefaultObjective(target) && (
@@ -494,6 +497,10 @@ export default function TargetTable({
                         ? `${target.agent_configuration.harness_profile.harness_kind ?? 'ACP'} · ${target.agent_configuration.environment_template.environment}`
                         : formatParams(target.target_specific_params) || '—'}
                     </Text>
+                    {target.agent_configuration_provenance && <Text block size={200}>
+                      Profile: {target.agent_configuration_provenance.presets.harness_profile ?? 'custom'}
+                      {' · '}Template: {target.agent_configuration_provenance.presets.environment_template ?? 'custom'}
+                    </Text>}
                   </TableCell>
                 </TableRow>
 

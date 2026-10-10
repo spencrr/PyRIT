@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from pyrit.backend.models.common import MAX_ITEMS, REGISTRY_INSTANCE_NAME_PATTERN, IdentifierStr, PaginationInfo
 from pyrit.models import JSONValue, Parameter
+from pyrit.models.agent_setup import AgentPresetSelection
 from pyrit.models.catalog.target import TargetInstance
 
 __all__ = [
@@ -68,6 +69,10 @@ class CreateTargetRequest(BaseModel):
         description="Unique registry name; omitted only for legacy UI compatibility",
     )
     type: IdentifierStr = Field(..., description="Target type (e.g., 'OpenAIChatTarget')")
+    agent_presets: AgentPresetSelection | None = Field(
+        default=None,
+        description="Optional preset names whose current values must match agent_configuration.",
+    )
     params: dict[IdentifierStr, JSONValue] = Field(
         default_factory=dict, max_length=MAX_ITEMS, description="Target constructor parameters"
     )

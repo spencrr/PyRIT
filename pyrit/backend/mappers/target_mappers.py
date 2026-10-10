@@ -12,10 +12,12 @@ composite ``inner_targets`` (full instances, not bare identifiers), and a curate
 ``target_specific_params`` view of the non-promoted constructor params.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from pyrit.models import TargetIdentifier
 from pyrit.models.agent_execution import AgentTargetConfiguration
+from pyrit.models.agent_setup import AgentTargetProvenance
 from pyrit.models.catalog.target import TargetInstance
 from pyrit.models.model_inference import InferenceCapabilities
 from pyrit.prompt_target import PromptTarget
@@ -55,7 +57,12 @@ def _target_specific_params(target_identifier: TargetIdentifier) -> dict[str, An
     return {**extra, **explicit_specific} or None
 
 
-def target_object_to_instance(target_registry_name: str, target_obj: PromptTarget) -> TargetInstance:
+def target_object_to_instance(
+    target_registry_name: str,
+    target_obj: PromptTarget,
+    *,
+    registry_metadata: Mapping[str, Any] | None = None,
+) -> TargetInstance:
     """
     Build a TargetInstance DTO from a registry target object.
 
@@ -66,6 +73,7 @@ def target_object_to_instance(target_registry_name: str, target_obj: PromptTarge
     Args:
         target_registry_name: The human-friendly target registry name.
         target_obj: The domain PromptTarget object from the registry.
+        registry_metadata: Optional verified registration provenance.
 
     Returns:
         TargetInstance DTO with metadata derived from the object.
@@ -73,6 +81,7 @@ def target_object_to_instance(target_registry_name: str, target_obj: PromptTarge
     target_identifier = TargetIdentifier.from_component_identifier(target_obj.get_identifier())
     agent_configuration = getattr(target_obj, "agent_configuration", None)
     inference = target_obj.inference_capabilities
+    provenance = registry_metadata.get("agent_configuration_provenance") if registry_metadata else None
 
     return TargetInstance(
         target_registry_name=target_registry_name,
@@ -80,6 +89,9 @@ def target_object_to_instance(target_registry_name: str, target_obj: PromptTarge
         capabilities=target_obj.capabilities,
         inference_capabilities=inference if isinstance(inference, InferenceCapabilities) else None,
         agent_configuration=agent_configuration if isinstance(agent_configuration, AgentTargetConfiguration) else None,
+        agent_configuration_provenance=AgentTargetProvenance.model_validate(provenance)
+        if provenance is not None
+        else None,
         target_specific_params=_target_specific_params(target_identifier),
         inner_targets=_build_inner_targets(target_obj),
     )

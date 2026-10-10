@@ -46,6 +46,34 @@ export interface EnvironmentTemplate {
   readonly docker_cpus?: number
 }
 
+export interface RegisteredHarnessProfile {
+  readonly name: string
+  readonly profile: HarnessProfile
+  readonly initializer: string | null
+}
+
+export interface RegisteredEnvironmentTemplate {
+  readonly name: string
+  readonly template: EnvironmentTemplate
+  readonly initializer: string | null
+}
+
+export interface AgentPresetCatalog {
+  readonly harness_profiles: RegisteredHarnessProfile[]
+  readonly environment_templates: RegisteredEnvironmentTemplate[]
+  readonly unavailable_targets: Record<string, string>
+}
+
+export interface AgentPresetSelection {
+  readonly harness_profile?: string | null
+  readonly environment_template?: string | null
+}
+
+export interface AgentTargetProvenance {
+  readonly origin: 'initializer' | 'runtime'
+  readonly presets: AgentPresetSelection
+}
+
 export interface AgentTargetConfiguration {
   readonly name: string
   readonly model_binding: ModelBinding
@@ -475,6 +503,7 @@ export interface TargetIdentifier {
 export interface TargetInstance {
   inference_capabilities?: InferenceCapabilities
   agent_configuration?: AgentTargetConfiguration
+  agent_configuration_provenance?: AgentTargetProvenance
   target_registry_name: string
   /** Typed identity: class name, endpoint, model name, generation params, content hash. */
   identifier: TargetIdentifier
@@ -495,6 +524,7 @@ export interface CreateTargetRequest {
   type: string
   params: Record<string, unknown>
   auth_mode?: 'api_key' | 'identity'
+  agent_presets?: AgentPresetSelection
 }
 
 // --- Initializers ---

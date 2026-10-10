@@ -12,6 +12,7 @@ jest.mock("@/services/api", () => ({
     createTarget: jest.fn(),
     listTargetTypes: jest.fn(),
     listTargets: jest.fn(),
+    listAgentPresets: jest.fn(),
   },
 }));
 
@@ -457,6 +458,9 @@ describe("CreateTargetDialog", () => {
   beforeEach(() => {
     dialogAccessibilityObserver = watchDialogAccessibility();
     jest.clearAllMocks();
+    mockedTargetsApi.listAgentPresets.mockResolvedValue({
+      harness_profiles: [], environment_templates: [], unavailable_targets: {},
+    });
     mockedTargetsApi.listTargetTypes.mockResolvedValue(TARGET_TYPES);
     mockedTargetsApi.listTargets.mockResolvedValue({
       items: [],

@@ -29,10 +29,23 @@ from pyrit.backend.services.configuration_file_service import (
 from pyrit.backend.services.environment_file_service import EnvironmentFileConflictError, EnvironmentFileService
 from pyrit.common.yaml_helper import safe_load_yaml
 from pyrit.exceptions import KeyVaultInitializationException
+from pyrit.models.agent_setup import AgentPresetCatalog
+from pyrit.registry import AgentConfigurationRegistry
 from pyrit.setup.configuration_loader import ConfigurationLoader
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/config", tags=["config"], dependencies=[Depends(require_admin)])
+
+
+@router.get("/agent-presets")
+async def get_agent_presets_async() -> AgentPresetCatalog:
+    """
+    List runtime presets and their origins; never provision or resolve credentials.
+
+    Returns:
+        AgentPresetCatalog: A detached snapshot of the current setup registry.
+    """
+    return AgentConfigurationRegistry.get_registry_singleton().catalog()
 
 
 @router.get("/runtime")

@@ -5,6 +5,7 @@ import { toApiError } from './errors'
 import { compatibility, COMPATIBILITY_HEADER } from './compatibility'
 import { getGraphScopes } from '../auth/msalConfig'
 import type {
+  AgentPresetCatalog,
   TargetInstance,
   TargetListResponse,
   TargetTypeListResponse,
@@ -251,6 +252,9 @@ export const runtimeApi = {
 }
 
 export const targetsApi = {
+  listAgentPresets: async (): Promise<AgentPresetCatalog> => {
+    return (await apiClient.get<AgentPresetCatalog>('/config/agent-presets')).data
+  },
   listTargetTypes: async (): Promise<TargetTypeListResponse> => {
     const response = await apiClient.get('/targets/types')
     return response.data

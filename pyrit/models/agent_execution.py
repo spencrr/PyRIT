@@ -239,9 +239,7 @@ class EnvironmentTemplate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_template(self) -> "EnvironmentTemplate":
-        _validate_environment(
-            environment=self.environment, image=self.image, acknowledged=self.local_execution_acknowledged
-        )
+        _validate_environment(environment=self.environment, image=self.image, acknowledged=True)
         if self.environment == AgentEnvironment.LOCAL and self.workspace_base == AgentWorkspaceBase.IMAGE:
             raise ValueError("An image-provided workspace requires a Docker environment")
         return self
@@ -269,6 +267,16 @@ class AgentTargetConfiguration(BaseModel):
     max_inference_requests: int = Field(default=100, ge=1, le=100)
 
     _artifact_validator = field_validator("artifact_paths")(_validate_artifacts)
+
+    @model_validator(mode="after")
+    def _validate_execution_consent(self) -> "AgentTargetConfiguration":
+        template = self.environment_template
+        _validate_environment(
+            environment=template.environment,
+            image=template.image,
+            acknowledged=template.local_execution_acknowledged,
+        )
+        return self
 
     def to_profile(self) -> AgentProfile:
         """

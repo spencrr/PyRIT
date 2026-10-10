@@ -20,7 +20,7 @@ from filelock import BaseFileLock, FileLock
 
 from pyrit.agent.approvals import AgentApprovals
 from pyrit.agent.environment import ExecutionEnvironment
-from pyrit.agent.harness import inference_environment
+from pyrit.agent.harness import inference_environment, validate_harness_authentication
 from pyrit.agent.tool_evidence import AgentToolProjection, project_agent_tools
 from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.memory.agent_execution_store import AgentExecutionStore
@@ -32,6 +32,7 @@ from pyrit.models.agent_execution import (
     AgentExecutionState,
     AgentPermissionPolicy,
     AgentProfile,
+    AgentTargetConfiguration,
     AgentTurn,
     AgentTurnStatus,
 )
@@ -180,6 +181,12 @@ class AgentExecutionManager:
         """
         if not interactive and profile.permission_policy == AgentPermissionPolicy.ASK:
             raise ValueError("Automated agent runs require an explicit allow_once or deny permission policy")
+        if profile.target_registry_name is not None and model_binding is None:
+            raise ValueError("A target-backed agent execution requires a resolved model binding")
+        validate_harness_authentication(
+            harness=AgentTargetConfiguration.from_profile(profile).harness_profile,
+            target_backed=model_binding is not None,
+        )
         await self.start_async()
         async with self._admission:
             if self._closed:

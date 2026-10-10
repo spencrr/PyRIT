@@ -5,7 +5,7 @@
 
 from dataclasses import dataclass
 
-from pyrit.agent.harness import validate_inference_adapter
+from pyrit.agent.harness import validate_harness_authentication, validate_inference_adapter
 from pyrit.models.agent_execution import AgentTargetConfiguration, ModelBinding
 from pyrit.models.identifiers.target_identifier import TargetIdentifier
 from pyrit.models.model_inference import InferenceRequirements
@@ -34,6 +34,10 @@ def resolve_model_binding(configuration: AgentTargetConfiguration) -> ResolvedMo
         ValueError: The source is missing, changed, or incompatible.
     """
     binding = configuration.model_binding
+    validate_harness_authentication(
+        harness=configuration.harness_profile,
+        target_backed=binding.target_registry_name is not None,
+    )
     if binding.target_registry_name is None:
         return None
     validate_inference_adapter(

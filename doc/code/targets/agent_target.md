@@ -49,6 +49,17 @@ Registration does not provision resources. A new chat can derive a different
 model binding from its selected agent's configuration without mutating the
 original. Each registration is reusable within the current backend runtime;
 use initializers/configuration for definitions that must survive backend restart.
+The separate [`harness_profile`, `environment_template`, and `agent_target`
+initializers](../../getting_started/pyrit_conf.md#reusable-agent-profiles-and-environment-templates)
+define named reusable values and compose them through the same `TargetRegistry`.
+They also work from Python or private initializer scripts; no new configuration
+store is required.
+The form selects these registered presets by name, displays their initializer
+origin, and keeps their settings read-only until explicitly customized. It also
+offers custom configuration when no preset is available. Selected snapshots are
+checked against the registry on creation; reloading changed presets never silently
+updates the target being authored. Registration in the GUI remains session-only,
+even when its inputs came from initializers.
 
 Changing configuration creates a new target, not an in-place change to an active
 conversation. The original flat `AgentProfile` input and retained execution
@@ -253,6 +264,37 @@ authentication** if needed. A private local workspace/home also does not prevent
 the harness from discovering configuration in ancestor directories. Use a
 results root outside source checkouts when inherited project configuration would
 affect the test; local execution is not a sandbox.
+
+### Authentication boundaries
+
+The native tools-off `GitHubCopilotTarget` retains its existing precedence:
+explicit `github_token`, then `GITHUB_TOKEN`, then SDK login discovery. For a
+hosted CoPyRIT instance, that is the **backend runtime's** login context, not the
+web operator's identity.
+
+Managed ACP profiles instead forward only their explicit `credential_env`
+references into the tested process/container. These are exposed to the agent and
+its tools, and indirectly to users who can prompt that target. Values are resolved
+at launch; they are not refreshed inside the environment. Docker environment
+values are inspectable by Docker administrators while the container exists.
+
+Selecting a PyRIT model target does not clear independent tool credentials.
+Backend validation rejects known native-model credential variables under BYOK
+(including Copilot's `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN`), and
+rejects references that override the private home, command search path, or relay
+configuration. Use narrowly scoped, tool-specific credential references. A name
+or a "tool-only" label does not prove a credential's permissions.
+
+Current BYOK adapters do not perform ACP authentication negotiation. An explicit
+`authentication_method` is therefore rejected, not silently ignored, and must be
+removed deliberately when changing from harness-managed access. Harness-managed
+mode still validates the requested authentication method against the ACP
+handshake.
+
+The source model target's provider key/token is **not forwarded** to the agent;
+the model connection receives only an execution-scoped relay credential. This
+is a delivery contract, not a claim that local execution under the same OS user
+cannot access backend secrets or project files.
 
 OpenCode **1.18.35** is the validation version. Its documented
 [`opencode acp`](https://opencode.ai/docs/acp/) entry point and

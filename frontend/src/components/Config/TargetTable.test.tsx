@@ -109,6 +109,24 @@ describe('TargetTable', () => {
     window.localStorage.clear()
   })
 
+  it('distinguishes initializer-defined targets from session-only preset compositions', () => {
+    const initialized = makeTarget({ target_registry_name: 'configured_agent', target_type: 'AgentTarget' })
+    initialized.agent_configuration_provenance = {
+      origin: 'initializer', presets: { harness_profile: 'team_harness', environment_template: 'team_image' },
+    }
+    const session = makeTarget({ target_registry_name: 'session_agent', target_type: 'AgentTarget' })
+    session.agent_configuration_provenance = {
+      origin: 'runtime', presets: { harness_profile: 'team_harness', environment_template: null },
+    }
+    render(<TestWrapper><TargetTable {...defaultProps} targets={[initialized, session]} /></TestWrapper>)
+    const first = within(screen.getByRole('row', { name: /configured_agent/ }))
+    const second = within(screen.getByRole('row', { name: /session_agent/ }))
+    expect(first.getByText('Initializer-defined')).toBeVisible()
+    expect(first.getByText('Profile: team_harness · Template: team_image')).toBeVisible()
+    expect(second.getByText('Session-only')).toBeVisible()
+    expect(second.getByText('Profile: team_harness · Template: custom')).toBeVisible()
+  })
+
   it('should render a flat table with all targets visible', () => {
     render(
       <TestWrapper>

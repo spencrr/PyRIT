@@ -5,8 +5,62 @@
 
 import json
 
-from pyrit.models.agent_execution import AgentHarnessKind
+from pyrit.models.agent_execution import AgentHarnessKind, HarnessProfile
 from pyrit.models.model_inference import InferenceWireApi
+
+
+def validate_harness_authentication(*, harness: HarnessProfile, target_backed: bool) -> None:
+    """
+    Validate credential delivery consistently for Python, initializers, and REST.
+
+    Raises:
+        ValueError: Credentials override execution settings or enable incompatible native model access.
+    """
+    reserved = {
+        "HOME",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "PYRIT_RELAY_TOKEN",
+        "OPENCODE_CONFIG_CONTENT",
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_DIR",
+        "COPILOT_HOME",
+        "COPILOT_PROVIDER_BASE_URL",
+        "COPILOT_PROVIDER_TYPE",
+        "COPILOT_PROVIDER_WIRE_API",
+        "COPILOT_PROVIDER_API_KEY",
+        "COPILOT_MODEL",
+    }
+    conflicts = {name for name in harness.credential_env if name.upper() in reserved}
+    if conflicts:
+        raise ValueError(
+            f"Credential references cannot override execution configuration: {', '.join(sorted(conflicts))}"
+        )
+    if not target_backed:
+        return
+    if harness.authentication_method is not None:
+        raise ValueError("The current BYOK adapters do not support ACP authentication_method; remove it explicitly")
+    native_credentials = (
+        {"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}
+        if harness.harness_kind == AgentHarnessKind.COPILOT
+        else {"OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"}
+    )
+    conflicts = {name for name in harness.credential_env if name.upper() in native_credentials}
+    if conflicts:
+        raise ValueError(
+            "BYOK cannot forward native model credentials: "
+            f"{', '.join(sorted(conflicts))}. Use separately scoped, tool-specific references."
+        )
 
 
 def validate_inference_adapter(*, kind: AgentHarnessKind, wire_api: InferenceWireApi) -> None:
