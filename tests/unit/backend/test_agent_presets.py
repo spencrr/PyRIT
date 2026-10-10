@@ -82,6 +82,12 @@ def test_catalog_is_admin_only_and_returns_detached_canonical_models() -> None:
     ]
     assert body["environment_templates"][0]["initializer"] == "PrivateEnvironmentInitializer"
     assert "not-for-export" not in response.text
+    docker = {field["name"]: field for field in body["environment_parameters"]["docker"]}
+    local = {field["name"]: field for field in body["environment_parameters"]["local"]}
+    assert set(docker) == {"working_directory", "docker_network", "docker_memory", "docker_cpus"}
+    assert set(local) == {"working_directory"}
+    assert docker["docker_memory"]["default"] == EnvironmentTemplate.model_fields["docker_memory"].default
+    assert docker["docker_cpus"]["type_name"] == "float"
     body["environment_templates"][0]["template"]["image"] = "changed"
     assert AgentConfigurationRegistry.get_registry_singleton().get_environment("workspace").image == "team:1"
     assert peek_agent_execution_manager() is before

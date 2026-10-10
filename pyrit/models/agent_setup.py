@@ -7,9 +7,10 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from pyrit.models.agent_execution import EnvironmentTemplate, HarnessProfile
+from pyrit.models.agent_execution import AgentEnvironment, EnvironmentTemplate, HarnessProfile
 from pyrit.models.identifiers.class_name_utils import validate_registry_name
 from pyrit.models.model_inference import InferenceWireApi
+from pyrit.models.parameter import Parameter
 
 
 def _name(value: str) -> str:
@@ -53,6 +54,7 @@ class AgentPresetCatalog(BaseModel):
     harness_profiles: list[RegisteredHarnessProfile] = Field(default_factory=list)
     environment_templates: list[RegisteredEnvironmentTemplate] = Field(default_factory=list)
     unavailable_targets: dict[str, str] = Field(default_factory=dict)
+    environment_parameters: dict[AgentEnvironment, list[Parameter]] = Field(default_factory=dict)
 
 
 class AgentPresetSelection(BaseModel):

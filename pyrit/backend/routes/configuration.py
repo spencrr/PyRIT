@@ -29,8 +29,10 @@ from pyrit.backend.services.configuration_file_service import (
 from pyrit.backend.services.environment_file_service import EnvironmentFileConflictError, EnvironmentFileService
 from pyrit.common.yaml_helper import safe_load_yaml
 from pyrit.exceptions import KeyVaultInitializationException
+from pyrit.models.agent_execution import AgentEnvironment, EnvironmentTemplate
 from pyrit.models.agent_setup import AgentPresetCatalog
 from pyrit.registry import AgentConfigurationRegistry
+from pyrit.setup.agent_initialization import initializer_parameters
 from pyrit.setup.configuration_loader import ConfigurationLoader
 
 logger = logging.getLogger(__name__)
@@ -45,7 +47,18 @@ async def get_agent_presets_async() -> AgentPresetCatalog:
     Returns:
         AgentPresetCatalog: A detached snapshot of the current setup registry.
     """
-    return AgentConfigurationRegistry.get_registry_singleton().catalog()
+    catalog = AgentConfigurationRegistry.get_registry_singleton().catalog()
+    fields = initializer_parameters(model=EnvironmentTemplate)
+    catalog.environment_parameters = {
+        environment: [
+            parameter
+            for parameter in fields
+            if parameter.name == "working_directory"
+            or (environment == AgentEnvironment.DOCKER and parameter.name.startswith("docker_"))
+        ]
+        for environment in AgentEnvironment
+    }
+    return catalog
 
 
 @router.get("/runtime")
