@@ -39,9 +39,13 @@ export default function AgentActivity({ turn, activity, approvals = [], onDecisi
     <details className={styles.tool}>
       <summary>{tool.title} — {tool.status}</summary>
       <Text block size={200}>Tool name: {tool.name ?? 'not reported'} · ID: {tool.id}</Text>
+      {turn.status !== 'running' && <Text block size={200}>
+        Scoring evidence: {turn.tool_evidence_omissions?.[tool.id]?.replace(/_/g, ' ')
+          ?? (turn.tool_evidence_messages ? 'canonical tool messages; see transcript evidence below' : 'not established')}
+      </Text>}
       <Text block size={200}>Observed {new Date(tool.firstSeen).toLocaleTimeString()} – {new Date(tool.lastSeen).toLocaleTimeString()}</Text>
       <Text block weight="semibold">Input</Text><pre className={styles.raw}>{details(tool.rawInput)}</pre>
-      <Text block weight="semibold">Output</Text><pre className={styles.raw}>{details(tool.rawOutput ?? tool.content)}</pre>
+      <Text block weight="semibold">Output</Text><pre className={styles.raw}>{details(tool.rawOutput !== undefined ? tool.rawOutput : tool.content)}</pre>
       {tool.locations !== undefined && <><Text block>Affected locations (agent-reported)</Text><pre className={styles.raw}>{details(tool.locations)}</pre></>}
     </details>
     {approvals.filter((approval) => approval.turn_id === turn.id && approval.tool_call_id === tool.id).map(approvalCard)}
@@ -77,6 +81,7 @@ export default function AgentActivity({ turn, activity, approvals = [], onDecisi
       {turn.error && <Text>{turn.error}</Text>}
       {turn.status !== 'running' && <Text size={200}>
         {turn.capture_complete ? 'Exposed ACP events retained; internal tool coverage is not guaranteed.' : 'Capture is incomplete. Missing events do not establish that an action did not occur.'}
+        {turn.tool_evidence_messages != null && ` ${turn.tool_evidence_messages} canonical tool messages projected. Missing tool evidence is undetermined, not false.`}
       </Text>}
     </section>
   )

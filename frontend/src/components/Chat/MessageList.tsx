@@ -723,7 +723,14 @@ export default function MessageList({
                           className={styles.pieceRow}
                           data-testid={`message-piece-${index}-${piece.pieceIndex}`}
                         >
-                          {isTextInActivity?.(message) ? (
+                          {message.agentToolEvidence ? (
+                            <details>
+                              <summary>{message.role.startsWith('simulated_') ? 'Simulated tool history' : 'Stored tool evidence'}
+                                {` · ${message.agentToolEvidence.source_call_id} · journal event ${message.agentToolEvidence.event_sequence}`}
+                              </summary>
+                              <pre className={styles.messageJsonBlock}>{formatted ?? piece.content}</pre>
+                            </details>
+                          ) : isTextInActivity?.(message) ? (
                             <Text size={200}>Response shown in the ordered agent activity above.</Text>
                           ) : message.isLoading ? (
                             <Text className={styles.loadingEllipsis}>{piece.content}</Text>

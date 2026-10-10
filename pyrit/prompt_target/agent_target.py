@@ -3,23 +3,38 @@
 
 """A real ACP harness as a PyRIT target, without replacing its internal tool loop."""
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from pyrit.models import ComponentIdentifier, Message, construct_response_from_request
-from pyrit.models.agent_execution import AgentProfile, AgentTargetConfiguration
+from pyrit.models.agent_execution import AgentProfile, AgentTargetConfiguration, AgentWorkspaceBase, legacy_harness_kind
+from pyrit.models.target.agent_tool_evidence import AgentToolEvidence
 from pyrit.models.target_response import TargetResponse, TargetResponseStatus
 from pyrit.prompt_target.common.prompt_target import PromptTarget
-from pyrit.prompt_target.common.target_capabilities import TargetCapabilities
+from pyrit.prompt_target.common.target_capabilities import CapabilityName, TargetCapabilities
 from pyrit.prompt_target.common.target_configuration import TargetConfiguration
+from pyrit.prompt_target.common.target_send_context import TargetSendContext
 
 if TYPE_CHECKING:
     from pyrit.agent.execution_manager import AgentExecutionManager
+    from pyrit.message_normalizer import MessageListNormalizer
 
 
 class AgentTarget(PromptTarget):
     """Send each new user turn to a fresh-per-conversation ACP execution."""
 
-    _DEFAULT_CONFIGURATION = TargetConfiguration(capabilities=TargetCapabilities(supports_multi_turn=True))
+    _DEFAULT_CONFIGURATION = TargetConfiguration(
+        capabilities=TargetCapabilities(
+            supports_multi_turn=True,
+            output_modalities=frozenset(
+                {
+                    frozenset({"text"}),
+                    frozenset({"function_call"}),
+                    frozenset({"function_call_output"}),
+                }
+            ),
+        )
+    )
 
     def __init__(
         self,
@@ -79,6 +94,13 @@ class AgentTarget(PromptTarget):
 
     def _build_identifier(self) -> ComponentIdentifier:
         values = self.profile.model_dump(mode="json")
+        if self.profile.harness_kind == legacy_harness_kind(self.profile.command):
+            values.pop("harness_kind")
+        original_base = AgentWorkspaceBase.IMAGE if self.profile.environment == "docker" else AgentWorkspaceBase.EMPTY
+        if self.profile.workspace_base is None or self.profile.workspace_base == original_base:
+            values.pop("workspace_base")
+        if self.profile.working_directory == ".":
+            values.pop("working_directory")
         for key, default in (("approval_timeout_seconds", 120), ("interactive_hold_seconds", 300)):
             if values[key] == default:
                 values.pop(key)
@@ -93,6 +115,64 @@ class AgentTarget(PromptTarget):
             ):
                 values.pop(key)
         return self._create_identifier(params={"profile": values})
+
+    async def _get_normalized_conversation_async(
+        self,
+        *,
+        message: Message,
+        normalizer_overrides: Mapping[CapabilityName, "MessageListNormalizer[Message]"] | None = None,
+        send_context: TargetSendContext | None = None,
+    ) -> list[Message]:
+        """
+        Remove only verified native execution evidence from the target-facing history.
+
+        Returns:
+            list[Message]: Prepared user/history representation without replaying native tool effects.
+
+        Raises:
+            ValueError: Recorded tool evidence was copied, simulated, or modified.
+        """
+        messages = await super()._get_normalized_conversation_async(
+            message=message,
+            normalizer_overrides=normalizer_overrides,
+            send_context=send_context,
+        )
+        expected: dict[str, Message] = {}
+        retained: list[Message] = []
+        for historical in messages[:-1]:
+            refs = [AgentToolEvidence.from_metadata(piece.prompt_metadata) for piece in historical.message_pieces]
+            if not any(refs):
+                retained.append(historical)
+                continue
+            if len(refs) != 1 or refs[0] is None:
+                raise ValueError("Native tool evidence must belong to the live agent execution")
+            reference = refs[0]
+            manager = self._manager()
+            record = manager.records.get(reference.execution_id)
+            if (
+                record is None
+                or record.conversation_id != message.get_piece().conversation_id
+                or record.target_id != self.get_identifier().hash
+            ):
+                raise ValueError("Copied tool history cannot restore an agent execution")
+            key = str(historical.get_piece().id)
+            if key not in expected:
+                projection = await manager.tool_evidence_async(
+                    execution_id=reference.execution_id,
+                    turn_id=reference.turn_id,
+                )
+                expected.update({str(item.get_piece().id): item for item in projection.messages})
+            source = expected.get(key)
+            piece = historical.get_piece()
+            if source is None or (
+                piece.role != source.get_piece().role
+                or piece.original_value != source.get_piece().original_value
+                or piece.original_value_data_type != source.get_piece().original_value_data_type
+                or piece.converted_value != source.get_piece().original_value
+                or piece.converted_value_data_type != source.get_piece().original_value_data_type
+            ):
+                raise ValueError("Native tool evidence was modified; start a fresh conversation instead")
+        return [*retained, messages[-1]]
 
     async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> TargetResponse:
         """
@@ -125,7 +205,11 @@ class AgentTarget(PromptTarget):
             "agent_stop_reason": turn.stop_reason,
             "agent_capture_complete": turn.capture_complete,
         }
-        messages = []
+        projection = await self._manager().tool_evidence_async(execution_id=record.id, turn_id=turn.id)
+        messages = projection.messages
+        for item in messages:
+            item.get_piece().prompt_metadata.update(metadata)
+            item.get_piece().prompt_metadata["target_response_status"] = turn.status.value
         if turn.response_text:
             response = construct_response_from_request(
                 request=request, response_text_pieces=[turn.response_text], response_type="text"

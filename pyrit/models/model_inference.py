@@ -26,7 +26,13 @@ class InferenceRequirements(BaseModel):
 
 
 class InferenceCapabilities(BaseModel):
-    """An explicit implementation contract; model tool behavior still needs verification."""
+    """
+    Raw-wire adapter capabilities, separate from high-level target message capabilities.
+
+    ``tool_calls`` means tool declarations/calls/results pass through without local
+    execution. It neither enables tool-history input modalities nor proves a tool
+    ran. Model tool behavior still needs verification.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     wire_apis: frozenset[InferenceWireApi]

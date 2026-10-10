@@ -12,9 +12,13 @@ Model binding + Harness profile + Environment template
                          v
 Chat / scenario -> Active execution -> ACP -> Tested harness
                          |
-                   Durable evidence
-                         |
-                 Inline chat tool activity
+                   Durable ACP journal
+                    /             \
+         Ordered chat activity   Validated tool projection
+                                         |
+                               Normalizer -> stored Messages
+                                         |
+                                MessageToolCallScorer
 ```
 
 ## Terminology and setup
@@ -33,10 +37,11 @@ Chat / scenario -> Active execution -> ACP -> Tested harness
 - **Provisioning** creates and releases owned resources. ACP communicates with the
   harness; it does not provide sandboxing.
 
-The same **Configure agent target** form is available from **Registry -> Targets
--> New agent target** and **New Chat -> Configure agent**. Both require permission
-to configure executable targets. Existing registered targets remain selectable by
-operators without granting that configuration privilege.
+**New Target** is shared by the registry and New Chat. Choose an ordinary target
+type or **Tool-capable agent (ACP)**. The latter requires permission to configure
+executable targets; existing registered targets remain selectable without that
+configuration privilege. The native tools-off SDK target stays in the ordinary
+target type picker.
 
 The form separates model binding, harness profile, and environment template.
 Advanced fields expose operation/lifetime limits and selected retained artifacts.
@@ -56,6 +61,29 @@ attack releases its conversations; interactive chat retains them until explicit
 closure, idle expiry, maximum lifetime, or backend shutdown.
 
 ## Benign receipt demonstration
+
+### Choosing the target surface
+
+| Use | Model binding | Harness | Execution environment |
+| --- | --- | --- | --- |
+| Existing model target | Provider connection/authentication owned by the target | Target adapter; some targets have a high-level tool loop | No managed agent workspace |
+| `GitHubCopilotTarget` | Copilot-managed model selection/login | Native Copilot SDK, deliberately **tools off** | Local working directory; no provisioned sandbox |
+| `AgentTarget` | Harness-managed or compatible PyRIT raw-inference target | Tool-enabled agent driven through ACP | Fresh owned local/Docker environment per conversation |
+
+Use **Create Target -> GitHubCopilotTarget** for native text or compatible
+self-contained judge calls (`uv sync --extra github-copilot`). Use **New Target ->
+Tool-capable agent (ACP)** to test a tool-capable harness. The native SDK
+target is not wrapped inside ACP or advertised as an inference-only source.
+Its existing judge retries and session retirement remain native SDK behavior.
+An agent under test and a tools-off Copilot judge can therefore be separate targets
+in the same evaluation; the agent target itself is not a judge.
+
+This complements the native SDK integration in
+[microsoft/PyRIT#2828](https://github.com/microsoft/PyRIT/pull/2828), the tool-history
+contracts in [microsoft/PyRIT#2852](https://github.com/microsoft/PyRIT/pull/2852), and
+the message tool scorer in [microsoft/PyRIT#2854](https://github.com/microsoft/PyRIT/pull/2854).
+
+### Running the receipt
 
 From the repository root:
 
@@ -155,7 +183,7 @@ assume the model selected by one harness is available in another.
 ## BYOK through an existing PyRIT target
 
 ```text
-PyRIT -- ACP --> Copilot CLI
+PyRIT -- ACP --> Copilot / OpenCode
                     |
                     | standard model API + execution-scoped credential
                     v
@@ -171,20 +199,65 @@ PyRIT -- ACP --> Copilot CLI
 
 This is **not** an endpoint-settings exporter: every model request invokes the
 bound target's `open_inference_async` capability. The source target retains its
-provider credential or token callback. Copilot receives only a revocable,
+provider credential or token callback. The harness receives only a revocable,
 execution-scoped relay credential. No GitHub model-routing credential is needed
 in BYOK mode; GitHub-dependent tools may have their own authentication needs.
 
-In **Configure agent target**, choose an inference protocol and select an
+In **New Target -> Tool-capable agent (ACP)**, select an
 **existing PyRIT target** as the model source. Options expose capability-based
 incompatibility reasons. Target class names are not used for eligibility.
 An adapter claiming compatibility is not proof that the selected model reliably
 uses tools: test the actual model/harness combination.
 
-The provider-configuration launcher currently supports Copilot CLI. Other
-harnesses need their own launch adapter; they are rejected for target-backed BYOK
-rather than silently ignoring Copilot's environment variables. This is separate
-from source-target eligibility, which remains capability-driven.
+Provider configuration uses an explicit harness adapter, not the executable's
+filename. Copilot supports the existing wire APIs; OpenCode currently supports
+Chat Completions. Custom ACP commands use harness-managed model access until a
+provider-configuration adapter exists. This is separate from source-target
+eligibility, which remains capability-driven.
+
+### Harness and workspace selection
+
+`HarnessProfile(harness_kind="opencode")` defaults to `("opencode", "acp")`.
+`harness_kind="copilot"` defaults to the Copilot ACP command. Either allows an
+explicit executable path. `harness_kind="acp"` requires a command and passes no
+Copilot/OpenCode configuration. Older custom commands stay generic ACP; they
+are not silently opted into a new adapter.
+
+The harness owns provider configuration and private-home settings. The
+environment owns process/container placement and filesystem preparation. For
+Docker, `workspace_base="image"` uses the image's `/workspace`;
+`workspace_base="empty"` uses a unique private path instead. Local execution
+always starts with a private empty workspace. `working_directory` is relative to
+that root, while retained artifact paths remain root-relative.
+The optional advanced `fixture_directory` overlays a private copy; images do not
+require a runtime directory copy. No host home or repository is mounted.
+Empty workspace directories, relative working directories, imported files, and
+the private home are prepared for the image's configured user without running
+the harness as root or granting it additional capabilities. Named users/groups
+are resolved from the stopped image's account files; images without those files
+should specify a numeric `USER uid:gid`. Image mode retains the existing workspace
+root's permissions, so the image must make that root writable where required.
+
+OpenCode's inline configuration sets permission handling to `ask`, disables
+automatic sharing/updates, and routes both main and small-model inference through
+the bound target. PyRIT answers the permission requests it receives with its
+configured policy. Workspace/agent configuration and plugins can change which
+requests OpenCode raises; this is not an enforcement boundary or tool allowlist.
+The current OpenCode adapter advertises a 128,000-token context and 8,192-token
+output limit rather than discovering model limits from the source target. Verify
+compatibility with smaller-limit models before evaluation.
+
+Harness-managed access forwards only explicitly selected credential references;
+no backend login is implicitly copied. Configure these under **Launch and
+authentication** if needed. A private local workspace/home also does not prevent
+the harness from discovering configuration in ancestor directories. Use a
+results root outside source checkouts when inherited project configuration would
+affect the test; local execution is not a sandbox.
+
+OpenCode **1.18.35** is the validation version. Its documented
+[`opencode acp`](https://opencode.ai/docs/acp/) entry point and
+[configuration precedence](https://opencode.ai/docs/config/) are used directly.
+No claim is made that every ACP extension, model, or OpenCode version is supported.
 
 In Python, after registering a compatible source target:
 
@@ -216,6 +289,13 @@ provider response bytes/events and must not execute the harness's tools or
 replay PyRIT history. Requirements include protocol, streaming, tool passthrough,
 and required input modalities. Responses bindings select `wire_api="responses"`
 on the model binding.
+
+This does not replace `OpenAIResponseTarget(execute_tools=False)`: that existing
+high-level API returns the first `Message` response without executing local tools,
+but still performs message/history normalization and typed provider handling.
+The inference relay instead needs unbuffered wire payloads, provider SSE/error
+bytes, and no history replay. `InferenceCapabilities.tool_calls` describes this
+wire passthrough only, not tool-history input support or observed execution.
 
 Source targets with host-side tool configuration or custom body overrides that
 cannot be safely composed are rejected. Configured sampling/output parameters
@@ -276,6 +356,16 @@ uv run --extra agents python -m build_scripts.agent_byok_demo --results dbdata\b
 
 # Build the 1.0.93 image and configure Docker relay reachability as above first.
 uv run --extra agents python -m build_scripts.agent_byok_demo --docker --results dbdata\byok-docker
+
+# OpenCode installed locally, or supply --executable with its full path.
+uv run --extra agents python -m build_scripts.agent_byok_demo --harness opencode --results dbdata\opencode-local
+
+# Image-owned starting workspace; no runtime fixture import.
+docker build --tag pyrit-opencode-receipt:1.18.35 --file docker\agent_receipt\Dockerfile.opencode .
+uv run --extra agents python -m build_scripts.agent_byok_demo --harness opencode --docker --results dbdata\opencode-docker
+
+# Verify an explicit permission refusal, without requiring a fabricated text answer.
+uv run --extra agents python -m build_scripts.agent_byok_demo --harness opencode --permission-policy deny --results dbdata\opencode-denied
 ```
 
 Chat Completions was verified end to end in both local and Docker modes.
@@ -336,7 +426,7 @@ checkout uses separate `technique`, `target`, `converter`, and `scorer`
 initializers. Use the explicit demo configuration above, then restart the
 backend. Do not disable the readiness gate or hide the failed initializer.
 
-Open **Registry -> Targets -> New agent target**, or **Configure agent** in a new
+Open **Registry -> Targets -> New Target**, or **New target** in a new
 chat, to register a configured target. Registered targets become available in the
 existing chat and scanner selectors.
 
@@ -506,14 +596,53 @@ an unfinished turn is incomplete or unknown, never an inferred negative result.
 visibility into every internal agent operation.
 
 ACP tool reports and some tool fields are optional. Missing events do not prove
-that a tool was never executed. The UI displays the latest 500 retained events;
-the cursor API exposes the rest up to the configured capture budget.
+that a tool was never executed. The live feed catches up through retained journal
+pages up to the configured capture budget.
+
+### Existing tool scorers and canonical messages
+
+The agent adapter projects a turn's retained journal into existing
+`FunctionCallContent` / `FunctionOutputContent` messages. It requires an explicit
+programmatic `name` and object-shaped `rawInput`; it never guesses the name from
+`title`. An invocation-bearing output additionally requires reported execution
+(`in_progress` before the result, or `completed`) and `rawOutput`. A failed tool
+counts as an attempt only when execution was reported. Denials, duplicate IDs,
+conflicting reports, request-only calls, and missing results do not become
+successful invocation evidence. A display-only update still stays in the journal.
+
+Each canonical piece carries execution/turn/call/event provenance and outputs
+carry the existing `ToolExecutionMetadata(invoked=True)` contract. Call IDs are
+scoped to execution and turn. `MessageToolCallScorer` can now evaluate these with
+`ToolsCalled`, including a completed **tool-only** turn; its existing conversation
+prefix, simulated-history exclusions, and undetermined-not-false rules apply.
+Response converters do not rewrite canonical tool call/result messages.
+Each completed turn pins its journal prefix so late reports cannot change already
+projected evidence. Manual chat records the final returned response (including
+a tool-only result), rather than an earlier assistant tool request, as the attack's
+scoring reference.
+
+Persisted native tool messages are evidence, not replay instructions. On the next
+turn the adapter verifies them against the journal and removes only those verified
+pieces from the target-facing history. Arbitrary/simulated tool history remains
+unsupported, and copying history cannot restore a native session.
+
+The scripted peer reports explicit names for testing. Real Copilot ACP reports
+may omit them, in which case tool scoring remains undetermined rather than using
+the human-readable title as a name. Chat exposes per-call omission reasons and
+canonical provenance while preserving piece-local scores. Exports retain
+canonical messages and a separately labelled snapshot of loaded agent activity,
+with capture/feed state; that snapshot is not a complete raw-journal export.
+No synthetic OTel trace IDs/spans are minted. `OtelToolCallScorer` still requires
+real correlated trace evidence from its configured source; it can be combined
+with message tool scoring using the existing composite scorer.
 
 `TargetResponse` preserves message-list compatibility while carrying an explicit
 terminal status and evidence references. The prompt normalizer persists the
 request and any partial response, then raises `TargetResponseUnavailableError`
-for cancelled/failed/unknown or tool-only outcomes. Message-oriented attacks and
-scorers cannot accidentally treat these as completed text answers.
+for cancelled/failed/unknown outcomes or completion without any scorable message.
+A completed tool-only response with canonical evidence reaches message scoring
+without fabricating assistant text. Text-oriented scorers still require suitable
+text; use `MessageToolCallScorer` for the tool evidence.
 
 Manual chat handles that explicit outcome without inventing a processing-error
 assistant message. The inline activity shows cancellation or tool-only completion,

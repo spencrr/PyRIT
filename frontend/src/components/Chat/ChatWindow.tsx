@@ -34,7 +34,6 @@ import ConverterPanel from './ConverterPanel'
 import TargetBadge from './TargetBadge'
 import ChatTargetPicker from './ChatTargetPicker'
 import { generateClientId } from '@/utils/clientId'
-import { targetType } from '@/utils/targetIdentity'
 import ObjectiveHeader from './ObjectiveHeader'
 import ConversationEditor from './ConversationEditor'
 import type { ConversationEditorHandle } from './ConversationEditor'
@@ -45,7 +44,7 @@ import type { PieceConversion } from './converterTypes'
 import { useChatConverters } from '@/hooks/useChatConverters'
 import { useRuntime } from '@/hooks/useRuntime'
 import { useUserPreferences } from '@/hooks/useUserPreferences'
-import AgentTargetDialog from '@/components/Config/AgentTargetDialog'
+import CreateTargetDialog from '@/components/Config/CreateTargetDialog'
 import { useAgentExecution } from '@/hooks/useAgentExecution'
 import AgentActivity from './AgentActivity'
 import AgentExecutionStatus from './AgentExecutionStatus'
@@ -399,8 +398,9 @@ export default function ChatWindow({
   const inputBoxRef = useRef<ChatInputAreaHandle>(null)
   const recoveryInFlightRef = useRef(false)
   const viewedConversationId = activeConversationId ?? conversationId
-  const isAgentTarget = (activeTarget && targetType(activeTarget) === 'AgentTarget')
-    || attackTarget?.target_type === 'AgentTarget'
+  const isAgentTarget = Boolean(activeTarget?.agent_configuration
+    || messages.some((message) => message.agentTurnId && ['assistant', 'tool'].includes(message.role))
+    || (!activeTarget && attackTarget?.target_type === 'AgentTarget'))
   useEffect(() => {
     if (editDraft && (editDraft.sourceConversationId !== viewedConversationId || editDraft.sourceAttackId !== attackResultId)) {
       discardEditor()
@@ -651,9 +651,11 @@ export default function ChatWindow({
     if (!last || last.status === 'running') return
     const requestPresent = messages.some((message: Message) => message.pieceIds?.includes(last.request_id))
     const replyPresent = !last.response_text || messages.some((message: Message) => (
-      message.role === 'assistant' && message.agentTurnId === last.id
+      message.role === 'assistant' && message.agentTurnId === last.id && !message.agentToolEvidence
     ))
-    if (!requestPresent || !replyPresent) {
+    const toolEvidencePresent = messages.filter((message) => message.agentToolEvidence?.turn_id === last.id).length
+      >= (last.tool_evidence_messages ?? 0)
+    if (!requestPresent || !replyPresent || !toolEvidencePresent) {
       await loadConversation(attackResultId, viewedConversationId)
     }
   }
@@ -1618,7 +1620,15 @@ export default function ChatWindow({
     isExportingRef.current = true
     setIsExporting(true)
     try {
-      await exportConversation({ messages, conversationId: activeConversationId ?? conversationId, format })
+      const exportMessages = messages.map((message, index): Message => {
+        const turn = agentTurnForMessage(message, index)
+        return turn && agent.execution ? {
+          ...message,
+          agentActivity: { executionId: agent.execution.id, turn, activity: agent.turns[turn.id],
+            sourceCoverage: agent.execution.source_coverage, feed: agent.feed },
+        } : message
+      })
+      await exportConversation({ messages: exportMessages, conversationId: activeConversationId ?? conversationId, format })
     } catch (err) {
       console.error('Failed to export conversation:', err)
     } finally {
@@ -1663,8 +1673,8 @@ export default function ChatWindow({
           disabled={isSavingEditor} onClick={() => editorRef.current?.convertConversation()}>Convert Conversation</Button>}
       </div>
       <div className={mergeClasses(styles.ribbonActions, toolbarContainer ? styles.sharedActions : undefined)}>
-        {!attackResultId && editDraft === null && canConfigureAgents && onAgentTargetCreated && (
-          <Button disabled={isSending} onClick={() => setAgentDialogOpen(true)}>Configure agent</Button>
+        {!attackResultId && editDraft === null && onAgentTargetCreated && (
+          <Button disabled={isSending} onClick={() => setAgentDialogOpen(true)}>New target</Button>
         )}
         <Tooltip content="Render all messages as Markdown by default" relationship="label">
           <Switch
@@ -1745,8 +1755,8 @@ export default function ChatWindow({
 
   return (
     <div className={styles.root}>
-      {agentDialogOpen && onAgentTargetCreated && <AgentTargetDialog selectForChat
-        initialConfiguration={activeTarget?.agent_configuration}
+      {agentDialogOpen && onAgentTargetCreated && <CreateTargetDialog open selectForChat canConfigureAgents={canConfigureAgents}
+        initialAgentConfiguration={activeTarget?.agent_configuration} existingTargets={availableTargets}
         onClose={() => setAgentDialogOpen(false)} onCreated={(target: TargetInstance) => {
           setAgentDialogOpen(false)
           onAgentTargetCreated(target)

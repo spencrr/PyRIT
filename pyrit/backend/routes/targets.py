@@ -19,13 +19,16 @@ from pyrit.backend.models.targets import (
 )
 from pyrit.backend.services.target_service import get_target_service
 from pyrit.models.catalog.target import TargetInstance
+from pyrit.prompt_target import AgentTarget
+from pyrit.registry import TargetRegistry
 
 router = APIRouter(prefix="/targets", tags=["targets"])
 
 
 def require_agent_target_admin(request: CreateTargetRequest, http_request: Request) -> None:
     """Restrict configuration of executable agent profiles to administrators."""
-    if request.type == "AgentTarget":
+    registry = TargetRegistry.get_registry_singleton()
+    if request.type in registry and issubclass(registry.get_class(request.type), AgentTarget):
         require_admin(http_request)
 
 

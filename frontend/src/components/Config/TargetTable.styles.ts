@@ -21,6 +21,16 @@ export const useTargetTableStyles = makeStyles({
   defaultRow: {
     backgroundColor: tokens.colorBrandBackground2,
   },
+  targetKind: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: tokens.spacingHorizontalXS,
+  },
+  kindBadge: {
+    flexShrink: 0,
+    whiteSpace: 'nowrap',
+  },
   defaultsSummary: {
     display: 'flex',
     flexDirection: 'column',

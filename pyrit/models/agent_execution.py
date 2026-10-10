@@ -6,6 +6,7 @@
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import PurePosixPath
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, field_validator, model_validator
@@ -18,6 +19,58 @@ class AgentEnvironment(str, Enum):
 
     LOCAL = "local"
     DOCKER = "docker"
+
+
+class AgentHarnessKind(str, Enum):
+    """Launch configuration adapter, independent of the ACP transport."""
+
+    COPILOT = "copilot"
+    OPENCODE = "opencode"
+    ACP = "acp"
+
+
+class AgentWorkspaceBase(str, Enum):
+    """Starting filesystem beneath the execution workspace."""
+
+    IMAGE = "image"
+    EMPTY = "empty"
+
+
+def legacy_harness_kind(command: object) -> AgentHarnessKind:
+    """
+    Resolve old recipes without enabling new adapters for existing custom commands.
+
+    Returns:
+        AgentHarnessKind: The original Copilot configuration or an unmodified generic launch.
+    """
+    first = command[0] if isinstance(command, (tuple, list)) and command else ""
+    executable = first.replace("\\", "/").rsplit("/", 1)[-1].lower() if isinstance(first, str) else ""
+    return AgentHarnessKind.COPILOT if executable in ("copilot", "copilot.exe", "copilot.cmd") else AgentHarnessKind.ACP
+
+
+def _resolve_harness(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    values = dict(value)
+    defaults = {
+        AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio"),
+        AgentHarnessKind.OPENCODE: ("opencode", "acp"),
+    }
+    command = values.get("command", defaults[AgentHarnessKind.COPILOT])
+    kind = AgentHarnessKind(values.get("harness_kind", legacy_harness_kind(command)))
+    values["harness_kind"] = kind
+    if "command" not in values:
+        if kind == AgentHarnessKind.ACP:
+            raise ValueError("A generic ACP harness requires an explicit command")
+        values["command"] = defaults[kind]
+    return values
+
+
+def _validate_working_directory(value: str) -> str:
+    path = PurePosixPath(value)
+    if not value or "\\" in value or ":" in value or path.is_absolute() or ".." in path.parts:
+        raise ValueError("working_directory must be relative to the execution workspace")
+    return value
 
 
 class AgentPermissionPolicy(str, Enum):
@@ -87,10 +140,13 @@ class AgentProfile(BaseModel):
 
     name: str = Field(default="copilot", min_length=1, max_length=100)
     command: tuple[str, ...] = ("copilot", "--acp", "--stdio")
+    harness_kind: AgentHarnessKind = AgentHarnessKind.COPILOT
     environment: AgentEnvironment = AgentEnvironment.DOCKER
     image: str | None = None
     fixture_directory: str | None = None
     expected_fixture_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    workspace_base: AgentWorkspaceBase | None = None
+    working_directory: str = "."
     credential_env: tuple[str, ...] = ()
     authentication_method: str | None = None
     permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY
@@ -117,6 +173,8 @@ class AgentProfile(BaseModel):
     docker_cpus: float = Field(default=1, gt=0, le=32)
 
     _command_validator = field_validator("command")(_validate_command)
+    _harness_validator = model_validator(mode="before")(_resolve_harness)
+    _working_directory_validator = field_validator("working_directory")(_validate_working_directory)
     _artifact_validator = field_validator("artifact_paths")(_validate_artifacts)
     _credentials_validator = field_validator("credential_env")(_validate_credentials)
 
@@ -151,12 +209,14 @@ class HarnessProfile(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     command: tuple[str, ...] = ("copilot", "--acp", "--stdio")
+    harness_kind: AgentHarnessKind = AgentHarnessKind.COPILOT
     credential_env: tuple[str, ...] = ()
     authentication_method: str | None = None
     permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY
     inference_requirements: InferenceRequirements = Field(default_factory=InferenceRequirements)
 
     _command_validator = field_validator("command")(_validate_command)
+    _harness_validator = model_validator(mode="before")(_resolve_harness)
     _credentials_validator = field_validator("credential_env")(_validate_credentials)
 
 
@@ -168,16 +228,22 @@ class EnvironmentTemplate(BaseModel):
     image: str | None = None
     fixture_directory: str | None = None
     expected_fixture_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    workspace_base: AgentWorkspaceBase | None = None
+    working_directory: str = "."
     local_execution_acknowledged: bool = False
     docker_network: str = "bridge"
     docker_memory: str = "1g"
     docker_cpus: float = Field(default=1, gt=0, le=32)
+
+    _working_directory_validator = field_validator("working_directory")(_validate_working_directory)
 
     @model_validator(mode="after")
     def _validate_template(self) -> "EnvironmentTemplate":
         _validate_environment(
             environment=self.environment, image=self.image, acknowledged=self.local_execution_acknowledged
         )
+        if self.environment == AgentEnvironment.LOCAL and self.workspace_base == AgentWorkspaceBase.IMAGE:
+            raise ValueError("An image-provided workspace requires a Docker environment")
         return self
 
 
@@ -269,6 +335,10 @@ class AgentTurn(BaseModel):
     response_text: str = ""
     capture_complete: bool = False
     error: str | None = None
+    event_start_cursor: int = Field(default=0, ge=0)
+    event_end_cursor: int | None = Field(default=None, ge=0)
+    tool_evidence_messages: int | None = None
+    tool_evidence_omissions: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentExecution(BaseModel):

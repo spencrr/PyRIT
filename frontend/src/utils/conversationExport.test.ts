@@ -92,6 +92,29 @@ function installAnchorSpy(): { clickSpy: jest.Mock; getAnchor: () => HTMLAnchorE
 }
 
 describe("conversationExport", () => {
+  it("exports canonical lineage and separately labelled display-only activity in every format", async () => {
+    const evidence: NonNullable<Message["agentToolEvidence"]> = {
+      source: "acp", execution_id: "execution", turn_id: "turn", source_call_id: "call", event_sequence: 9,
+    };
+    const messages = [message({ role: "tool", agentToolEvidence: evidence, agentActivity: {
+      executionId: "execution", sourceCoverage: "ACP only", feed: "reconnecting",
+      turn: { id: "turn", request_id: "request", status: "completed", response_text: "",
+        capture_complete: false, error: null, tool_evidence_omissions: { unknown: "name_not_reported" } },
+      activity: { text: "", tools: [{ id: "unknown", title: "<script>not evidence</script>",
+        status: "completed", firstSeen: "", lastSeen: "" }] },
+    } })];
+    const serialized = JSON.parse(conversationToJson(messages, "conversation", FIXED_NOW));
+    expect(serialized.messages[0].agentToolEvidence).toEqual(evidence);
+    expect(serialized.messages[0].agentActivity.feed).toBe("reconnecting");
+    const markdown = conversationToMarkdown(messages, "conversation", FIXED_NOW);
+    expect(markdown).toContain("not proof of invocation or complete coverage");
+    expect(markdown).toContain('"event_sequence": 9');
+    const html = await conversationToHtml(messages, "conversation", FIXED_NOW);
+    expect(html).toContain("name_not_reported");
+    expect(html).toContain("&lt;script&gt;not evidence&lt;/script&gt;");
+    expect(html).not.toContain("<script>not evidence</script>");
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
   });

@@ -11,11 +11,39 @@ import pytest
 pytest.importorskip("acp")
 
 from pyrit.agent.execution_manager import AgentExecutionManager
-from pyrit.executor.attack import AttackExecutor, PromptSendingAttack
-from pyrit.models import AttackSeedGroup, SeedObjective
+from pyrit.executor.attack import AttackExecutor, AttackScoringConfig, PromptSendingAttack
+from pyrit.models import (
+    AttackOutcome,
+    AttackSeedGroup,
+    ScoringExpectation,
+    SeedObjective,
+    ToolCallRequirement,
+    ToolsCalled,
+)
 from pyrit.models.agent_execution import AgentExecutionState, AgentProfile, AgentTurnStatus
 from pyrit.prompt_target import AgentTarget
 from pyrit.scenario import AtomicAttack, AttackTechnique
+from pyrit.score import MessageToolCallScorer
+
+
+async def test_tool_only_subprocess_completion_is_scorable(tmp_path: Path) -> None:
+    async with AgentExecutionManager(root=tmp_path) as manager:
+        target = AgentTarget(profile=scripted_profile())
+        target.bind_execution_manager(manager)
+        attack = PromptSendingAttack(
+            objective_target=target,
+            attack_scoring_config=AttackScoringConfig(objective_scorer=MessageToolCallScorer()),
+        )
+        result = await attack.execute_async(
+            objective="tool-only",
+            expectation=ScoringExpectation(conditions=(ToolsCalled(tools=(ToolCallRequirement(name="read_orders"),)),)),
+        )
+        assert result.outcome is AttackOutcome.SUCCESS
+        assert result.last_response.role == "tool"
+        record = next(iter(manager.records.values()))
+        assert record.turns[0].tool_evidence_messages == 2
+        assert not record.turns[0].response_text
+
 
 pytestmark = pytest.mark.run_only_if_all_tests
 

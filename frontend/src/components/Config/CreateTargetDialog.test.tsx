@@ -481,6 +481,25 @@ describe("CreateTargetDialog", () => {
     expect(screen.getByText("Cancel")).toBeInTheDocument();
   });
 
+  it("uses one creation flow for model targets and executable ACP harnesses", async () => {
+    const user = userEvent.setup();
+    render(<TestWrapper><CreateTargetDialog {...defaultProps} canConfigureAgents /></TestWrapper>);
+    await user.click(screen.getByRole("button", { name: "Tool-capable agent (ACP)" }));
+    expect(await screen.findByRole("region", { name: "Harness profile" })).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("Harness"), "opencode");
+    expect(screen.getByLabelText("Harness")).toHaveValue("opencode");
+    await user.click(screen.getByRole("button", { name: "Back to target types" }));
+    expect(await screen.findByText("Create New Target")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Harness profile" })).not.toBeInTheDocument();
+    expect(mockedTargetsApi.createTarget).not.toHaveBeenCalled();
+  });
+
+  it("does not offer executable harness setup without configuration permission", async () => {
+    render(<TestWrapper><CreateTargetDialog {...defaultProps} /></TestWrapper>);
+    await flushTargetTypesFetch();
+    expect(screen.queryByRole("button", { name: "Tool-capable agent (ACP)" })).not.toBeInTheDocument();
+  });
+
   it("should show friendly names, registry descriptions, implementation identifiers, and auth for all target types", async () => {
     render(
       <TestWrapper>

@@ -60,7 +60,7 @@ export function reduceAgentEvents(
       name: typeof update.name === 'string' ? update.name : previous?.name,
       kind: typeof update.kind === 'string' ? update.kind : previous?.kind,
       rawInput: update.rawInput ?? previous?.rawInput,
-      rawOutput: update.rawOutput ?? previous?.rawOutput,
+      rawOutput: 'rawOutput' in update ? update.rawOutput : previous?.rawOutput,
       content: update.content ?? previous?.content,
       locations: update.locations ?? previous?.locations,
     }

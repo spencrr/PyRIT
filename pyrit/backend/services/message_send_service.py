@@ -50,6 +50,7 @@ from pyrit.models import (
     ConverterIdentifier,
     Message,
     MessagePiece,
+    RequestTraceContext,
 )
 from pyrit.prompt_normalizer import ConverterConfiguration, PromptNormalizer
 from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
@@ -650,15 +651,17 @@ class MessageSendService:
             if progress is not None:
                 progress.state = MessageSendState.FINALIZING
             current_pieces = await self._memory.get_message_pieces_async(conversation_id=msg_conversation_id)
-            last_response = next(
+            last_response = max(
                 (
                     piece
                     for piece in current_pieces
                     if piece.id not in prior_ids
-                    and piece.role == "assistant"
+                    and piece.role in ("assistant", "tool")
+                    and not piece.prompt_metadata.get(RequestTraceContext.REQUEST_METADATA_KEY)
                     and piece.prompt_metadata.get("target_response_status", "completed") == "completed"
                 ),
-                None,
+                key=lambda piece: piece.sequence,
+                default=None,
             )
             last_response_id = str(last_response.id) if last_response else None
         else:

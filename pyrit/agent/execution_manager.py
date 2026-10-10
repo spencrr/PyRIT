@@ -20,6 +20,8 @@ from filelock import BaseFileLock, FileLock
 
 from pyrit.agent.approvals import AgentApprovals
 from pyrit.agent.environment import ExecutionEnvironment
+from pyrit.agent.harness import inference_environment
+from pyrit.agent.tool_evidence import AgentToolProjection, project_agent_tools
 from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.memory.agent_execution_store import AgentExecutionStore
 from pyrit.models.agent_execution import (
@@ -222,7 +224,11 @@ class AgentExecutionManager:
             live.cancel_requested = False
             if live.approvals:
                 live.approvals.cancelled = False
-            turn = AgentTurn(request_id=request_id, prompt=self._redact(prompt, live.secrets))
+            turn = AgentTurn(
+                request_id=request_id,
+                prompt=self._redact(prompt, live.secrets),
+                event_start_cursor=record.event_count,
+            )
             record.turns.append(turn)
             record.state = AgentExecutionState.WORKING if live.connection else AgentExecutionState.STARTING
             record.last_activity_at = datetime.now(UTC)
@@ -287,6 +293,10 @@ class AgentExecutionManager:
             await self._record_async(live, direction="lifecycle", payload={"type": "turn_finished", "status": status})
             turn.status = status
             turn.capture_complete = record.capture_error is None
+            turn.event_end_cursor = record.event_count
+            projection = await self.tool_evidence_async(execution_id=record.id, turn_id=turn.id)
+            turn.tool_evidence_messages = len(projection.messages)
+            turn.tool_evidence_omissions = projection.omitted
             return record, turn
         except asyncio.CancelledError:
             try:
@@ -352,6 +362,40 @@ class AgentExecutionManager:
 
         live.approvals = AgentApprovals(record=record, changed=approval_changed_async)
         return live
+
+    async def tool_evidence_async(self, *, execution_id: UUID, turn_id: UUID) -> AgentToolProjection:
+        """
+        Read one turn's retained reports through the shared canonical tool projection.
+
+        Returns:
+            AgentToolProjection: Scorer-compatible messages and conservative omission reasons.
+
+        Raises:
+            ValueError: The turn does not belong to this execution.
+        """
+        record = self.records[execution_id]
+        turn = next((turn for turn in record.turns if turn.id == turn_id), None)
+        if turn is None:
+            raise ValueError("Evidence turn does not belong to the execution")
+        events: list[AgentExecutionEvent] = []
+        cursor = turn.event_start_cursor
+        while turn.event_end_cursor is None or cursor < turn.event_end_cursor:
+            page = await self.store.events_async(execution_id=execution_id, after=cursor, limit=500)
+            if not page.events:
+                break
+            events.extend(
+                event
+                for event in page.events
+                if event.turn_id == turn_id
+                and (turn.event_end_cursor is None or event.sequence <= turn.event_end_cursor)
+            )
+            cursor = page.next_cursor
+        return project_agent_tools(
+            events=events,
+            execution_id=execution_id,
+            turn_id=turn_id,
+            conversation_id=record.conversation_id,
+        )
 
     async def _launch_async(self, live: _LiveExecution) -> None:
         from pyrit.agent.acp_connection import AcpConnection, RecordingTransport
@@ -439,13 +483,13 @@ class AgentExecutionManager:
             live.secrets = (*live.secrets, lease.token)
             live.record.inference_target_hash = binding.identifier_hash
             live.record.inference_protocol = binding.requirements.wire_api
-            live.environment.runtime_environment = {
-                "COPILOT_PROVIDER_BASE_URL": self._relay.url,
-                "COPILOT_PROVIDER_TYPE": "openai",
-                "COPILOT_PROVIDER_WIRE_API": binding.requirements.wire_api.value,
-                "COPILOT_PROVIDER_API_KEY": lease.token,
-                "COPILOT_MODEL": binding.model,
-            }
+            live.environment.runtime_environment = inference_environment(
+                kind=live.record.profile.harness_kind,
+                model=binding.model,
+                wire_api=binding.requirements.wire_api,
+                base_url=self._relay.url,
+                token=lease.token,
+            )
 
     async def _record_async(self, live: _LiveExecution, *, direction: str, payload: dict[str, Any]) -> None:
         async with live.event_lock:

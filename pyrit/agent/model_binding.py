@@ -5,6 +5,7 @@
 
 from dataclasses import dataclass
 
+from pyrit.agent.harness import validate_inference_adapter
 from pyrit.models.agent_execution import AgentTargetConfiguration, ModelBinding
 from pyrit.models.identifiers.target_identifier import TargetIdentifier
 from pyrit.models.model_inference import InferenceRequirements
@@ -35,12 +36,10 @@ def resolve_model_binding(configuration: AgentTargetConfiguration) -> ResolvedMo
     binding = configuration.model_binding
     if binding.target_registry_name is None:
         return None
-    executable = configuration.harness_profile.command[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if executable not in ("copilot", "copilot.exe", "copilot.cmd"):
-        raise ValueError(
-            "Target-backed BYOK launch configuration currently supports Copilot CLI; "
-            "this harness needs its own provider-configuration adapter"
-        )
+    validate_inference_adapter(
+        kind=configuration.harness_profile.harness_kind,
+        wire_api=binding.wire_api or configuration.harness_profile.inference_requirements.wire_api,
+    )
     source = TargetRegistry.get_registry_singleton().instances.get(binding.target_registry_name)
     if source is None:
         raise ValueError(f"Model target '{binding.target_registry_name}' is not registered")

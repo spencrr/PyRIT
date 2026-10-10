@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import {
   Button, Checkbox, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface,
-  DialogTitle, Field, Input, MessageBar, MessageBarBody, Select, Text,
+  DialogTitle, Field, Input, MessageBar, MessageBarBody, Select, Text, Textarea,
 } from '@fluentui/react-components'
 
 import { targetsApi } from '@/services/api'
@@ -17,14 +17,22 @@ interface AgentTargetDialogProps {
   readonly onCreated: (target: TargetInstance) => void
   readonly initialConfiguration?: AgentTargetConfiguration
   readonly selectForChat?: boolean
+  readonly onBack?: () => void
 }
 
 export default function AgentTargetDialog({
-  onClose, onCreated, initialConfiguration, selectForChat = false,
+  onClose, onCreated, initialConfiguration, selectForChat = false, onBack,
 }: AgentTargetDialogProps) {
   const styles = useAgentTargetDialogStyles()
   const [name, setName] = useState(initialConfiguration ? `${initialConfiguration.name}-copy` : '')
   const [model, setModel] = useState(initialConfiguration?.model_binding.model ?? '')
+  const [harness, setHarness] = useState<'copilot' | 'opencode' | 'acp'>(
+    initialConfiguration?.harness_profile.harness_kind
+      ?? (initialConfiguration ? 'acp' : 'copilot'),
+  )
+  const [command, setCommand] = useState(initialConfiguration?.harness_profile.command[0] ?? 'copilot')
+  const [argumentsText, setArgumentsText] = useState(initialConfiguration?.harness_profile.command.slice(1).join('\n') ?? '--acp\n--stdio')
+  const [authentication, setAuthentication] = useState(initialConfiguration?.harness_profile.authentication_method ?? '')
   const [source, setSource] = useState(initialConfiguration?.model_binding.target_registry_name ?? '')
   const [wireApi, setWireApi] = useState<'completions' | 'responses'>(initialConfiguration?.model_binding.wire_api ?? 'completions')
   const [sources, setSources] = useState<TargetInstance[]>([])
@@ -34,10 +42,15 @@ export default function AgentTargetDialog({
   const [environment, setEnvironment] = useState<'docker' | 'local'>(
     initialConfiguration?.environment_template.environment ?? 'docker',
   )
-  const [image, setImage] = useState(initialConfiguration?.environment_template.image ?? 'pyrit-copilot-receipt:1.0.93')
+  const [image, setImage] = useState(initialConfiguration?.environment_template.image ?? '')
+  const [workspaceBase, setWorkspaceBase] = useState<'image' | 'empty'>(
+    initialConfiguration?.environment_template.workspace_base
+      ?? (initialConfiguration?.environment_template.environment === 'local' ? 'empty' : 'image'),
+  )
+  const [workingDirectory, setWorkingDirectory] = useState(initialConfiguration?.environment_template.working_directory ?? '.')
   const [fixture, setFixture] = useState(initialConfiguration?.environment_template.fixture_directory ?? '')
   const [credential, setCredential] = useState(
-    initialConfiguration?.harness_profile.credential_env.join(', ') ?? 'COPILOT_GITHUB_TOKEN',
+    initialConfiguration?.harness_profile.credential_env.join('\n') ?? '',
   )
   const [permissionPolicy, setPermissionPolicy] = useState<'ask' | 'deny' | 'allow_once'>(
     initialConfiguration?.harness_profile.permission_policy ?? 'ask',
@@ -72,6 +85,15 @@ export default function AgentTargetDialog({
   }
   const selectedSource = sources.find((target: TargetInstance) => target.target_registry_name === source)
   const sourceBlocked = Boolean(source) && (!selectedSource || eligibility(selectedSource) !== null)
+  const harnessBlocked = Boolean(source) && (harness === 'acp' || (harness === 'opencode' && wireApi !== 'completions'))
+
+  const selectHarness = (kind: 'copilot' | 'opencode' | 'acp'): void => {
+    setHarness(kind)
+    setCommand(kind === 'acp' ? '' : kind)
+    setArgumentsText(kind === 'copilot' ? '--acp\n--stdio' : kind === 'opencode' ? 'acp' : '')
+    setAuthentication('')
+    setCredential('')
+  }
 
   const submit = async (): Promise<void> => {
     setBusy(true)
@@ -85,9 +107,11 @@ export default function AgentTargetDialog({
           target_identifier_hash: selectedSource?.identifier.hash, wire_api: wireApi,
         } : { model: model.trim() },
         harness_profile: {
-          command: initialConfiguration?.harness_profile.command ?? ['copilot', '--acp', '--stdio'],
-          authentication_method: source ? null : initialConfiguration ? initialConfiguration.harness_profile.authentication_method : 'copilot-login',
-          credential_env: source ? [] : credential.split(',').map((value: string) => value.trim()).filter(Boolean),
+          ...initialConfiguration?.harness_profile,
+          harness_kind: harness,
+          command: [command.trim(), ...argumentsText.split('\n').filter((value) => value.length > 0)],
+          authentication_method: source ? null : authentication.trim() || null,
+          credential_env: source ? [] : credential.split(/[\n,]/).map((value: string) => value.trim()).filter(Boolean),
           permission_policy: permissionPolicy,
           inference_requirements: {
             ...initialConfiguration?.harness_profile.inference_requirements,
@@ -98,6 +122,8 @@ export default function AgentTargetDialog({
         environment_template: {
           ...initialConfiguration?.environment_template,
           environment, image: environment === 'docker' ? image.trim() : null,
+          workspace_base: environment === 'local' ? 'empty' : workspaceBase,
+          working_directory: workingDirectory.trim() || '.',
           fixture_directory: fixture.trim() || null,
           expected_fixture_sha256: fixture === (initialConfiguration?.environment_template.fixture_directory ?? '')
             ? initialConfiguration?.environment_template.expected_fixture_sha256 : null,
@@ -122,7 +148,7 @@ export default function AgentTargetDialog({
     <Dialog open onOpenChange={(_, data) => { if (!data.open && !busy) onClose() }}>
       <DialogSurface className={styles.surface}>
         <DialogBody>
-          <DialogTitle>Configure agent target</DialogTitle>
+          <DialogTitle>Create Target · Tool-capable harness</DialogTitle>
           <form className={styles.form} onSubmit={(event) => { event.preventDefault(); void submit() }}>
             <DialogContent className={styles.content}>
               {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
@@ -130,14 +156,38 @@ export default function AgentTargetDialog({
               <Field label="Target name" required>
                 <Input value={name} onChange={(_, data) => setName(data.value)} required />
               </Field>
+              <div className={styles.composition}>
               <section className={styles.section} aria-label="Harness profile">
                 <Text weight="semibold">Harness profile</Text>
-                <Text>{initialConfiguration?.harness_profile.command[0] ?? 'Copilot CLI'} · ACP</Text>
-                {!source && <Field label="Credential references" hint="Comma-separated environment-variable names on the backend, never token values.">
-                  <Input value={credential} onChange={(_, data) => setCredential(data.value)} />
-                </Field>}
+                <Field label="Harness">
+                  <Select className={styles.select} value={harness} onChange={(_, data) => selectHarness(
+                    data.value === 'opencode' ? 'opencode' : data.value === 'acp' ? 'acp' : 'copilot',
+                  )}>
+                    <option value="copilot">GitHub Copilot · ACP</option>
+                    <option value="opencode">OpenCode · ACP</option>
+                    <option value="acp">Custom ACP harness</option>
+                  </Select>
+                </Field>
+                <Text size={200}>For tools-off Copilot text or judge calls, choose GitHubCopilotTarget in the target type picker.</Text>
+                <details open={harness === 'acp'}>
+                  <summary>Launch and authentication</summary>
+                  <Field label="Executable" hint="Runs in the selected environment, without a shell.">
+                    <Input value={command} onChange={(_, data) => setCommand(data.value)} required />
+                  </Field>
+                  <Field label="Arguments" hint="One argument per line. Do not include secrets.">
+                    <Textarea value={argumentsText} onChange={(_, data) => setArgumentsText(data.value)} />
+                  </Field>
+                  {!source && <>
+                    <Field label="Harness credential references" hint="One backend environment-variable name per line, never token values. The private execution does not inherit your login or home directory.">
+                      <Textarea value={credential} onChange={(_, data) => setCredential(data.value)} />
+                    </Field>
+                    <Field label="ACP authentication method" hint="Optional method ID advertised by the harness. Model-provider authentication belongs to the model binding below.">
+                      <Input value={authentication} onChange={(_, data) => setAuthentication(data.value)} />
+                    </Field>
+                  </>}
+                </details>
                 <Field label="Tool permission policy">
-                  <Select value={permissionPolicy} onChange={(_, data) => setPermissionPolicy(
+                  <Select className={styles.select} value={permissionPolicy} onChange={(_, data) => setPermissionPolicy(
                     data.value === 'allow_once' ? 'allow_once' : data.value === 'deny' ? 'deny' : 'ask',
                   )}>
                     <option value="ask">Ask operator (interactive chat)</option>
@@ -145,25 +195,30 @@ export default function AgentTargetDialog({
                     <option value="allow_once">Allow all requests once (automation compatible)</option>
                   </Select>
                 </Field>
-                <Text size={200}>Automated runs must select allow or deny. Approval is not a sandbox or a tool allowlist.</Text>
+                <Text size={200}>This policy answers permission requests raised by the harness. OpenCode asks by default; workspace or agent configuration can change that behavior. Approval is not a sandbox or a tool allowlist.</Text>
               </section>
               <section className={styles.section} aria-label="Model binding">
                 <Text weight="semibold">Model binding</Text>
-                <Field label="Inference protocol">
-                  <Select value={wireApi} onChange={(_, data) => setWireApi(data.value === 'responses' ? 'responses' : 'completions')}>
-                    <option value="completions">Chat Completions</option><option value="responses">Responses</option>
+                {harness !== 'acp' && <Field label="Inference protocol">
+                  <Select className={styles.select} value={wireApi} onChange={(_, data) => setWireApi(data.value === 'responses' ? 'responses' : 'completions')}>
+                    <option value="completions">Chat Completions</option>
+                    <option value="responses" disabled={harness === 'opencode'}>Responses</option>
                   </Select>
-                </Field>
+                </Field>}
                 <Field label="Model source">
-                  <Select value={source} onChange={(_, data) => setSource(data.value)}>
+                  <Select className={styles.select} value={source} onChange={(_, data) => setSource(data.value)}>
                     <option value="">Harness-managed access</option>
                     {sources.map((target: TargetInstance) => <option key={target.target_registry_name}
-                      value={target.target_registry_name} disabled={eligibility(target) !== null}>
-                      {target.target_registry_name}{eligibility(target) ? ` — ${eligibility(target)}` : ' — inference compatible'}
+                      value={target.target_registry_name} disabled={harness === 'acp' || eligibility(target) !== null}>
+                      {target.target_registry_name}{harness === 'acp' ? ' — BYOK adapter required'
+                        : eligibility(target) ? ` — ${eligibility(target)}` : ' — inference compatible'}
                     </option>)}
                   </Select>
                 </Field>
                 {sourceError && <MessageBar intent="warning">{sourceError}</MessageBar>}
+                {harness === 'acp' && <Text>Custom ACP uses harness-managed model access. Target-backed BYOK requires a provider-configuration adapter.</Text>}
+                {!source && !credential.trim() && <Text>No backend credentials will be forwarded. Configure references under Launch and authentication if your harness needs them; your login is not inherited.</Text>}
+                {harnessBlocked && <MessageBar intent="error">This harness does not support the selected inference protocol.</MessageBar>}
                 {source && <Text>Model requests go through the selected PyRIT target. Provider credentials stay in PyRIT; the execution receives only a scoped relay credential. Compatibility describes the adapter; verify the model's tool behavior.</Text>}
                 {source && environment === 'docker' && <Text>Docker requires an explicitly reachable backend inference-relay address. No provider key is copied into the container.</Text>}
                 {sourceBlocked && <MessageBar intent="error">Selected model source is unavailable or incompatible.</MessageBar>}
@@ -174,19 +229,33 @@ export default function AgentTargetDialog({
               <section className={styles.section} aria-label="Environment template">
                 <Text weight="semibold">Environment template</Text>
                 <Field label="Execution environment">
-                  <Select value={environment} onChange={(_, data) => setEnvironment(data.value === 'local' ? 'local' : 'docker')}>
+                  <Select className={styles.select} value={environment} onChange={(_, data) => setEnvironment(data.value === 'local' ? 'local' : 'docker')}>
                     <option value="docker">Docker</option><option value="local">Local - not sandboxed</option>
                   </Select>
                 </Field>
                 {environment === 'docker' && <Field label="Docker image" required>
                   <Input value={image} onChange={(_, data) => setImage(data.value)} required />
                 </Field>}
-                <Field label="Workspace fixture directory" hint="Optional backend-local directory copied fresh for each execution. The receipt Docker image already contains its fixture.">
-                  <Input value={fixture} onChange={(_, data) => setFixture(data.value)} />
-                </Field>
+                {environment === 'docker' && <Field label="Starting workspace">
+                  <Select className={styles.select} value={workspaceBase} onChange={(_, data) => setWorkspaceBase(data.value === 'empty' ? 'empty' : 'image')}>
+                    <option value="image">Image-provided workspace</option>
+                    <option value="empty">Empty private workspace</option>
+                  </Select>
+                </Field>}
+                <Text size={200}>{environment === 'local' ? 'A fresh private workspace is created for each conversation.' : 'The image must contain the selected harness executable. No host repository or home is mounted.'}</Text>
+                <details>
+                  <summary>Workspace initialization</summary>
+                  <Field label="Working directory" hint="Relative to the execution workspace. Artifacts remain relative to the workspace root.">
+                    <Input value={workingDirectory} onChange={(_, data) => setWorkingDirectory(data.value)} />
+                  </Field>
+                  <Field label="Import directory (optional)" hint="Advanced: a private copy of this backend directory overlays the starting workspace. Not required for image-provided content.">
+                    <Input value={fixture} onChange={(_, data) => setFixture(data.value)} />
+                  </Field>
+                </details>
                 {environment === 'local' && <Checkbox label="I understand local tools can access the host"
                   checked={acknowledged} onChange={(_, data) => setAcknowledged(data.checked === true)} />}
               </section>
+              </div>
               <details>
                 <summary>Execution limits and retained evidence</summary>
                 <div className={styles.section}>
@@ -206,8 +275,10 @@ export default function AgentTargetDialog({
               </details>
             </DialogContent>
             <DialogActions>
+              {onBack && <Button onClick={onBack} disabled={busy}>Back to target types</Button>}
               <Button onClick={onClose} disabled={busy}>Cancel</Button>
-              <Button type="submit" appearance="primary" disabled={busy || sourceBlocked || !name.trim() || (environment === 'local' && !acknowledged)}>
+              <Button type="submit" appearance="primary" disabled={busy || sourceBlocked || harnessBlocked || !command.trim()
+                || !name.trim() || (environment === 'docker' && !image.trim()) || (environment === 'local' && !acknowledged)}>
                 {busy ? 'Registering...' : selectForChat ? 'Register and select for chat' : 'Register target'}
               </Button>
             </DialogActions>

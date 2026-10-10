@@ -286,6 +286,23 @@ tools and conversation. This path does not call a target's high-level tool loop,
 replay attack history, or apply prompt converters. Eligibility is capability-based,
 and inference evidence is distinct from agent-reported tool execution.
 
+Harness adapters own launch/provider configuration, not the protocol transport
+or resource lifecycle. Explicit Copilot and OpenCode profiles reuse the same ACP
+target, manager, and inference relay; custom ACP launches do not inherit either
+adapter's settings. Environment templates describe a starting filesystem (image
+or empty) and optional overlay, not a mandatory fixture-copy operation.
+The registry and chat share target creation; the specialized harness form is
+an authoring view, not a separate target registry or conversation model.
+
+Native `GitHubCopilotTarget` is a complementary, tools-off SDK adapter for text and
+self-contained judge calls. Its model binding is Copilot-managed; its harness owns
+native sessions and uses a local working directory without sandbox provisioning.
+It is neither an ACP execution nor a raw-inference source. The separate managed
+`AgentTarget` tests the tool-capable system. Canonical tool evidence uses existing
+`FunctionCallContent`, `FunctionOutputContent`, and `ToolExecutionMetadata`; the
+target projects retained reports, the normalizer persists them, and the existing
+`MessageToolCallScorer` interprets `ToolsCalled`. Missing reports remain unknown.
+
 **Contributing (difficulty low)**:
 
 - The pattern is well-defined.

@@ -87,6 +87,15 @@ describe('reduceAgentEvents', () => {
     expect(result.turn.text).toBe('Working')
   })
 
+  it('retains an explicitly reported null result rather than treating it as an omitted update', () => {
+    const result = reduceAgentEvents({}, [
+      event(1, { sessionUpdate: 'tool_call', toolCallId: 'one', name: 'lookup', rawInput: {}, rawOutput: 31 }),
+      event(2, { sessionUpdate: 'tool_call_update', toolCallId: 'one', status: 'completed', rawOutput: null }),
+      event(3, { sessionUpdate: 'tool_call_update', toolCallId: 'one', title: 'Done' }),
+    ])
+    expect(result.turn.tools[0].rawOutput).toBeNull()
+  })
+
   it('does not fabricate tools for malformed or unrelated events', () => {
     expect(reduceAgentEvents({}, [
       event(1, { sessionUpdate: 'tool_call' }),

@@ -227,6 +227,54 @@ async def test_cancelled_partial_response_is_retained_without_conversion(
     assert not messages[-1].get_piece().has_error()
 
 
+@pytest.mark.parametrize("final_text", [False, True])
+async def test_manual_tool_evidence_scores_through_the_final_response_async(
+    real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
+    sqlite_instance: SQLiteMemory,
+    final_text: bool,
+) -> None:
+    from pyrit.models import (
+        MessageScorable,
+        ScoringExpectation,
+        ToolCallRequirement,
+        ToolExecutionMetadata,
+        ToolsCalled,
+    )
+    from pyrit.models.target_response import TargetResponse, TargetResponseStatus
+    from pyrit.score import MessageToolCallScorer
+
+    service, attack, target, _ = real_send_context
+    responses = [
+        MessagePiece(
+            role="assistant",
+            original_value_data_type="function_call",
+            original_value='{"call_id":"one","name":"lookup","arguments":"{}"}',
+        ).to_message(),
+        MessagePiece(
+            role="tool",
+            original_value_data_type="function_call_output",
+            original_value='{"call_id":"one","output":31}',
+            prompt_metadata=ToolExecutionMetadata(invoked=True).to_metadata(),
+        ).to_message(),
+    ]
+    if final_text:
+        responses.append(MessagePiece(role="assistant", original_value="Done").to_message())
+    outcome = TargetResponse(messages=responses, status=TargetResponseStatus.COMPLETED)
+    with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
+        await service.add_message_async(
+            attack_result_id=attack.attack_result_id,
+            request=_request(conversation_id=attack.conversation_id),
+        )
+    [stored] = await sqlite_instance.get_attack_results_async(attack_result_ids=[attack.attack_result_id])
+    assert stored.last_response is not None
+    assert stored.last_response.id == responses[-1].get_piece().id
+    scores = await MessageToolCallScorer().score_async(
+        scorable=MessageScorable.from_message(stored.last_response.to_message()),
+        expectation=ScoringExpectation(conditions=(ToolsCalled(tools=(ToolCallRequirement(name="lookup"),)),)),
+    )
+    assert scores[0].get_value() is True
+
+
 async def _send_message_and_get_update_fields(
     *,
     message_send_service: MessageSendService,

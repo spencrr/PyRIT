@@ -12,7 +12,6 @@ import { toApiError } from '@/services/errors'
 import { listRegisteredTargets } from '@/services/targetRegistry'
 import type { TargetInstance } from '@/types'
 import CreateTargetDialog from './CreateTargetDialog'
-import AgentTargetDialog from './AgentTargetDialog'
 import TargetTable from './TargetTable'
 import { useTargetConfigStyles } from './TargetConfig.styles'
 
@@ -39,7 +38,6 @@ export default function TargetConfig({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [agentDialogOpen, setAgentDialogOpen] = useState(false)
   // Counter used to re-trigger the fetch effect from event handlers (Refresh,
   // dialog close) without invoking setState synchronously in the effect body.
   const [refetchCount, setRefetchCount] = useState(0)
@@ -99,7 +97,6 @@ export default function TargetConfig({
           </Text>
         </div>
         <div className={styles.headerActions}>
-          {canConfigureAgents && <Button onClick={() => setAgentDialogOpen(true)}>New agent target</Button>}
           <Button
             className={styles.headerAction}
             appearance="subtle"
@@ -176,9 +173,8 @@ export default function TargetConfig({
         onClose={() => setDialogOpen(false)}
         onCreated={handleTargetCreated}
         existingTargets={targets}
+        canConfigureAgents={canConfigureAgents}
       />
-      {agentDialogOpen && <AgentTargetDialog onClose={() => setAgentDialogOpen(false)}
-        onCreated={() => { setAgentDialogOpen(false); fetchTargets() }} />}
     </div>
   )
 }

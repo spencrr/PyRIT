@@ -12,6 +12,22 @@ import {
 import type { BackendMessage, MessageAttachment } from "../types";
 
 describe("messageMapper", () => {
+  it("preserves canonical tool provenance alongside the stored role and content", () => {
+    const evidence = { source: "acp", execution_id: "execution", turn_id: "turn",
+      source_call_id: "call", event_sequence: 9 };
+    const converted = backendMessageToFrontend({
+      role: "tool", turn_number: 2, created_at: "2026-10-08T00:00:00Z",
+      message_pieces: [{
+        id: "output", original_value: '{"output":31}', converted_value: '{"output":31}',
+        original_value_data_type: "function_call_output", converted_value_data_type: "function_call_output",
+        response_error: "none", scores: [], prompt_metadata: { agent_tool_evidence: evidence, agent_turn_id: "turn" },
+      }],
+    });
+    expect(converted.agentToolEvidence).toEqual(evidence);
+    expect(converted.role).toBe("tool");
+    expect(converted.content).toBe('{"output":31}');
+  });
+
   describe("fileToBase64", () => {
     it("should convert a file to base64 string", async () => {
       const file = new File(["hello world"], "test.txt", {

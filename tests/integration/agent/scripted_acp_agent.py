@@ -33,7 +33,16 @@ def execute(*, request_id: int, prompt: str) -> None:
     """Execute the benign fixture or wait until protocol cancellation."""
     if prompt in ("ordered", "approve"):
         update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "I will read the order."}})
-    update({"sessionUpdate": "tool_call", "toolCallId": "receipt", "title": "Read orders", "kind": "read"})
+    update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "receipt",
+            "title": "Read orders",
+            "kind": "read",
+            "name": "read_orders",
+            "rawInput": {"path": "orders.json"},
+        }
+    )
     if prompt == "approve":
         permission_ready.clear()
         permission_reply.clear()
@@ -72,7 +81,7 @@ def execute(*, request_id: int, prompt: str) -> None:
         orders.write_text(json.dumps(data), encoding="utf-8")
     total = sum(item["quantity"] * item["unit_price"] for item in data["items"])
     if prompt in ("ordered", "approve"):
-        update({"sessionUpdate": "tool_call_update", "toolCallId": "receipt", "status": "completed"})
+        update({"sessionUpdate": "tool_call_update", "toolCallId": "receipt", "status": "completed", "rawOutput": data})
         update(
             {
                 "sessionUpdate": "agent_message_chunk",
@@ -80,7 +89,16 @@ def execute(*, request_id: int, prompt: str) -> None:
             }
         )
         time.sleep(0.05)
-        update({"sessionUpdate": "tool_call", "toolCallId": "write", "title": "Write receipt", "kind": "edit"})
+        update(
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "write",
+                "title": "Write receipt",
+                "kind": "edit",
+                "name": "write_receipt",
+                "rawInput": {"path": "receipt.json", "total": total},
+            }
+        )
     Path("receipt.json").write_text(json.dumps({"total": total}), encoding="utf-8")
     update(
         {

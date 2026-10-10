@@ -25,6 +25,7 @@ export interface InferenceCapabilities {
 }
 
 export interface HarnessProfile {
+  readonly harness_kind?: 'copilot' | 'opencode' | 'acp'
   readonly command: string[]
   readonly credential_env: string[]
   readonly authentication_method: string | null
@@ -33,6 +34,8 @@ export interface HarnessProfile {
 }
 
 export interface EnvironmentTemplate {
+  readonly workspace_base?: 'image' | 'empty' | null
+  readonly working_directory?: string
   readonly environment: 'local' | 'docker'
   readonly image: string | null
   readonly fixture_directory?: string | null
@@ -116,6 +119,8 @@ export interface AgentTurn {
   readonly response_text: string
   readonly capture_complete: boolean
   readonly error: string | null
+  readonly tool_evidence_messages?: number | null
+  readonly tool_evidence_omissions?: Record<string, string>
 }
 
 export interface ConversationExecution {
@@ -315,6 +320,21 @@ export type MessageDisplayPiece = MessageTextDisplayPiece | MessageMediaDisplayP
 export interface Message {
   pieceIds?: string[]
   agentTurnId?: string
+  agentToolEvidence?: {
+    readonly source: 'acp'
+    readonly execution_id: string
+    readonly turn_id: string
+    readonly source_call_id: string
+    readonly event_sequence: number
+  }
+  /** Export-only snapshot of the displayed activity; not a claim of invocation. */
+  agentActivity?: {
+    readonly executionId: string
+    readonly turn: AgentTurn
+    readonly activity?: AgentTurnActivity
+    readonly sourceCoverage: string
+    readonly feed: string
+  }
   role: 'user' | 'assistant' | 'simulated_assistant' | 'tool' | 'simulated_tool' | 'system' | 'developer'
   content: string
   timestamp: string

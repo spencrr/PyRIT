@@ -41,6 +41,8 @@ import {
   targetUnderlyingModelName,
 } from '@/utils/targetIdentity'
 import { useCreateTargetDialogStyles } from './CreateTargetDialog.styles'
+import AgentTargetDialog from './AgentTargetDialog'
+import type { AgentTargetConfiguration } from '@/types'
 import {
   canConfigureTargetType,
   getTargetParameterPolicy,
@@ -162,7 +164,10 @@ function isAzureMlEndpoint(endpoint: string): boolean {
 interface CreateTargetDialogProps {
   open: boolean
   onClose: () => void
-  onCreated: () => void
+  onCreated: (target: TargetInstance) => void
+  canConfigureAgents?: boolean
+  initialAgentConfiguration?: AgentTargetConfiguration
+  selectForChat?: boolean
   /** Existing targets, passed from the parent to avoid a redundant API call. */
   existingTargets?: TargetInstance[]
 }
@@ -218,9 +223,12 @@ function isCompatible(a: TargetInstance, b: TargetInstance): boolean {
   )
 }
 
-export default function CreateTargetDialog({ open, onClose, onCreated, existingTargets }: CreateTargetDialogProps) {
+export default function CreateTargetDialog({
+  open, onClose, onCreated, existingTargets, canConfigureAgents = false, initialAgentConfiguration, selectForChat = false,
+}: CreateTargetDialogProps) {
   const styles = useCreateTargetDialogStyles()
   const [targetType, setTargetType] = useState('')
+  const [agentSelected, setAgentSelected] = useState(Boolean(initialAgentConfiguration))
   const [endpoint, setEndpoint] = useState('')
   const [modelName, setModelName] = useState('')
   const [hasDifferentUnderlying, setHasDifferentUnderlying] = useState(false)
@@ -261,6 +269,7 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
   if (open !== seenOpen) {
     setSeenOpen(open)
     if (open) {
+      setAgentSelected(Boolean(initialAgentConfiguration))
       setTargetTypeEntries([])
       setTypeMetadataStatus('loading')
     }
@@ -288,7 +297,7 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
   }, [open])
 
   const registeredTargetTypeOptions = useMemo(() => {
-    return targetTypeEntries.filter(canConfigureTargetType)
+    return targetTypeEntries.filter((entry) => entry.target_type !== 'AgentTarget' && canConfigureTargetType(entry))
   }, [targetTypeEntries])
   const typeMetadataAvailable = registeredTargetTypeOptions.length > 0
   const typeMetadataUnavailable = typeMetadataStatus !== 'loading' && !typeMetadataAvailable
@@ -474,7 +483,7 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
       setError(null)
 
       try {
-        await targetsApi.createTarget({
+        const target = await targetsApi.createTarget({
           type: 'RoundRobinTarget',
           params: {
             targets: selectedInnerTargets.map((t) => t.registryName),
@@ -482,7 +491,7 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
           },
         })
         resetForm()
-        onCreated()
+        onCreated(target)
       } catch (err) {
         // Surface the backend's RFC 7807 `detail` (e.g. RoundRobinTarget validation
         // messages) rather than the generic axios "Request failed with status code 400".
@@ -544,14 +553,14 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
         params[underlyingModelParameter?.name ?? 'underlying_model'] = underlyingModel
       }
 
-      await targetsApi.createTarget({
+      const target = await targetsApi.createTarget({
         type: targetType,
         params,
         ...(isIdentity ? { auth_mode: 'identity' as const } : {}),
       })
 
       resetForm()
-      onCreated()
+      onCreated(target)
     } catch (err) {
       // Surface the backend's RFC 7807 `detail` (e.g. RoundRobinTarget validation
       // messages) rather than the generic axios "Request failed with status code 400".
@@ -561,12 +570,21 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
     }
   }
 
+  if (open && agentSelected && canConfigureAgents) {
+    return <AgentTargetDialog onClose={onClose} onCreated={onCreated}
+      initialConfiguration={initialAgentConfiguration} selectForChat={selectForChat}
+      onBack={() => setAgentSelected(false)} />
+  }
+
   return (
     <Dialog open={open} onOpenChange={(_, data) => { if (!data.open) handleClose() }}>
       <DialogSurface className={styles.dialogSurface}>
         <DialogBody>
           <DialogTitle>Create New Target</DialogTitle>
           <DialogContent className={styles.dialogContent}>
+            {canConfigureAgents && <Button onClick={() => setAgentSelected(true)}>
+              Tool-capable agent (ACP)
+            </Button>}
             <form
               className={styles.form}
               data-testid="create-target-form"
@@ -670,6 +688,11 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
                     <Text weight="semibold">{selectedTargetDisplayName}</Text>
                     <code className={styles.targetTypeIdentifier}>{targetType}</code>
                   </div>
+                  {targetType === 'GitHubCopilotTarget' && <Text size={200}>
+                    Native Copilot SDK harness with tools disabled, for text responses and compatible judges.
+                    Model access is Copilot-managed; the working directory is local, not a sandbox.
+                    To test tool behavior in an owned local or Docker environment, choose Tool-capable agent (ACP).
+                  </Text>}
                   {targetTypeEntry?.description ? (
                     <Text size={200} className={styles.targetTypeDescription}>
                       {targetTypeEntry.description}

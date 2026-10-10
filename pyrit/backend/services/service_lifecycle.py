@@ -3,6 +3,8 @@
 
 """Explicit lifecycle for backend-owned cached services."""
 
+import asyncio
+
 from pyrit.agent.runtime import close_agent_execution_manager_async
 from pyrit.backend.services.attack_service import get_attack_service
 from pyrit.backend.services.converter_service import get_converter_service
@@ -51,8 +53,16 @@ async def close_services_async() -> None:
             for entry in TargetRegistry.get_registry_singleton().instances.get_all_instances():
                 try:
                     await entry.instance.cleanup_target_async()
-                except Exception as error:
-                    errors.append(error)
+                except (Exception, BaseExceptionGroup, asyncio.CancelledError) as error:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise asyncio.CancelledError from error
+                    if isinstance(error, Exception):
+                        errors.append(error)
+                    else:
+                        wrapped = RuntimeError(f"{type(entry.instance).__name__} failed during cleanup")
+                        wrapped.__cause__ = error
+                        errors.append(wrapped)
             if errors:
                 raise ExceptionGroup("Target transport cleanup failed", errors)
         finally:
