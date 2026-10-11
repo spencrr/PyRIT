@@ -677,6 +677,112 @@ prompts, tool outputs, and artifacts may be sensitive.
 
 ## Evidence and outcome semantics
 
+### Docker checkpoint feasibility proof
+
+The developer-only `build_scripts.agent_checkpoint_demo` now demonstrates
+**application-state restoration after a completed turn**, independently of the
+production execution lifecycle. It does not add a Resume button or allow restoring
+closed `AgentTarget` conversations.
+
+```text
+Completed native session + workspace
+                 |
+      stop container; revoke model lease
+                 |
+      bounded state/workspace archives
+                 |
+        remove original container
+                 |
+    new container from the same image ID
+      + restored files and ownership
+      + newly issued model lease
+                 |
+    ACP initialize -> session/load -> new prompt
+```
+
+The proof uses an in-process synthetic inference target behind the existing
+execution relay; **no real model provider is called**. The actual Copilot/OpenCode
+binary runs its real tool loop in Docker. A seed turn writes a receipt and an
+append-only effects log, then receives a random assistant-only history token.
+After the original container is removed, a new process must supply that token
+and the prior tool result from its own persisted history. The caller sends only
+a new continuation prompt, never reconstructing the old conversation for it.
+The continuation advances the receipt from 31 to 36 and the write count from one
+to two. Trusted artifact reads require exactly `seed` then `continued` in the
+effects log.
+
+The same run checks four independent fresh containers:
+
+| Restored data | Required result |
+| --- | --- |
+| Neither | Loading the session fails; no inference |
+| Workspace only | Loading the session fails; no inference |
+| Native session only | History returns, but the missing workspace prevents continuation |
+| Both | Native history and actual filesystem continuation both verify |
+
+These controls passed with **Copilot CLI 1.0.93** and **OpenCode 1.18.35**.
+OpenCode also passed in a derived image running as the non-root `node` user.
+Restoration preserves file UID/GID and creates the native-state parent
+directories with the image user's ownership; otherwise newly created parent
+directories can prevent the harness from starting.
+
+Run against disposable receipt images, using a **new** results directory:
+
+```powershell
+uv run --extra agents python -m build_scripts.agent_checkpoint_demo `
+  --harness copilot --image pyrit-copilot-receipt:1.0.93 `
+  --relay-host 0.0.0.0 --advertised-host host.docker.internal `
+  --results dbdata\checkpoint-copilot
+
+uv run --extra agents python -m build_scripts.agent_checkpoint_demo `
+  --harness opencode --image pyrit-opencode-receipt:1.18.35 `
+  --relay-host 0.0.0.0 --advertised-host host.docker.internal `
+  --results dbdata\checkpoint-opencode
+```
+
+The listener interface is explicit because Docker must reach the relay. Only the
+fresh execution token grants inference authority; the original token is revoked
+and tested for rejection. Use a trusted development machine/network. No host
+directory, Docker socket, or operator credential is mounted into the agent.
+The proof refuses volume-declaring images before container creation, rejects
+mounted runtime filesystems, and cleans up only its labeled containers.
+
+The output includes `checkpoint.json`, `workspace.tar`, `harness-state.tar`,
+`report.json`, and bounded stderr plus protocol/inference diagnostics. Saved
+archives are reread and their exact byte lengths and SHA-256 values verified
+before restoration. Archive reads are limited to 64 MiB and 2,000 entries each;
+links, special files, path escapes, and persisted relay tokens are rejected.
+Private state is **not generally safe to distribute**: this proof uses synthetic
+data in isolated homes. Its token check is not a general credential scrubber.
+
+Important boundaries:
+
+- This uses ACP [`session/load`](https://agentclientprotocol.com/protocol/v1/session-setup#loading-sessions),
+  whose advertised capability is checked. It does not exercise `session/resume`.
+  Load replays historical notifications from the harness to the client; these
+  are not newly executed tools and must stay separate from new-turn evidence.
+- OpenCode's snapshot includes its SQLite database **and its WAL/SHM files** from
+  the same stopped filesystem. Copying only the database while the agent runs
+  is not the tested operation. Copilot's snapshot contains its native
+  `session-state` directory. These layouts are version-specific, not ACP fields.
+- Only `/workspace` and the selected native-state subtree are preserved, with
+  the same absolute paths in the restored container. Unique/relocated workspace
+  roots, arbitrary images, MCP state, plugins, and multi-session homes are not
+  covered by this proof.
+- No process memory, in-flight turn, background job, socket, mounted volume, or
+  external side effect is restored or rolled back. A forced kill or OOM is not
+  accepted as a successful checkpoint capture.
+- No `docker commit`, privileged CRIU checkpoint, cloud service, or image
+  publication is involved. [`docker cp`](https://docs.docker.com/reference/cli/docker/container/cp/)
+  supplies file archives from stopped containers; application restoration is
+  demonstrated by the subsequent behavioral checks, not inferred from copying.
+
+The next runtime milestone needs explicit checkpoint identity/lineage, adapter-
+declared state layouts, capture admission, sensitive-state retention, fresh lease
+binding, and restored-history evidence boundaries. Until that is implemented,
+startup saves remain **configuration only**, evidence packages remain **read-only
+recordings**, and production resume readiness remains **unavailable**.
+
 ### Exporting a recording
 
 Administrators can inspect a **closed** execution's recording in Executions or
