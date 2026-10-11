@@ -195,7 +195,9 @@ workspaces and optional directory overlays follow the
 
 The entries accept flat scalar/list parameters, matching other initializers.
 Use `command: [custom-agent, --stdio]` with `harness_kind: acp` for a custom
-harness. Use the Python registration API for nested/custom inference requirements.
+harness. Inference requirements can be set with `inference_wire_api`,
+`inference_streaming`, `inference_tool_calls`, and `inference_input_modalities`
+on the harness initializer; the Python API also accepts the nested model.
 
 Equal registrations are idempotent. Conflicting values do not replace a running
 target. Preset names are resolved into copied settings before target construction;
@@ -206,7 +208,7 @@ runtime identity or cause conflicts between otherwise equal presets.
 Already-composed targets are unaffected when setup registries are reset.
 
 **Live apply:** declarative preset references, consent, and conflicts are checked
-in an isolated registry before replacing the runtime. Target-backed compositions
+in an isolated registry before replacing the runtime. Target-backed or pinned compositions
 currently require a backend restart because arbitrary model initializers cannot
 be safely executed during preflight. Declarative compositions depending on
 presets supplied by private Python initializers without isolated preflight
@@ -243,9 +245,60 @@ retain their original model pin until the operator selects a replacement.
 
 The target table distinguishes **Initializer-defined** from **Session-only**
 targets and displays selected preset names. Choosing an initializer-backed preset
-does not persist the newly composed target: durable form editing is follow-up
-work. Optional unavailable compositions are listed with their recorded reasons
+does not itself persist the newly composed target. Optional unavailable compositions are listed with their recorded reasons
 in the setup dialog, not presented as ready targets.
+
+#### Saving an agent for startup
+
+In **Create Target -> Agent (ACP)**, **Create Target** registers the target only
+in the current runtime. Select **Save for startup instead of creating a session
+target** to persist it to the backend's configured `.pyrit_conf` source instead.
+The source can be local or Azure Blob Storage; the existing configuration
+service and authentication are reused.
+
+The form shows the destination before saving and sends its version with the
+request. Concurrent or stale edits are rejected; **Reload destination** is an
+explicit retry, not an automatic overwrite.
+
+Saving appends three ordinary initializer entries: standalone copies of the
+harness and environment settings, then a target composition. It never edits
+private Python initializer code, mutates a selected preset, registers a live
+target, or starts an execution. **Saved**, **registered**, and **running** remain
+different states. Restart the backend to register a saved definition, then select
+it in chat. Existing sessions are unchanged until you explicitly restart.
+
+Startup names follow the initializer convention: lowercase letters, digits, and
+underscores, starting with a letter. Saving is additive: an identical retry is
+idempotent; an existing different definition must be saved under a new name.
+Comments and unrelated YAML values are retained using round-trip YAML editing.
+Emission follows the startup loader's YAML 1.1 schema, quoting strings such as
+`on`, `yes`, and `OFF`. The emitted text is reloaded and its saved initializer
+entries are validated against the target identity before the configuration is written.
+An explicit nonempty initializer list is required so writing an override cannot
+silently replace implicit/inherited defaults. Anchored or merged initializer lists
+must be edited through Configuration rather than this form.
+
+The composition stores `configuration_name`, `model_target_hash` when applicable,
+and `expected_target_hash`. Startup rejects identity drift rather than silently
+using a different model or configuration. All execution limits, credential
+references, optional workspace settings, and artifact paths are retained.
+No model-provider key or live target object is serialized. Never place secrets
+in command arguments or other plain configuration fields.
+Unordered inference modalities are serialized in a stable order for target
+identity, so process hash randomization cannot change a saved model binding.
+Older multimodal BYOK identities created with unordered modality serialization
+may differ from the canonical identity; recreate and explicitly reselect those
+definitions rather than bypassing their identity checks. Existing text-only pins
+are unchanged.
+
+**Model dependency:** saving an agent does not save its source model target.
+That target and required credential references must be recreated by an earlier
+configured initializer/environment source. BYOK saves with later
+`initialization_scripts` are rejected; place model registration in the configured
+initializer sequence. Saved pinned agents currently require restart rather than
+live apply. Missing dependencies and changed identity fail explicitly at startup.
+This first save workflow supports composed agents, not arbitrary ordinary target
+serialization.
 
 #### Optional Full Dataset Preload
 

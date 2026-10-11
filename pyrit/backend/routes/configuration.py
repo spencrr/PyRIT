@@ -12,16 +12,21 @@ import yaml
 from azure.core.exceptions import AzureError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from pyrit.agent.harness import HarnessAdapterRegistry
 from pyrit.backend.middleware.auth import AuthenticatedUser, require_admin
 from pyrit.backend.models.common import IdentifierStr, ProblemDetail
 from pyrit.backend.models.configuration import (
+    AgentStartupDestination,
     ConfigurationFileContent,
     EnvironmentFileContent,
     EnvironmentFileListResponse,
     ReinitializeRequest,
+    SaveAgentStartupRequest,
+    SavedAgentStartup,
     UpdateConfigurationFileRequest,
     UpdateEnvironmentFileRequest,
 )
+from pyrit.backend.services.agent_startup_service import save_agent_startup_async
 from pyrit.backend.services.configuration_file_service import (
     ConfigurationFileConflictError,
     ConfigurationFileService,
@@ -39,6 +44,67 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/config", tags=["config"], dependencies=[Depends(require_admin)])
 
 
+@router.get("/agent-startup")
+async def get_agent_startup_destination_async(request: Request) -> AgentStartupDestination:
+    """
+    Read the versioned save destination without exposing its configuration contents.
+
+    Returns:
+        AgentStartupDestination: The configured local/Blob source and edit version.
+    """
+    service = _get_configuration_file_service(request)
+    try:
+        _, version = await service.read_with_version_async()
+    except (AzureError, OSError) as error:
+        _audit_configuration_access(
+            request=request, action="read-agent-startup", source=service.source, outcome="unavailable"
+        )
+        raise _storage_unavailable() from error
+    _audit_configuration_access(
+        request=request, action="read-agent-startup", source=service.source, outcome="success", version=version
+    )
+    return AgentStartupDestination(source=service.source, version=version)
+
+
+@router.post("/agent-startup")
+async def save_agent_startup_definition_async(body: SaveAgentStartupRequest, request: Request) -> SavedAgentStartup:
+    """
+    Persist a startup snapshot; do not register, apply, or launch the target.
+
+    Returns:
+        SavedAgentStartup: Saved definition identity and source version.
+    """
+    runtime = getattr(request.app.state, "runtime_lifecycle", None)
+    if runtime is not None and runtime.reported_state != "ready":
+        raise HTTPException(status_code=503, detail="PyRIT must be ready to validate a startup target")
+    service = _get_configuration_file_service(request)
+    try:
+        result = await save_agent_startup_async(request=body, source=service)
+    except ConfigurationFileConflictError as error:
+        _audit_configuration_access(
+            request=request,
+            action="save-agent-startup",
+            source=service.source,
+            outcome="conflict",
+            version=body.version,
+        )
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (AzureError, OSError) as error:
+        _audit_configuration_access(
+            request=request, action="save-agent-startup", source=service.source, outcome="unavailable"
+        )
+        raise _storage_unavailable() from error
+    except ValueError as error:
+        _audit_configuration_access(
+            request=request, action="save-agent-startup", source=service.source, outcome="invalid"
+        )
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    _audit_configuration_access(
+        request=request, action="save-agent-startup", source=service.source, outcome="success", version=result.version
+    )
+    return result
+
+
 @router.get("/agent-presets")
 async def get_agent_presets_async() -> AgentPresetCatalog:
     """
@@ -48,6 +114,7 @@ async def get_agent_presets_async() -> AgentPresetCatalog:
         AgentPresetCatalog: A detached snapshot of the current setup registry.
     """
     catalog = AgentConfigurationRegistry.get_registry_singleton().catalog()
+    catalog.harness_adapters = HarnessAdapterRegistry.get_registry_singleton().list_adapters()
     fields = initializer_parameters(model=EnvironmentTemplate)
     catalog.environment_parameters = {
         environment: [

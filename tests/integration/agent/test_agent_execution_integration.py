@@ -2,16 +2,22 @@
 # Licensed under the MIT license.
 
 import asyncio
+import hashlib
+import io
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("acp")
 
+from pyrit.agent.evidence import AgentEvidenceExporter
 from pyrit.agent.execution_manager import AgentExecutionManager
+from pyrit.agent.harness import HarnessAdapter, HarnessAdapterRegistry
 from pyrit.executor.attack import AttackExecutor, AttackScoringConfig, PromptSendingAttack
+from pyrit.memory import CentralMemory
 from pyrit.models import (
     AttackOutcome,
     AttackSeedGroup,
@@ -22,6 +28,7 @@ from pyrit.models import (
 )
 from pyrit.models.agent_execution import AgentExecutionState, AgentProfile, AgentTurnStatus
 from pyrit.models.agent_setup import AgentTargetComposition
+from pyrit.models.harness_adapter import HarnessAdapterInfo
 from pyrit.prompt_target import AgentTarget
 from pyrit.registry import AgentConfigurationRegistry, InitializerRegistry, TargetRegistry
 from pyrit.scenario import AtomicAttack, AttackTechnique
@@ -29,16 +36,36 @@ from pyrit.score import MessageToolCallScorer
 from pyrit.setup.agent_initialization import register_agent_target
 
 
-async def test_initializer_composed_target_uses_the_existing_execution_and_scorer_async(tmp_path: Path) -> None:
+@pytest.mark.parametrize("harness_kind", ["acp", "receipt_v1"])
+async def test_initializer_composed_target_uses_the_existing_execution_and_scorer_async(
+    tmp_path: Path,
+    harness_kind: str,
+) -> None:
     from unittest.mock import patch
 
     from pyrit.registry import Registry
 
-    with patch.dict(Registry._singletons), patch.object(AgentConfigurationRegistry, "_singleton", None):
+    launches: list[str] = []
+
+    class ReceiptAdapter(HarnessAdapter):
+        @property
+        def info(self) -> HarnessAdapterInfo:
+            return HarnessAdapterInfo(name="receipt_v1", display_name="Receipt peer")
+
+        def launch_environment(self, *, home: str) -> dict[str, str]:
+            launches.append(home)
+            return {"RECEIPT_ADAPTER": "v1"}
+
+    with (
+        patch.dict(Registry._singletons, clear=True),
+        patch.object(AgentConfigurationRegistry, "_singleton", None),
+        patch.object(HarnessAdapterRegistry, "_singleton", None),
+    ):
+        HarnessAdapterRegistry.get_registry_singleton().register(ReceiptAdapter())
         registry = InitializerRegistry.get_registry_singleton()
         profile = scripted_profile()
         for name, params in [
-            ("harness_profile", {"name": "scripted", "harness_kind": "acp", "command": list(profile.command)}),
+            ("harness_profile", {"name": "scripted", "harness_kind": harness_kind, "command": list(profile.command)}),
             (
                 "environment_template",
                 {"name": "fixture", "environment": "local", "fixture_directory": profile.fixture_directory},
@@ -75,6 +102,24 @@ async def test_initializer_composed_target_uses_the_existing_execution_and_score
             (manager.store.directory(record.id) / "artifacts" / "receipt.json").read_text,
         )
         assert json.loads(receipt) == {"total": 31}
+        assert bool(launches) == (harness_kind == "receipt_v1")
+        exporter = AgentEvidenceExporter(manager=manager, memory=CentralMemory.get_memory_instance())
+        package = await exporter.archive_async(record.id)
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            assert manifest["event_cursor"] == record.event_count
+            artifact = archive.read("artifacts/receipt.json")
+            assert json.loads(artifact) == {"total": 31}
+            assert (
+                next(item for item in manifest["files"] if item["path"] == "artifacts/receipt.json")["sha256"]
+                == hashlib.sha256(artifact).hexdigest()
+            )
+            assert any(score["score_value"] == "true" for score in json.loads(archive.read("scores.json")))
+            assert any(
+                piece["original_value_data_type"] == "function_call"
+                for message in json.loads(archive.read("messages.json"))
+                for piece in message["message_pieces"]
+            )
 
 
 async def test_tool_only_subprocess_completion_is_scorable(tmp_path: Path) -> None:

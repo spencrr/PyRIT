@@ -463,6 +463,18 @@ See [message normalizers](./targets/11_message_normalizer) for capability behavi
   targets remain in the same registry, with provenance separate from target identity.
   Isolated declarative preflight never executes a model initializer; unsupported live
   replacement fails before resetting services. Private initializers can use the same APIs.
+  Trusted harness adapters register their launch/provider translations independently;
+  profiles contain only the adapter name and explicit settings. Adapter metadata drives
+  authoring. Unknown adapters prevent new use, not historical decoding or owned-resource
+  cleanup. Local/Docker provisioners retain lifecycle ownership.
+  Closed-execution evidence export captures a bounded journal prefix, current memory
+  evidence, and retained artifacts. Its read-only playback never executes tools or
+  changes scores; it is not a resumable harness/environment checkpoint.
+  CoPyRIT can save a resolved agent snapshot as ordinary initializer entries through
+  its versioned configuration service. This authoring operation neither registers
+  a target nor executes initialization. It preserves model/target identity pins and
+  references rather than serializing live clients or provider credentials. Pinned
+  startup agents require restart; source model registration remains a prerequisite.
 - Users can bring their own: subclass `PyRITInitializer`, implement `initialize_async`, and reference it from config or pass it in — letting teams package their own defaults and components.
 
 # Application surfaces

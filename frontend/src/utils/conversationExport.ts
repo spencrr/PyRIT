@@ -288,6 +288,11 @@ export function buildExportFilename(
  */
 export function downloadTextFile(content: string, filename: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType })
+  downloadBlob(blob, filename)
+}
+
+/** Download bytes without converting binary evidence to text. */
+export function downloadBlob(blob: Blob, filename: string): void {
   const objectUrl = URL.createObjectURL(blob)
   try {
     const link = document.createElement('a')

@@ -1,7 +1,13 @@
-import type { AgentEventPage, AgentExecution, ConversationExecution } from '@/types'
+import type { AgentEventPage, AgentEvidenceSnapshot, AgentExecution, ConversationExecution } from '@/types'
 import { apiClient, openApiEventStream } from './api'
 
 export const executionsApi = {
+  async evidence(id: string): Promise<AgentEvidenceSnapshot> {
+    return (await apiClient.get<AgentEvidenceSnapshot>(`/executions/${encodeURIComponent(id)}/evidence`)).data
+  },
+  async downloadEvidence(id: string): Promise<Blob> {
+    return (await apiClient.get<Blob>(`/executions/${encodeURIComponent(id)}/evidence.zip`, { responseType: 'blob' })).data
+  },
   stream(attackId: string, conversationId: string, executionId: string | null, after: number, signal: AbortSignal): Promise<Response> {
     const query = new URLSearchParams({ after: String(after) })
     if (executionId) query.set('execution_id', executionId)

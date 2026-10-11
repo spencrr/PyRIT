@@ -11,14 +11,14 @@ import { toApiError } from '@/services/errors'
 import { useRuntime } from '@/hooks/useRuntime'
 import type {
   AgentPresetCatalog, AgentTargetConfiguration, EnvironmentTemplate, HarnessProfile,
-  InferenceWireApi, RegisteredEnvironmentTemplate, RegisteredHarnessProfile, TargetInstance,
+  AgentStartupDestination, SavedAgentStartup, InferenceWireApi, RegisteredEnvironmentTemplate, RegisteredHarnessProfile, TargetInstance,
 } from '@/types'
 import ParameterField from '@/components/Parameters/ParameterField'
 import { buildParametersFromForm, getInitialFormValues, type ParameterFormValue } from '@/components/Parameters/parameterForm'
 import { targetEndpoint, targetModelName } from '@/utils/targetIdentity'
 
 import { useAgentTargetFormStyles } from './AgentTargetForm.styles'
-import { modelBindingLabel, modelBindingOptions } from './agentModelBinding'
+import { BUILTIN_HARNESS_ADAPTERS, modelBindingLabel, modelBindingOptions } from './agentModelBinding'
 
 interface AgentTargetFormProps {
   readonly onClose: () => void
@@ -49,7 +49,7 @@ export default function AgentTargetForm({
   const [environmentBase, setEnvironmentBase] = useState<EnvironmentTemplate | undefined>(initialConfiguration?.environment_template)
   const [name, setName] = useState(initialConfiguration ? `${initialConfiguration.name}-copy` : '')
   const [model, setModel] = useState(initialConfiguration?.model_binding.model ?? '')
-  const [harness, setHarness] = useState<'copilot' | 'opencode' | 'acp'>(
+  const [harness, setHarness] = useState(
     initialConfiguration?.harness_profile.harness_kind
       ?? (initialConfiguration ? 'acp' : 'copilot'),
   )
@@ -86,6 +86,28 @@ export default function AgentTargetForm({
   const [lifetime, setLifetime] = useState(String(initialConfiguration?.lifetime_seconds ?? 900))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [saveForStartup, setSaveForStartup] = useState(false)
+  const [destinationState, setDestinationState] = useState<{
+    generation: string; revision: number; destination: AgentStartupDestination
+  } | null>(null)
+  const [destinationRevision, setDestinationRevision] = useState(0)
+  const [destinationError, setDestinationError] = useState<string | null>(null)
+  const [saved, setSaved] = useState<SavedAgentStartup | null>(null)
+
+  useEffect(() => {
+    if (!saveForStartup || !ready) return
+    let stopped = false
+    targetsApi.getStartupDestination().then((destination) => {
+      if (!stopped) { setDestinationState({ generation, revision: destinationRevision, destination }); setDestinationError(null) }
+    }).catch((cause: unknown) => {
+      if (!stopped) setDestinationError(toApiError(cause).detail)
+    })
+    return () => { stopped = true }
+  }, [saveForStartup, ready, generation, destinationRevision])
+
+  const destination = destinationState?.generation === generation && destinationState.revision === destinationRevision
+    ? destinationState.destination : null
+  const startupBlocked = saveForStartup && (!destination || Boolean(destinationError) || !/^[a-z][a-z0-9_]{0,63}$/.test(name.trim()))
 
   useEffect(() => {
     if (!ready) return
@@ -105,6 +127,9 @@ export default function AgentTargetForm({
 
   const catalog = catalogState?.generation === generation ? catalogState.catalog : null
   const catalogUnavailable = !ready || loadingCatalog || !catalog || Boolean(catalogError)
+  const adapters = catalog?.harness_adapters ?? BUILTIN_HARNESS_ADAPTERS
+  const adapterMissing = !adapters.some((item) => item.name === harness)
+  const adapterBlocked = adapterMissing || (!BUILTIN_HARNESS_ADAPTERS.some((item) => item.name === harness) && catalogUnavailable)
   const harnessChanged = harnessPreset && (!catalog?.harness_profiles.some((item) => item.name === harnessPreset.name
     && JSON.stringify(item.profile) === JSON.stringify(harnessPreset.profile)))
   const environmentChanged = environmentPreset && (!catalog?.environment_templates.some((item) => item.name === environmentPreset.name
@@ -114,9 +139,9 @@ export default function AgentTargetForm({
   const sourcesCurrent = ready && sourceState?.generation === generation && sourceState.reload === reload
   const sources = sourcesCurrent ? sourceState.targets : []
 
-  const eligibility = (target: TargetInstance): string | null => modelBindingOptions(target, harness, requirements).reason
+  const eligibility = (target: TargetInstance): string | null => modelBindingOptions(target, harness, requirements, adapters).reason
   const selectedSource = sources.find((target: TargetInstance) => target.target_registry_name === source)
-  const protocols = selectedSource ? modelBindingOptions(selectedSource, harness, requirements).protocols : []
+  const protocols = selectedSource ? modelBindingOptions(selectedSource, harness, requirements, adapters).protocols : []
   const sourceChanged = Boolean(selectedSource && selectedSource.identifier.hash !== sourceHash)
   const sourceBlocked = Boolean(source) && (!sourcesCurrent || !sourceHash || Boolean(sourceError)
     || !selectedSource || sourceChanged || eligibility(selectedSource) !== null || !protocols.includes(wireApi))
@@ -140,19 +165,21 @@ export default function AgentTargetForm({
     }
     setSource(name)
     setSourceHash(selected.identifier.hash)
-    const options = modelBindingOptions(selected, harness, requirements).protocols
+    const options = modelBindingOptions(selected, harness, requirements, adapters).protocols
     if (!options.includes(wireApi)) setWireApi(options[0])
   }
 
-  const selectHarness = (kind: 'copilot' | 'opencode' | 'acp'): void => {
+  const selectHarness = (kind: string): void => {
+    const adapter = adapters.find((item) => item.name === kind)
+    if (!adapter) { setError('Harness adapter is unavailable. Refresh options.'); return }
     setHarnessBase(undefined)
     setHarness(kind)
-    setCommand(kind === 'acp' ? '' : kind)
-    setArgumentsText(kind === 'copilot' ? '--acp\n--stdio' : kind === 'opencode' ? 'acp' : '')
+    setCommand(adapter.default_command[0] ?? '')
+    setArgumentsText(adapter.default_command.slice(1).join('\n'))
     setAuthentication('')
     setCredential('')
     if (selectedSource) {
-      const options = modelBindingOptions(selectedSource, kind).protocols
+      const options = modelBindingOptions(selectedSource, kind, undefined, adapters).protocols
       if (options.length === 1) setWireApi(options[0])
     }
   }
@@ -171,7 +198,7 @@ export default function AgentTargetForm({
     setAuthentication(profile.authentication_method ?? '')
     setPermissionPolicy(profile.permission_policy)
     if (selectedSource) {
-      const options = modelBindingOptions(selectedSource, profile.harness_kind, profile.inference_requirements).protocols
+      const options = modelBindingOptions(selectedSource, profile.harness_kind, profile.inference_requirements, adapters).protocols
       if (options.length === 1) setWireApi(options[0])
     }
   }
@@ -197,11 +224,12 @@ export default function AgentTargetForm({
 
   const submit = async (): Promise<void> => {
     if (busy) return
+    if (startupBlocked) { setError('Select a current startup destination and use a lowercase startup name.'); return }
     if (environmentEditsBlocked) {
       setError('Environment edits are preserved. Refresh their settings before creating the target.')
       return
     }
-    if (!ready || sourceBlocked || presetsBlocked || (source && authentication.trim())) {
+    if (!ready || adapterBlocked || sourceBlocked || presetsBlocked || (source && authentication.trim())) {
       setError('Selected model or preset settings are unavailable or changed. Confirm your selection before registering.')
       return
     }
@@ -249,13 +277,21 @@ export default function AgentTargetForm({
         capture_inference_content: captureInference,
         max_inference_requests: Number(maxInference),
       }
-      const target = await targetsApi.createTarget({
-        name: configuration.name, type: 'AgentTarget', params: { agent_configuration: configuration },
-        ...((harnessPreset || environmentPreset) ? { agent_presets: {
+      const selection = (harnessPreset || environmentPreset) ? { agent_presets: {
           harness_profile: harnessPreset?.name ?? null, environment_template: environmentPreset?.name ?? null,
-        } } : {}),
-      })
-      onCreated(target)
+      } } : {}
+      if (saveForStartup && destination) {
+        const result = await targetsApi.saveForStartup({
+          name: name.trim(), configuration, version: destination.version, ...selection,
+        })
+        setSaved(result)
+        setDestinationState({ generation, revision: destinationRevision, destination: result })
+      } else {
+        const target = await targetsApi.createTarget({
+          name: configuration.name, type: 'AgentTarget', params: { agent_configuration: configuration }, ...selection,
+        })
+        onCreated(target)
+      }
     } catch (cause: unknown) {
       setError(toApiError(cause).detail)
     } finally { setBusy(false); onBusyChange?.(false) }
@@ -263,10 +299,10 @@ export default function AgentTargetForm({
 
   const actions = (
     <div className={styles.actions}>
-      <Button onClick={onClose} disabled={busy}>Cancel</Button>
-      <Button form={formId} type="submit" appearance="primary" disabled={busy || !ready || environmentEditsBlocked || presetsBlocked || sourceBlocked || (Boolean(source) && Boolean(authentication.trim())) || !command.trim()
+      <Button onClick={onClose} disabled={busy}>{saved ? 'Close' : 'Cancel'}</Button>
+      <Button form={formId} type="submit" appearance="primary" disabled={busy || !ready || adapterBlocked || startupBlocked || environmentEditsBlocked || presetsBlocked || sourceBlocked || (Boolean(source) && Boolean(authentication.trim())) || !command.trim()
         || !name.trim() || (environment === 'docker' && !image.trim()) || (environment === 'local' && !acknowledged)}>
-        {busy ? 'Creating...' : selectForChat ? 'Create and select' : 'Create Target'}
+        {busy ? saveForStartup ? 'Saving...' : 'Creating...' : saveForStartup ? 'Save for startup' : selectForChat ? 'Create and select' : 'Create Target'}
       </Button>
     </div>
   )
@@ -275,14 +311,18 @@ export default function AgentTargetForm({
     <form id={formId} className={styles.form} onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <fieldset className={styles.settingsFields} disabled={busy}>
         {error && <MessageBar intent="error"><MessageBarBody>{error}</MessageBarBody></MessageBar>}
+        {saved && <MessageBar intent="success">
+          Saved {saved.name} for the next backend start. No target was registered or started; existing sessions are unchanged.
+        </MessageBar>}
         <div className={styles.toolbar}>
-          <Badge appearance="outline">Session-only</Badge>
+          <Badge appearance="outline">{saveForStartup ? 'Startup configuration' : 'Session-only'}</Badge>
           <Button className={styles.presetAction} appearance="subtle" onClick={reloadPresets} disabled={loadingCatalog || !ready}>Refresh options</Button>
         </div>
         {catalogError && <MessageBar intent="error">Presets unavailable: {catalogError}. Refresh or use custom settings.</MessageBar>}
+        {adapterBlocked && <MessageBar intent="error">Harness adapter is unavailable. Refresh options or install its trusted initializer before creating this target.</MessageBar>}
         {presetsBlocked && <MessageBar intent="warning">A selected preset is unavailable or changed. Accept its update or customize the copied settings.</MessageBar>}
         {environmentEditsBlocked && <MessageBar intent="warning">Environment edits are preserved, but their settings could not be verified. Refresh options before creating the target.</MessageBar>}
-        <Field label="Target name" required>
+        <Field label="Target name" required hint={saveForStartup ? 'Startup names use lowercase letters, digits and underscores, starting with a letter.' : undefined}>
           <Input value={name} onChange={(_, data) => setName(data.value)} required />
         </Field>
         <div className={styles.composition}>
@@ -339,8 +379,9 @@ export default function AgentTargetForm({
             </>}
             <fieldset className={styles.settingsFields} disabled={Boolean(harnessPreset)}>
               <Field label="Harness">
-                <Select className={styles.select} value={harness} onChange={(_, data) => selectHarness(data.value === 'opencode' ? 'opencode' : data.value === 'acp' ? 'acp' : 'copilot')}>
-                  <option value="copilot">GitHub Copilot</option><option value="opencode">OpenCode</option><option value="acp">Custom ACP</option>
+                <Select className={styles.select} value={harness} onChange={(_, data) => selectHarness(data.value)}>
+                  {adapterMissing && <option value={harness} disabled>{harness} (unavailable)</option>}
+                  {adapters.map((adapter) => <option key={adapter.name} value={adapter.name}>{adapter.display_name}</option>)}
                 </Select>
               </Field>
               <Field label="Tool permission policy">
@@ -422,6 +463,19 @@ export default function AgentTargetForm({
           <summary>Unavailable initializer targets ({Object.keys(catalog.unavailable_targets).length})</summary>
           {Object.entries(catalog.unavailable_targets).map(([name, reason]) => <Text block key={name}>{name}: {reason}</Text>)}
         </details>}
+        <Checkbox label="Save for startup instead of creating a session target" checked={saveForStartup}
+          onChange={(_, data) => { setSaveForStartup(data.checked === true); setSaved(null); setError(null) }} />
+        {saveForStartup && <section className={styles.section} aria-label="Startup destination">
+          <Text weight="semibold">Startup configuration</Text>
+          <Text size={200}>{destination?.source ?? 'Loading destination...'}</Text>
+          <Text size={200}>Appends copies of these settings as initializer entries. It does not edit private initializer code or apply changes to this runtime.</Text>
+          <Text size={200}>Keep secrets in credential references, never in commands or other fields. Existing startup names cannot be overwritten here.</Text>
+          {source && <Text size={200}>The model target "{source}" must be recreated by an earlier configured initializer with the same identity. Its definition and credentials are not copied.</Text>}
+          {destinationError && <MessageBar intent="error">{destinationError}</MessageBar>}
+          <Button className={styles.presetAction} onClick={() => { setDestinationRevision((value) => value + 1); setDestinationError(null) }}>
+            Reload destination
+          </Button>
+        </section>}
       </fieldset>
       {actionsContainer ? createPortal(actions, actionsContainer) : actionsContainer === undefined ? actions : null}
     </form>

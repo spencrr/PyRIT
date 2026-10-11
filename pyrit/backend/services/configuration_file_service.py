@@ -7,7 +7,7 @@ import asyncio
 import hashlib
 import os
 import tempfile
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -196,6 +196,26 @@ class ConfigurationFileService:
                 raise ConfigurationFileConflictError("Configuration changed; reload it before saving")
             await self._write_source_async(content)
         return _configuration_version(content=content)
+
+    async def amend_async(self, *, transform: Callable[[str], str], expected_version: str) -> str:
+        """
+        Atomically amend the versioned source through the same storage and write lock.
+
+        Returns:
+            str: The persisted content's version.
+
+        Raises:
+            ConfigurationFileConflictError: The source changed since it was selected.
+        """
+        async with self._update_lock:
+            content, exists = await self._read_state_async()
+            if _configuration_version(content=content, exists=exists) != expected_version:
+                raise ConfigurationFileConflictError("Configuration changed; reload the destination before saving")
+            updated = await asyncio.to_thread(transform, content)
+            _validate_configuration_content(updated)
+            if updated != content:
+                await self._write_source_async(updated)
+            return _configuration_version(content=updated, exists=exists or updated != content)
 
     async def _write_source_async(self, content: str) -> str:
         """

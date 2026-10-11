@@ -106,6 +106,9 @@ def test_execution_policy_defaults_and_bounds_match_runtime_configuration() -> N
         "environment_template",
         "model",
         "model_target",
+        "model_target_hash",
+        "configuration_name",
+        "expected_target_hash",
         "wire_api",
         "required",
         "local_execution_acknowledged",
@@ -126,7 +129,8 @@ def test_initializer_catalog_exposes_existing_flat_parameter_contract() -> None:
         assert parameters["name"]["required"] is True
         assert all(not isinstance(value, type) for parameter in parameters.values() for value in parameter.values())
         if name == "harness_profile":
-            assert parameters["harness_kind"]["choices"] == ["copilot", "opencode", "acp"]
+            assert parameters["harness_kind"]["choices"] is None
+            assert parameters["harness_kind"]["type_name"] == "str"
             assert parameters["command"]["type_name"] == "list[str]"
             assert parameters["command"]["default"] == ["copilot", "--acp", "--stdio"]
             assert parameters["credential_env"]["default"] == []
@@ -282,7 +286,7 @@ async def test_reset_discards_presets_but_not_existing_target_settings_async() -
 @pytest.mark.parametrize(
     ("initializer", "params", "match"),
     [
-        ("harness_profile", {"name": "one", "command": ["python"], "harness_kind": "not_real"}, "harness_kind"),
+        ("harness_profile", {"name": "one", "command": ["python"], "harness_kind": "invalid/name"}, "name"),
         ("environment_template", {"name": "one", "environment": "docker"}, "image"),
         (
             "environment_template",

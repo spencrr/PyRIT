@@ -118,18 +118,26 @@ def resolve_agent_configuration(
             "environment_template",
             "model",
             "model_target",
+            "model_target_hash",
+            "configuration_name",
+            "expected_target_hash",
             "wire_api",
             "required",
             "local_execution_acknowledged",
             "name",
         }
     )
+    if composition.configuration_name is not None:
+        values["name"] = composition.configuration_name
     configuration = AgentTargetConfiguration(
         **values,
         harness_profile=harness,
         environment_template=template,
         model_binding=ModelBinding(
-            model=composition.model, target_registry_name=composition.model_target, wire_api=composition.wire_api
+            model=composition.model,
+            target_registry_name=composition.model_target,
+            wire_api=composition.wire_api,
+            target_identifier_hash=composition.model_target_hash,
         ),
     )
     configuration.to_profile()
@@ -181,6 +189,11 @@ def register_agent_target(composition: AgentTargetComposition) -> "AgentTarget |
     target = registry.create_instance("AgentTarget", agent_configuration=configuration)
     if not isinstance(target, AgentTarget):
         raise TypeError("AgentTarget registry entry must construct an AgentTarget")
+    if (
+        composition.expected_target_hash is not None
+        and target.get_identifier().hash != composition.expected_target_hash
+    ):
+        raise ValueError(f"Saved agent target '{composition.name}' no longer matches its pinned configuration")
     if existing is not None:
         if not isinstance(existing, AgentTarget) or existing.get_identifier().hash != target.get_identifier().hash:
             raise ValueError(f"Target '{composition.name}' already has a different definition")
@@ -230,8 +243,8 @@ def preflight_agent_initializers(
             missing = [name for name in configuration.harness_profile.credential_env if not environment.get(name)]
             if missing and composition.required:
                 raise ValueError(f"Missing credential references for '{composition.name}': {', '.join(missing)}")
-            if composition.model_target is not None:
+            if composition.model_target is not None or composition.expected_target_hash is not None:
                 raise ValueError(
-                    "Live replacement of target-backed agent compositions requires a restart: "
-                    "model initializer construction cannot be validated without executing it"
+                    "Live replacement of target-backed or pinned agent compositions requires a restart: "
+                    "their complete startup dependencies cannot be validated without executing initialization"
                 )

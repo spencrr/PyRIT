@@ -6,6 +6,33 @@
 from pydantic import BaseModel, Field
 
 from pyrit.backend.models.common import MAX_FILE_CONTENT_LENGTH, IdentifierStr
+from pyrit.models.agent_execution import AgentTargetConfiguration
+from pyrit.models.agent_setup import AgentPresetSelection
+
+
+class AgentStartupDestination(BaseModel):
+    """Versioned destination for declarative agent startup entries; no raw configuration content."""
+
+    source: str
+    version: str
+
+
+class SaveAgentStartupRequest(BaseModel):
+    """Save a resolved agent configuration without registering or running it."""
+
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    configuration: AgentTargetConfiguration
+    agent_presets: AgentPresetSelection | None = None
+    version: IdentifierStr
+
+
+class SavedAgentStartup(AgentStartupDestination):
+    """Persistence acknowledgement, not runtime registration or provisioning."""
+
+    name: str
+    target_identifier_hash: str
+    model_target: str | None = None
+    applied: bool = False
 
 
 class ConfigurationFileContent(BaseModel):

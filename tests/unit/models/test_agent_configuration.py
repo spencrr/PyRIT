@@ -12,6 +12,21 @@ from pyrit.models.agent_execution import (
     HarnessProfile,
     ModelBinding,
 )
+from pyrit.models.model_inference import InferenceRequirements
+
+
+def test_inference_requirement_json_has_canonical_order_without_changing_runtime_set() -> None:
+    requirements = InferenceRequirements(input_modalities=frozenset({"text", "image", "audio"}))
+    assert requirements.model_dump()["input_modalities"] == frozenset({"text", "image", "audio"})
+    assert requirements.model_dump(mode="json")["input_modalities"] == ["audio", "image", "text"]
+    profile = HarnessProfile(inference_requirements=requirements)
+    config = AgentTargetConfiguration(harness_profile=profile, environment_template=EnvironmentTemplate(image="test"))
+    assert config.to_profile().model_dump(mode="json")["inference_requirements"]["input_modalities"] == [
+        "audio",
+        "image",
+        "text",
+    ]
+    assert AgentTargetConfiguration.model_validate_json(config.model_dump_json()) == config
 
 
 def test_configuration_separates_model_harness_and_environment() -> None:

@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from enum import Enum
@@ -13,11 +14,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, StrictBool
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 
+from pyrit.agent.evidence import AgentEvidenceExporter, EvidenceBudgetError, EvidenceNotSettledError
 from pyrit.agent.runtime import get_agent_execution_manager
 from pyrit.backend.middleware.auth import AuthenticatedUser, require_admin
 from pyrit.backend.services.agent_execution_service import resolve_conversation_execution_async
+from pyrit.memory import CentralMemory
+from pyrit.models.agent_evidence import AgentEvidenceSnapshot
 from pyrit.models.agent_execution import (
     AgentApproval,
     AgentConnectionState,
@@ -30,6 +34,8 @@ from pyrit.models.agent_execution import (
 
 router = APIRouter(prefix="/executions", tags=["executions"], dependencies=[Depends(require_admin)])
 conversation_router = APIRouter(prefix="/attacks", tags=["attacks"])
+logger = logging.getLogger(__name__)
+_evidence_slots = asyncio.Semaphore(2)
 
 
 class ConversationExecution(BaseModel):
@@ -368,6 +374,63 @@ async def get_execution_events_async(
     """
     await get_execution_async(execution_id)
     return await get_agent_execution_manager().store.events_async(execution_id=execution_id, after=after, limit=limit)
+
+
+async def _evidence_async(*, execution_id: UUID, archive: bool) -> AgentEvidenceSnapshot | bytes:
+    await get_execution_async(execution_id)
+    if _evidence_slots.locked():
+        raise HTTPException(status_code=429, detail="Evidence export capacity reached; retry later")
+    async with _evidence_slots:
+        exporter = AgentEvidenceExporter(
+            manager=get_agent_execution_manager(),
+            memory=CentralMemory.get_memory_instance(),
+        )
+        try:
+            return (
+                await exporter.archive_async(execution_id) if archive else await exporter.snapshot_async(execution_id)
+            )
+        except EvidenceNotSettledError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except EvidenceBudgetError as error:
+            raise HTTPException(status_code=413, detail=str(error)) from error
+        except (OSError, ValueError) as error:
+            logger.exception("Could not export evidence for execution %s", execution_id)
+            raise HTTPException(status_code=500, detail="Execution evidence could not be read consistently") from error
+
+
+@router.get("/{execution_id}/evidence")
+async def get_execution_evidence_async(execution_id: UUID, response: Response) -> AgentEvidenceSnapshot:
+    """
+    Read a closed execution for admin-only playback without re-executing tools.
+
+    Returns:
+        AgentEvidenceSnapshot: Scoped recording and replay limitations.
+    """
+    snapshot = await _evidence_async(execution_id=execution_id, archive=False)
+    assert isinstance(snapshot, AgentEvidenceSnapshot)
+    response.headers["Cache-Control"] = "no-store"
+    return snapshot
+
+
+@router.get("/{execution_id}/evidence.zip")
+async def download_execution_evidence_async(execution_id: UUID) -> Response:
+    """
+    Download a bounded package; permissions match full execution administration.
+
+    Returns:
+        Response: ZIP with an explicit manifest, hashes, and omissions.
+    """
+    archive = await _evidence_async(execution_id=execution_id, archive=True)
+    assert isinstance(archive, bytes)
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="pyrit-execution-{execution_id}.zip"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/{execution_id}/cancel")

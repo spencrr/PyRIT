@@ -4,10 +4,12 @@
 """Flat initializer inputs; resolved runtime configuration remains AgentTargetConfiguration."""
 
 from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from pyrit.models.agent_execution import AgentEnvironment, EnvironmentTemplate, HarnessProfile
+from pyrit.models.harness_adapter import HarnessAdapterInfo
 from pyrit.models.identifiers.class_name_utils import validate_registry_name
 from pyrit.models.model_inference import InferenceWireApi
 from pyrit.models.parameter import Parameter
@@ -22,7 +24,25 @@ class HarnessProfileDefinition(HarnessProfile):
     """One named harness value; credentials remain environment names."""
 
     name: str
+    inference_wire_api: InferenceWireApi = InferenceWireApi.CHAT_COMPLETIONS
+    inference_streaming: bool = True
+    inference_tool_calls: bool = True
+    inference_input_modalities: list[str] = Field(default_factory=lambda: ["text"])
     _name_validator = field_validator("name")(_name)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flattened_inference(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        values = dict(value)
+        requirements = dict(values.get("inference_requirements", {}))
+        for name in ("wire_api", "streaming", "tool_calls", "input_modalities"):
+            if f"inference_{name}" in values:
+                requirements[name] = values[f"inference_{name}"]
+        if requirements:
+            values["inference_requirements"] = requirements
+        return values
 
 
 class EnvironmentTemplateDefinition(EnvironmentTemplate):
@@ -55,6 +75,7 @@ class AgentPresetCatalog(BaseModel):
     environment_templates: list[RegisteredEnvironmentTemplate] = Field(default_factory=list)
     unavailable_targets: dict[str, str] = Field(default_factory=dict)
     environment_parameters: dict[AgentEnvironment, list[Parameter]] = Field(default_factory=dict)
+    harness_adapters: list[HarnessAdapterInfo] = Field(default_factory=list)
 
 
 class AgentPresetSelection(BaseModel):
@@ -96,6 +117,9 @@ class AgentTargetComposition(BaseModel):
     environment_template: str
     model: str = ""
     model_target: str | None = None
+    model_target_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    configuration_name: str | None = Field(default=None, min_length=1, max_length=100)
+    expected_target_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     wire_api: InferenceWireApi | None = None
     required: bool = True
     local_execution_acknowledged: bool = False

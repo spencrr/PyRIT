@@ -1,0 +1,147 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+import json
+from collections.abc import Iterator
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from pyrit.agent.environment import ExecutionEnvironment
+from pyrit.agent.execution_manager import AgentExecutionManager
+from pyrit.agent.harness import (
+    HarnessAdapter,
+    HarnessAdapterRegistry,
+    inference_environment,
+    launch_environment,
+    validate_harness_authentication,
+    validate_inference_adapter,
+)
+from pyrit.models.agent_execution import AgentExecution, AgentExecutionState, AgentProfile, HarnessProfile
+from pyrit.models.harness_adapter import HarnessAdapterInfo
+from pyrit.models.model_inference import InferenceWireApi
+from pyrit.setup.initialization import reset_setup_registries
+
+
+class TeamAdapter(HarnessAdapter):
+    @property
+    def info(self) -> HarnessAdapterInfo:
+        return HarnessAdapterInfo(
+            name="team_v1",
+            display_name="Team agent",
+            default_command=("team-agent", "--stdio"),
+            wire_apis=(InferenceWireApi.RESPONSES,),
+            native_model_credentials=("TEAM_NATIVE_KEY",),
+        )
+
+    def launch_environment(self, *, home: str) -> dict[str, str]:
+        return {"TEAM_HOME": home}
+
+    def inference_environment(
+        self,
+        *,
+        model: str,
+        wire_api: InferenceWireApi,
+        base_url: str,
+        token: str,
+    ) -> dict[str, str]:
+        return {"TEAM_MODEL": model, "TEAM_API": wire_api.value, "TEAM_RELAY": base_url, "TEAM_TOKEN": token}
+
+
+@pytest.fixture
+def adapter_registry() -> Iterator[HarnessAdapterRegistry]:
+    registry = HarnessAdapterRegistry()
+    with patch.object(HarnessAdapterRegistry, "_singleton", registry):
+        yield registry
+
+
+def test_custom_adapter_dispatch_and_capabilities(adapter_registry: HarnessAdapterRegistry) -> None:
+    adapter = TeamAdapter()
+    adapter_registry.register(adapter)
+    adapter_registry.register(adapter)
+    assert adapter_registry.get("team_v1") is adapter
+    assert next(info for info in adapter_registry.list_adapters() if info.name == "team_v1") == adapter.info
+    assert launch_environment(kind="team_v1", home="private") == {"TEAM_HOME": "private"}
+    assert inference_environment(
+        kind="team_v1",
+        model="selected",
+        wire_api=InferenceWireApi.RESPONSES,
+        base_url="http://relay/v1",
+        token="scoped-token",
+    ) == {
+        "TEAM_MODEL": "selected",
+        "TEAM_API": "responses",
+        "TEAM_RELAY": "http://relay/v1",
+        "TEAM_TOKEN": "scoped-token",
+    }
+    with pytest.raises(ValueError, match="already registered"):
+        adapter_registry.register(TeamAdapter())
+    with pytest.raises(ValueError, match="does not support"):
+        validate_inference_adapter(kind="team_v1", wire_api=InferenceWireApi.CHAT_COMPLETIONS)
+    with pytest.raises(ValueError, match="native model credentials"):
+        validate_harness_authentication(
+            harness=HarnessProfile(
+                harness_kind="team_v1", command=("team-agent",), credential_env=("TEAM_NATIVE_KEY",)
+            ),
+            target_backed=True,
+        )
+
+
+def test_unknown_adapter_data_roundtrips_without_import_or_fallback(adapter_registry: HarnessAdapterRegistry) -> None:
+    profile = AgentProfile(image="test", harness_kind="team_v1", command=("team-agent",))
+    assert AgentProfile.model_validate_json(profile.model_dump_json()) == profile
+    with pytest.raises(ValueError, match="unavailable"):
+        launch_environment(kind=profile.harness_kind, home="private")
+    with pytest.raises(ValueError, match="unavailable"):
+        validate_harness_authentication(
+            harness=HarnessProfile(harness_kind="team_v1", command=("agent",)), target_backed=False
+        )
+
+
+async def test_interrupted_cleanup_does_not_require_missing_adapter_async(
+    tmp_path: Path,
+    adapter_registry: HarnessAdapterRegistry,
+) -> None:
+    record = AgentExecution(
+        owner_id="previous",
+        conversation_id="conversation",
+        target_id="target",
+        profile=AgentProfile(image="test", harness_kind="team_v1", command=("team-agent",)),
+        state=AgentExecutionState.IDLE,
+        provider_id="owned-container",
+    )
+    manager = AgentExecutionManager(root=tmp_path)
+    await manager.store.save_async(record)
+    info = {
+        "Config": {"Labels": {"pyrit.execution": str(record.id), "pyrit.owner": record.owner_id}},
+        "State": {"Running": True},
+    }
+    with patch.object(
+        ExecutionEnvironment,
+        "_docker_async",
+        new_callable=AsyncMock,
+        side_effect=["container-id", json.dumps([info]), "", ""],
+    ) as docker:
+        await manager.start_async()
+        try:
+            assert manager.records[record.id].state == AgentExecutionState.CLOSED
+            assert [call.args[:1] for call in docker.call_args_list] == [
+                ("container",),
+                ("inspect",),
+                ("stop",),
+                ("rm",),
+            ]
+            assert all(not call.kwargs.get("credentials") for call in docker.call_args_list)
+        finally:
+            await manager.close_async()
+
+
+@pytest.mark.usefixtures("patch_central_database")
+def test_setup_reset_discards_custom_adapters(adapter_registry: HarnessAdapterRegistry) -> None:
+    adapter_registry.register(TeamAdapter())
+    reset_setup_registries()
+    current = HarnessAdapterRegistry.get_registry_singleton()
+    assert current.get("copilot")
+    with pytest.raises(ValueError, match="unavailable"):
+        current.get("team_v1")

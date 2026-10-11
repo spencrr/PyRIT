@@ -6,6 +6,9 @@ import { compatibility, COMPATIBILITY_HEADER } from './compatibility'
 import { getGraphScopes } from '../auth/msalConfig'
 import type {
   AgentPresetCatalog,
+  AgentStartupDestination,
+  SaveAgentStartupRequest,
+  SavedAgentStartup,
   TargetInstance,
   TargetListResponse,
   TargetTypeListResponse,
@@ -252,6 +255,12 @@ export const runtimeApi = {
 }
 
 export const targetsApi = {
+  getStartupDestination: async (): Promise<AgentStartupDestination> => {
+    return (await apiClient.get<AgentStartupDestination>('/config/agent-startup')).data
+  },
+  saveForStartup: async (request: SaveAgentStartupRequest): Promise<SavedAgentStartup> => {
+    return (await apiClient.post<SavedAgentStartup>('/config/agent-startup', request)).data
+  },
   listAgentPresets: async (): Promise<AgentPresetCatalog> => {
     return (await apiClient.get<AgentPresetCatalog>('/config/agent-presets')).data
   },

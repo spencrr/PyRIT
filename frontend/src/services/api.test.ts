@@ -282,6 +282,11 @@ describe("api service", () => {
   });
 
   describe("targetsApi", () => {
+    it("uses the versioned startup configuration endpoints without creating a runtime target", async () => {
+      (apiClient.get as jest.Mock).mockResolvedValueOnce({ data: { source: "startup.yaml", version: "v1" } });
+      await expect(targetsApi.getStartupDestination()).resolves.toEqual({ source: "startup.yaml", version: "v1" });
+      expect(apiClient.get).toHaveBeenCalledWith("/config/agent-startup");
+    });
     it("loads agent presets from the existing admin configuration surface", async () => {
       const response = { data: { harness_profiles: [], environment_templates: [], unavailable_targets: {} } };
       (apiClient.get as jest.Mock).mockResolvedValueOnce(response);

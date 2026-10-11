@@ -2,7 +2,6 @@
 # Licensed under the MIT license.
 
 from pyrit.models import Parameter
-from pyrit.models.agent_execution import HarnessProfile
 from pyrit.models.agent_setup import HarnessProfileDefinition
 from pyrit.registry import AgentConfigurationRegistry
 from pyrit.setup.agent_initialization import AgentConfigurationInitializer, initializer_parameters, initializer_values
@@ -13,7 +12,7 @@ class HarnessProfileInitializer(AgentConfigurationInitializer):
 
     @property
     def supported_parameters(self) -> list[Parameter]:
-        """The flat harness settings; nested inference requirements remain a Python API."""
+        """The flat harness and inference requirements accepted by configuration files."""
         return initializer_parameters(model=HarnessProfileDefinition, exclude=frozenset({"inference_requirements"}))
 
     def definition(self) -> HarnessProfileDefinition:
@@ -39,6 +38,6 @@ class HarnessProfileInitializer(AgentConfigurationInitializer):
         definition = self.definition()
         presets.register_harness(
             name=definition.name,
-            profile=HarnessProfile.model_validate(definition.model_dump(exclude={"name"})),
+            profile=definition,
             initializer=type(self).__name__,
         )

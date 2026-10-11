@@ -48,6 +48,7 @@ import CreateTargetDialog from '@/components/Config/CreateTargetDialog'
 import { useAgentExecution } from '@/hooks/useAgentExecution'
 import AgentActivity from './AgentActivity'
 import AgentExecutionStatus from './AgentExecutionStatus'
+import AgentEvidencePanel from '@/components/Executions/AgentEvidencePanel'
 import {
   basenameFromValue,
   applyConvertedValues,
@@ -1845,6 +1846,10 @@ export default function ChatWindow({
         )}
         {editDraft === null && isAgentTarget && <AgentExecutionStatus execution={agent.execution} feed={agent.feed}
           disabled={isMutationLocked} cancelling={agent.cancelling} onCancel={agent.cancel} onControl={agent.control} />}
+        {editDraft === null && canConfigureAgents && agent.execution && <details>
+          <summary>Execution evidence</summary>
+          <AgentEvidencePanel key={agent.execution.id} executionId={agent.execution.id} closed={agent.execution.state === 'closed'} />
+        </details>}
         {editDraft === null && agent.error && <MessageBar intent="error"><MessageBarBody>Agent activity unavailable: {agent.error}</MessageBarBody></MessageBar>}
         {editDraft === null && <MessageList
           messages={messages}

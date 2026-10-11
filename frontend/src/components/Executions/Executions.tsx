@@ -8,6 +8,7 @@ import {
 import { Link as RouterLink, useSearchParams } from 'react-router'
 
 import CreateTargetDialog from '@/components/Config/CreateTargetDialog'
+import AgentEvidencePanel from './AgentEvidencePanel'
 import { executionsApi } from '@/services/executions'
 import { toApiError } from '@/services/errors'
 import type { AgentExecution, AgentExecutionEvent, AgentTargetConfiguration, TargetInstance } from '@/types'
@@ -173,6 +174,7 @@ export default function Executions({ canManage, onTargetCreated }: ExecutionsPro
         </div>
         <p>A new target configuration starts fresh on the next conversation; it does not resume this execution.</p>
         <p>Retained artifacts: {selected.artifacts.join(', ') || 'None'}</p>
+        <AgentEvidencePanel key={selected.id} executionId={selected.id} closed={selected.state === 'closed'} />
         {selected.artifact_errors.map((message: string) => <MessageBar key={message} intent="warning">{message}</MessageBar>)}
         <details><summary>Resolved configuration</summary><pre className={styles.event}>{JSON.stringify(selected.configuration, null, 2)}</pre></details>
         <Text as="h3">Live recorded events (latest 500 displayed)</Text>

@@ -5,7 +5,7 @@
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
 
 
 class InferenceWireApi(str, Enum):
@@ -23,6 +23,16 @@ class InferenceRequirements(BaseModel):
     streaming: bool = True
     tool_calls: bool = True
     input_modalities: frozenset[str] = frozenset({"text"})
+
+    @field_serializer("input_modalities", when_used="json")
+    def _serialize_input_modalities(self, value: frozenset[str]) -> list[str]:
+        """
+        Serialize unordered requirements consistently across processes.
+
+        Returns:
+            list[str]: Stable values for configuration snapshots and target identities.
+        """
+        return sorted(value)
 
 
 class InferenceCapabilities(BaseModel):

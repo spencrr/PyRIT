@@ -27,7 +27,7 @@ export interface InferenceCapabilities {
 }
 
 export interface HarnessProfile {
-  readonly harness_kind?: 'copilot' | 'opencode' | 'acp'
+  readonly harness_kind?: string
   readonly command: string[]
   readonly credential_env: string[]
   readonly authentication_method: string | null
@@ -65,6 +65,14 @@ export interface AgentPresetCatalog {
   readonly environment_templates: RegisteredEnvironmentTemplate[]
   readonly unavailable_targets: Record<string, string>
   readonly environment_parameters?: Partial<Record<EnvironmentTemplate['environment'], Parameter[]>>
+  readonly harness_adapters?: HarnessAdapterInfo[]
+}
+
+export interface HarnessAdapterInfo {
+  readonly name: string
+  readonly display_name: string
+  readonly default_command: readonly string[]
+  readonly wire_apis: readonly InferenceWireApi[]
 }
 
 export interface AgentPresetSelection {
@@ -75,6 +83,25 @@ export interface AgentPresetSelection {
 export interface AgentTargetProvenance {
   readonly origin: 'initializer' | 'runtime'
   readonly presets: AgentPresetSelection
+}
+
+export interface AgentStartupDestination {
+  readonly source: string
+  readonly version: string
+}
+
+export interface SaveAgentStartupRequest {
+  readonly name: string
+  readonly configuration: AgentTargetConfiguration
+  readonly agent_presets?: AgentPresetSelection
+  readonly version: string
+}
+
+export interface SavedAgentStartup extends AgentStartupDestination {
+  readonly name: string
+  readonly target_identifier_hash: string
+  readonly model_target: string | null
+  readonly applied: boolean
 }
 
 export interface AgentTargetConfiguration {
@@ -152,6 +179,28 @@ export interface AgentTurn {
   readonly error: string | null
   readonly tool_evidence_messages?: number | null
   readonly tool_evidence_omissions?: Record<string, string>
+}
+
+export interface AgentEvidenceOperation {
+  readonly status: 'available' | 'partial' | 'unverified' | 'unavailable'
+  readonly detail: string
+}
+
+export interface AgentEvidenceSnapshot {
+  readonly format_version: 1
+  readonly captured_at: string
+  readonly event_cursor: number
+  readonly execution: Omit<AgentExecution, 'turns'> & { readonly turns: AgentTurn[] }
+  readonly events: AgentExecutionEvent[]
+  readonly messages: unknown[]
+  readonly scores: unknown[]
+  readonly omissions: string[]
+  readonly assessment: {
+    readonly playback: AgentEvidenceOperation
+    readonly rescore: AgentEvidenceOperation
+    readonly recreate: AgentEvidenceOperation
+    readonly resume: AgentEvidenceOperation
+  }
 }
 
 export interface ConversationExecution {

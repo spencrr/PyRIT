@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, field_validator, model_validator
 
+from pyrit.models.identifiers.class_name_utils import validate_registry_name
 from pyrit.models.model_inference import InferenceRequirements, InferenceWireApi
 
 
@@ -57,11 +58,14 @@ def _resolve_harness(value: Any) -> Any:
         AgentHarnessKind.OPENCODE: ("opencode", "acp"),
     }
     command = values.get("command", defaults[AgentHarnessKind.COPILOT])
-    kind = AgentHarnessKind(values.get("harness_kind", legacy_harness_kind(command)))
+    kind = values.get("harness_kind", legacy_harness_kind(command))
+    if not isinstance(kind, str):
+        raise ValueError("harness_kind must name an installed adapter")
+    validate_registry_name(kind)
     values["harness_kind"] = kind
     if "command" not in values:
-        if kind == AgentHarnessKind.ACP:
-            raise ValueError("A generic ACP harness requires an explicit command")
+        if kind not in defaults:
+            raise ValueError("A generic or custom ACP harness requires an explicit command")
         values["command"] = defaults[kind]
     return values
 
@@ -140,7 +144,7 @@ class AgentProfile(BaseModel):
 
     name: str = Field(default="copilot", min_length=1, max_length=100)
     command: tuple[str, ...] = ("copilot", "--acp", "--stdio")
-    harness_kind: AgentHarnessKind = AgentHarnessKind.COPILOT
+    harness_kind: str = AgentHarnessKind.COPILOT
     environment: AgentEnvironment = AgentEnvironment.DOCKER
     image: str | None = None
     fixture_directory: str | None = None
@@ -209,7 +213,7 @@ class HarnessProfile(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     command: tuple[str, ...] = ("copilot", "--acp", "--stdio")
-    harness_kind: AgentHarnessKind = AgentHarnessKind.COPILOT
+    harness_kind: str = AgentHarnessKind.COPILOT
     credential_env: tuple[str, ...] = ()
     authentication_method: str | None = None
     permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY

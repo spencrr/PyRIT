@@ -71,7 +71,11 @@ origin, and keeps their settings read-only until explicitly customized. It also
 offers custom configuration when no preset is available. Selected snapshots are
 checked against the registry on creation; reloading changed presets never silently
 updates the target being authored. Registration in the GUI remains session-only,
-even when its inputs came from initializers.
+even when its inputs came from initializers. The separate **Save for startup**
+option writes a pinned snapshot as ordinary initializer entries to the existing
+configuration source. It does not register or launch anything; restart the backend
+to load it. See [startup authoring](../../getting_started/pyrit_conf.md#saving-an-agent-for-startup)
+for dependency, naming, and conflict behavior.
 
 Changing configuration creates a new target, not an in-place change to an active
 conversation. The original flat `AgentProfile` input and retained execution
@@ -276,6 +280,41 @@ authentication** if needed. A private local workspace/home also does not prevent
 the harness from discovering configuration in ancestor directories. Use a
 results root outside source checkouts when inherited project configuration would
 affect the test; local execution is not a sandbox.
+
+### Installing another harness adapter
+
+`HarnessAdapter` and `HarnessAdapterRegistry` in `pyrit.agent.harness` separate
+trusted implementation code from inert profiles. Copilot, OpenCode, and generic
+ACP are built-in registrations, not special branches in model binding or
+provisioning. A trusted Python initializer can register an additional adapter
+before composing targets that select its name in `harness_kind`.
+
+An adapter supplies immutable `HarnessAdapterInfo` (name, label, command defaults,
+supported inference APIs, native-model credential names), private-home launch
+settings, and optionally the translation of an execution-scoped inference relay
+connection. It never receives the upstream provider key through this interface.
+Advertising no inference APIs means native-model use only. An adapter does not
+provision resources, implement ACP, persist messages, score responses, or decide
+which tools run.
+
+The admin preset catalog publishes installed adapter metadata. Create Target uses
+it for the harness picker, default command, and compatible model protocols; custom
+preset and copied adapter names are preserved rather than changed to Copilot.
+Profile commands are always persisted explicitly. Custom adapters require an
+explicit command in Python/configuration, so decoding saved data never needs to
+import a plugin or consult a live registry.
+
+Registration is trusted setup code, not an import path supplied over REST.
+Conflicting names cannot replace an existing implementation; use a new,
+versioned name when behavior changes. Setup reset removes custom registrations,
+so the initializer must run again on every start. The startup authoring operation
+saves the profile, not its Python implementation. Install that initializer earlier
+in the startup sequence. Missing adapters block new target use explicitly but do
+not prevent historical record decoding, evidence export, or interrupted resource
+cleanup. Like other trusted Python components, an adapter is not a security boundary.
+
+Local and Docker remain the implemented provisioners. Registering a harness does
+not imply support for a hosted environment or coordinated checkpoint restoration.
 
 ### Authentication boundaries
 
@@ -637,6 +676,66 @@ Operators manage evidence retention separately; protect that directory because
 prompts, tool outputs, and artifacts may be sensitive.
 
 ## Evidence and outcome semantics
+
+### Exporting a recording
+
+Administrators can inspect a **closed** execution's recording in Executions or
+the conversation's execution details, and download its evidence package. Playback
+uses the same ordered-activity reducer as the live view. Moving the event cursor
+never sends prompts, approves requests, or runs tools. An execution with live
+resources, a running turn, or an unresolved permission must settle first; export
+does not close or extend it on the operator's behalf.
+
+The admin API exposes `GET /executions/{id}/evidence` for the bounded snapshot and
+`GET /executions/{id}/evidence.zip` for the package. Ordinary conversation observers
+do not receive this raw administrative export. Python callers can use
+`AgentEvidenceExporter` from `pyrit.agent.evidence` with their existing manager
+and memory; it takes ownership of neither.
+
+```python
+from pyrit.agent.evidence import AgentEvidenceExporter
+
+exporter = AgentEvidenceExporter(manager=manager, memory=memory)
+snapshot = await exporter.snapshot_async(execution_id)
+package_bytes = await exporter.archive_async(execution_id)
+```
+
+Each ZIP contains:
+
+- `manifest.json`: identities, capture time, exact journal cutoff, coverage,
+  omissions, and SHA-256/byte length of every other file;
+- `execution.json`, `events.jsonl`, `messages.json`, `scores.json`;
+- `recording.html`: escaped, offline, script-free ordered event details;
+- `artifacts/`: only explicitly retained regular files, never an arbitrary
+  workspace or home-directory crawl.
+
+Limits are 10,000 recorded events, 1,000 retained artifact entries, and 64 MiB
+for both total uncompressed package bytes (including the manifest) and ZIP
+download bytes. A snapshot must also fit 64 MiB. Artifact reads obey the execution's
+per-file retention limit. Global overflow fails rather than returning a silently
+truncated package. Missing, unreadable, or linked retained artifacts are omitted
+with explicit reasons; invalid paths, journal gaps, or crossed identities fail.
+The backend admits at most two simultaneous snapshot/package acquisitions.
+
+The journal prefix is pinned; **messages and scores are current memory at export**,
+not an atomic historical database snapshot. External observation/trace payloads
+and message attachment bytes are not embedded. Their stored references remain.
+Provider credentials are not deliberately collected, but prompts, tools, outputs,
+and retained artifacts may themselves contain secrets. Protect downloads as
+sensitive test data. File hashes detect changed bytes; they do not establish the
+truth or completeness of harness reports.
+
+The assessment distinguishes four operations:
+
+| Operation | Meaning |
+| --- | --- |
+| Playback | Available or partial retained-event inspection; no execution |
+| Re-score | Partial when messages exist; compatible scorers may need original memory, observations, or a judge |
+| Recreate | Unverified: configuration exists, but image/binary availability, credentials, and model dependencies are not proved |
+| Resume | Unavailable: no coordinated harness/environment checkpoint was captured |
+
+There is no archive import or automatic score rerun in this slice. Normal PyRIT
+message/observation scoring remains the evaluation path.
 
 Prepared input is written before dispatch. Protocol frames are captured before
 delivery/processing, in local sequence order, including unknown extensions.

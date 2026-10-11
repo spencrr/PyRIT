@@ -12,7 +12,9 @@ import type { AgentPresetCatalog, AgentTargetConfiguration, TargetInstance } fro
 
 import AgentTargetForm from './AgentTargetForm'
 
-jest.mock('@/services/api', () => ({ targetsApi: { createTarget: jest.fn(), listAgentPresets: jest.fn() } }))
+jest.mock('@/services/api', () => ({ targetsApi: {
+  createTarget: jest.fn(), listAgentPresets: jest.fn(), getStartupDestination: jest.fn(), saveForStartup: jest.fn(),
+} }))
 jest.mock('@/services/targetRegistry', () => ({ listRegisteredTargets: jest.fn() }))
 jest.mock('@/hooks/useRuntime', () => ({ useRuntime: jest.fn() }))
 
@@ -63,6 +65,117 @@ function environmentCatalog(): AgentPresetCatalog {
 }
 
 describe('AgentTargetForm', () => {
+  it('selects installed harness adapters and preserves their explicit command and supported API', async () => {
+    const user = userEvent.setup()
+    const source = modelSource('source-hash')
+    source.inference_capabilities = {
+      wire_apis: ['responses', 'completions'], streaming: true, tool_calls: true,
+      input_modalities: ['text'], blocked_reason: null,
+    }
+    jest.mocked(listRegisteredTargets).mockResolvedValue([source])
+    jest.mocked(targetsApi.listAgentPresets).mockResolvedValue({
+      ...presetCatalog(),
+      harness_adapters: [{
+        name: 'team_v1', display_name: 'Team agent', default_command: ['team-agent', '--stdio'], wire_apis: ['responses'],
+      }],
+    })
+    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
+    await screen.findByRole('option', { name: 'Team agent' })
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Harness', exact: true }), 'team_v1')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Model', exact: true }), 'model_source')
+    await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'team_agent')
+    await user.type(screen.getByRole('textbox', { name: /Docker image/ }), 'team:1')
+    await user.click(screen.getByRole('button', { name: 'Create Target', exact: true }))
+    await waitFor(() => expect(targetsApi.createTarget).toHaveBeenCalledTimes(1))
+    expect(jest.mocked(targetsApi.createTarget).mock.calls[0][0].params).toMatchObject({
+      agent_configuration: {
+        harness_profile: { harness_kind: 'team_v1', command: ['team-agent', '--stdio'] },
+        model_binding: { target_registry_name: 'model_source', target_identifier_hash: 'source-hash', wire_api: 'responses' },
+      },
+    })
+  })
+
+  it('does not silently reinterpret a copied custom adapter when it is unavailable', async () => {
+    const user = userEvent.setup()
+    jest.mocked(targetsApi.listAgentPresets).mockResolvedValue({ ...presetCatalog(), harness_adapters: [] })
+    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} initialConfiguration={{
+      name: 'copied', model_binding: { model: '' },
+      harness_profile: { harness_kind: 'team_v1', command: ['team-agent'], permission_policy: 'deny',
+        credential_env: [], authentication_method: null },
+      environment_template: { environment: 'docker', image: 'test', local_execution_acknowledged: false },
+    }} /></TestWrapper>)
+    expect(await screen.findByText(/Harness adapter is unavailable/)).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Harness', exact: true })).toHaveValue('team_v1')
+    await user.click(screen.getByRole('button', { name: 'Create Target', exact: true }))
+    expect(targetsApi.createTarget).not.toHaveBeenCalled()
+  })
+
+  it('saves a startup definition without pretending to register or select a live target', async () => {
+    const user = userEvent.setup()
+    const onCreated = jest.fn()
+    jest.mocked(targetsApi.getStartupDestination).mockResolvedValue({ source: 'startup.yaml', version: 'v1' })
+    jest.mocked(targetsApi.saveForStartup).mockResolvedValue({
+      name: 'saved_agent', source: 'startup.yaml', version: 'v2', target_identifier_hash: 'hash', model_target: null, applied: false,
+    })
+    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={onCreated} /></TestWrapper>)
+    expect(targetsApi.getStartupDestination).not.toHaveBeenCalled()
+    await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'saved_agent')
+    await user.type(screen.getByRole('textbox', { name: /Docker image/ }), 'team:1')
+    await user.click(screen.getByLabelText('Save for startup instead of creating a session target'))
+    expect(await screen.findByText('startup.yaml')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Save for startup', exact: true }))
+    await screen.findByText(/Saved saved_agent for the next backend start/)
+    expect(screen.getByRole('button', { name: 'Close', exact: true })).toBeEnabled()
+    expect(targetsApi.createTarget).not.toHaveBeenCalled()
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(jest.mocked(targetsApi.saveForStartup).mock.calls[0][0]).toMatchObject({
+      name: 'saved_agent', version: 'v1',
+      configuration: { name: 'saved_agent', environment_template: { image: 'team:1' } },
+    })
+    await user.click(screen.getByRole('button', { name: 'Save for startup', exact: true }))
+    await waitFor(() => expect(targetsApi.saveForStartup).toHaveBeenCalledTimes(2))
+    expect(jest.mocked(targetsApi.saveForStartup).mock.calls[1][0].version).toBe('v2')
+  })
+
+  it('keeps a conflicted draft and reloads its destination only on explicit request', async () => {
+    const user = userEvent.setup()
+    jest.mocked(targetsApi.getStartupDestination).mockResolvedValue({ source: 'startup.yaml', version: 'v1' })
+    jest.mocked(targetsApi.saveForStartup).mockRejectedValueOnce(new Error('Configuration changed; reload the destination'))
+    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
+    await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'saved_agent')
+    await user.type(screen.getByRole('textbox', { name: /Docker image/ }), 'team:1')
+    await user.click(screen.getByLabelText('Save for startup instead of creating a session target'))
+    await screen.findByText('startup.yaml')
+    await user.click(screen.getByRole('button', { name: 'Save for startup', exact: true }))
+    expect(await screen.findByText('Configuration changed; reload the destination')).toBeVisible()
+    expect(screen.getByRole('textbox', { name: /Target name/ })).toHaveValue('saved_agent')
+    expect(screen.getByRole('textbox', { name: /Docker image/ })).toHaveValue('team:1')
+    expect(targetsApi.getStartupDestination).toHaveBeenCalledTimes(1)
+    jest.mocked(targetsApi.getStartupDestination).mockResolvedValueOnce({ source: 'startup.yaml', version: 'v3' })
+    jest.mocked(targetsApi.saveForStartup).mockResolvedValueOnce({
+      name: 'saved_agent', source: 'startup.yaml', version: 'v4', target_identifier_hash: 'hash', model_target: null, applied: false,
+    })
+    await user.click(screen.getByRole('button', { name: 'Reload destination' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save for startup', exact: true })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Save for startup', exact: true }))
+    await waitFor(() => expect(targetsApi.saveForStartup).toHaveBeenCalledTimes(2))
+    expect(jest.mocked(targetsApi.saveForStartup).mock.calls[1][0].version).toBe('v3')
+  })
+
+  it('does not silently fall back to session creation when startup storage is unavailable', async () => {
+    const user = userEvent.setup()
+    jest.mocked(targetsApi.getStartupDestination).mockRejectedValueOnce(new Error('storage unavailable'))
+    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
+    await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'saved_agent')
+    await user.type(screen.getByRole('textbox', { name: /Docker image/ }), 'team:1')
+    await user.click(screen.getByLabelText('Save for startup instead of creating a session target'))
+    expect(await screen.findByText('storage unavailable')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Save for startup', exact: true })).toBeDisabled()
+    expect(targetsApi.createTarget).not.toHaveBeenCalled()
+    await user.click(screen.getByLabelText('Save for startup instead of creating a session target'))
+    expect(screen.getByRole('button', { name: 'Create Target', exact: true })).toBeEnabled()
+  })
+
   it.each(['pending', 'failed', 'missing', 'empty', 'removed-field'])('retains environment edits until %s metadata is available after reinitialization', async (outcome: string) => {
     const user = userEvent.setup()
     jest.mocked(targetsApi.listAgentPresets).mockResolvedValue(environmentCatalog())
@@ -551,6 +664,8 @@ describe('AgentTargetForm', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    jest.mocked(targetsApi.getStartupDestination).mockReset()
+    jest.mocked(targetsApi.saveForStartup).mockReset()
     jest.mocked(useRuntime).mockReturnValue({ ready: true, state: 'ready', generation: 'initial' })
     jest.mocked(targetsApi.listAgentPresets).mockReset()
     jest.mocked(targetsApi.listAgentPresets).mockResolvedValue({
