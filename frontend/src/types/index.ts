@@ -132,6 +132,9 @@ export interface AgentProfile {
 export interface AgentExecution {
   readonly id: string
   readonly conversation_id: string
+  readonly parent_execution_id?: string | null
+  readonly checkpoint_id?: string | null
+  readonly restored_from_checkpoint_id?: string | null
   readonly target_id: string
   readonly image_id?: string | null
   readonly fixture_sha256?: string | null
@@ -186,6 +189,28 @@ export interface AgentEvidenceOperation {
   readonly detail: string
 }
 
+export interface AgentCheckpoint {
+  readonly id: string
+  readonly created_at: string
+  readonly source_execution_id: string
+  readonly conversation_id: string
+  readonly target_id: string
+  readonly image_id: string
+  readonly session_id: string
+  readonly agent_version: string
+  readonly event_cursor: number
+  readonly workspace: { readonly bytes: number; readonly sha256: string }
+  readonly harness_state: { readonly bytes: number; readonly sha256: string }
+}
+
+export interface AgentCheckpointStatus {
+  readonly save_available: boolean
+  readonly restore_available: boolean
+  readonly detail: string
+  readonly checkpoint: AgentCheckpoint | null
+  readonly deletion_pending?: boolean
+}
+
 export interface AgentEvidenceSnapshot {
   readonly format_version: 1
   readonly captured_at: string
@@ -206,6 +231,7 @@ export interface AgentEvidenceSnapshot {
 export interface ConversationExecution {
   readonly id: string
   readonly conversation_id: string
+  readonly parent_execution_id?: string | null
   readonly state: AgentExecution['state']
   readonly environment: 'local' | 'docker'
   readonly model: string

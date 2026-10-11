@@ -29,6 +29,7 @@ def test_execution_routes_return_real_records_and_events() -> None:
     record = AgentExecution(owner_id="test", conversation_id="conversation", target_id="target", profile=profile)
     manager = MagicMock(spec=AgentExecutionManager)
     manager.records = {record.id: record}
+    manager.latest_execution.return_value = record
     manager.start_async = AsyncMock()
     manager.cancel_async = AsyncMock()
     manager.close_execution_async = AsyncMock()
@@ -70,6 +71,7 @@ def test_conversation_access_is_scoped_without_admin_privileges() -> None:
     )
     manager = MagicMock(spec=AgentExecutionManager)
     manager.records = {record.id: record}
+    manager.latest_execution.return_value = record
     manager.start_async = AsyncMock()
     manager.cancel_async = AsyncMock()
     manager.store = MagicMock(spec=AgentExecutionStore)

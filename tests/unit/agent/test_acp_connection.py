@@ -3,15 +3,22 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 pytest.importorskip("acp")
 
-from acp.schema import PermissionOption, ToolCallUpdate
+from acp.schema import (
+    AgentCapabilities,
+    Implementation,
+    InitializeResponse,
+    LoadSessionResponse,
+    PermissionOption,
+    ToolCallUpdate,
+)
 
-from pyrit.agent.acp_connection import RecordingTransport, _AcpClient
+from pyrit.agent.acp_connection import AcpConnection, RecordingTransport, _AcpClient
 from pyrit.models.agent_execution import AgentPermissionPolicy
 
 
@@ -69,3 +76,34 @@ async def test_permission_policy_and_cancel(policy: AgentPermissionPolicy, expec
     assert response.outcome.option_id == expected
     client.cancelled = True
     assert (await client.request_permission(**arguments)).outcome.outcome == "cancelled"
+
+
+@pytest.mark.parametrize("supported", [True, False])
+async def test_explicit_native_load_checks_capability_and_disables_permission_actions_async(supported: bool) -> None:
+    sdk = MagicMock()
+    sdk.initialize = AsyncMock(
+        return_value=InitializeResponse(
+            protocol_version=1,
+            agent_info=Implementation(name="native", version="1"),
+            agent_capabilities=AgentCapabilities(load_session=supported),
+        )
+    )
+    sdk.load_session = AsyncMock(return_value=LoadSessionResponse())
+    sdk.new_session = AsyncMock()
+    transport = RecordingTransport(
+        reader=asyncio.StreamReader(),
+        writer=MagicMock(spec=asyncio.StreamWriter),
+        record=AsyncMock(),
+    )
+    with patch("pyrit.agent.acp_connection.connect_to_agent", return_value=sdk):
+        connection = AcpConnection(transport=transport, permission_policy=AgentPermissionPolicy.ALLOW_ONCE)
+        if supported:
+            await connection.initialize_async(cwd="/workspace", session_id="old-session", expected_agent_version="1")
+            sdk.load_session.assert_awaited_once_with(cwd="/workspace", session_id="old-session", mcp_servers=[])
+            assert connection.client.cancelled
+            assert connection.session_id == "old-session"
+        else:
+            with pytest.raises(ValueError, match="loading"):
+                await connection.initialize_async(cwd="/workspace", session_id="old-session")
+            sdk.load_session.assert_not_awaited()
+        sdk.new_session.assert_not_awaited()

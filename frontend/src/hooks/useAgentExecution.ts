@@ -22,6 +22,7 @@ export function useAgentExecution(
   const [snapshot, setSnapshot] = useState<ExecutionSnapshot | null>(null)
   const [cancellingKey, setCancellingKey] = useState<string | null>(null)
   const [actionError, setActionError] = useState<{ key: string; message: string } | null>(null)
+  const [reload, setReload] = useState(0)
   const observed = useEffectEvent(async (execution: ConversationExecution): Promise<void> => {
     await onObserved?.(execution)
   })
@@ -70,7 +71,7 @@ export function useAgentExecution(
     }
     void connect()
     return () => { stopped = true; controller.abort(); clearTimeout(timer) }
-  }, [attackId, conversationId, enabled, key])
+  }, [attackId, conversationId, enabled, key, reload])
 
   const visible = enabled && snapshot?.key === key ? snapshot : null
   const execution = visible?.execution ?? null
@@ -103,6 +104,7 @@ export function useAgentExecution(
 
   return {
     execution, turns: visible?.turns ?? {},
+    refresh: () => setReload((value) => value + 1),
     feed: visible?.feed ?? 'connecting',
     error: actionError?.key === key ? actionError.message : visible?.error ?? null,
     cancelling: cancellingKey === key, cancel,

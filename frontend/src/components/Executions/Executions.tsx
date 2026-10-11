@@ -9,6 +9,7 @@ import { Link as RouterLink, useSearchParams } from 'react-router'
 
 import CreateTargetDialog from '@/components/Config/CreateTargetDialog'
 import AgentEvidencePanel from './AgentEvidencePanel'
+import AgentCheckpointPanel from './AgentCheckpointPanel'
 import { executionsApi } from '@/services/executions'
 import { toApiError } from '@/services/errors'
 import type { AgentExecution, AgentExecutionEvent, AgentTargetConfiguration, TargetInstance } from '@/types'
@@ -154,6 +155,7 @@ export default function Executions({ canManage, onTargetCreated }: ExecutionsPro
       {selected && <section aria-label="Execution details">
         <Text as="h2">{selected.configuration.name}: {selected.state}</Text>
         <p>Conversation: {selected.conversation_id}</p>
+        {selected.parent_execution_id && <p>Restored from allocation {selected.parent_execution_id}. Loaded history is not new tool execution.</p>}
         <p>Created: {new Date(selected.created_at).toLocaleString()}. Maximum lifetime: {selected.profile.lifetime_seconds}s. Idle timeout: {selected.profile.idle_timeout_seconds}s.</p>
         <p>{selected.source_coverage}</p>
         <p>Capture: {selected.capture_error ?? (selected.turns[selected.turns.length - 1]?.capture_complete ? 'Complete for the last turn' : 'In progress or incomplete')}</p>
@@ -175,6 +177,8 @@ export default function Executions({ canManage, onTargetCreated }: ExecutionsPro
         <p>A new target configuration starts fresh on the next conversation; it does not resume this execution.</p>
         <p>Retained artifacts: {selected.artifacts.join(', ') || 'None'}</p>
         <AgentEvidencePanel key={selected.id} executionId={selected.id} closed={selected.state === 'closed'} />
+        <AgentCheckpointPanel key={`checkpoint-${selected.id}`} executionId={selected.id}
+          onChanged={(execution) => { if (execution) select(execution) }} />
         {selected.artifact_errors.map((message: string) => <MessageBar key={message} intent="warning">{message}</MessageBar>)}
         <details><summary>Resolved configuration</summary><pre className={styles.event}>{JSON.stringify(selected.configuration, null, 2)}</pre></details>
         <Text as="h3">Live recorded events (latest 500 displayed)</Text>

@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from threading import RLock
 from typing import ClassVar
 
+from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
 from pyrit.models.agent_execution import HarnessProfile
 from pyrit.models.harness_adapter import HarnessAdapterInfo
 from pyrit.models.model_inference import InferenceWireApi
@@ -20,6 +21,11 @@ class HarnessAdapter(ABC):
     @abstractmethod
     def info(self) -> HarnessAdapterInfo:
         """The immutable capability and authoring description."""
+
+    @property
+    def checkpoint_layout(self) -> HarnessCheckpointLayout | None:
+        """The tested native-state layout, or no checkpoint support."""
+        return None
 
     @abstractmethod
     def launch_environment(self, *, home: str) -> dict[str, str]:
@@ -43,6 +49,14 @@ class HarnessAdapter(ABC):
 
 
 class _CopilotAdapter(HarnessAdapter):
+    @property
+    def checkpoint_layout(self) -> HarnessCheckpointLayout:
+        return HarnessCheckpointLayout(
+            version="copilot-session-state-v1",
+            agent_versions=("1.0.93",),
+            state_root="/home/agent/.copilot/session-state",
+        )
+
     @property
     def info(self) -> HarnessAdapterInfo:
         return HarnessAdapterInfo(
@@ -74,6 +88,14 @@ class _CopilotAdapter(HarnessAdapter):
 
 
 class _OpenCodeAdapter(HarnessAdapter):
+    @property
+    def checkpoint_layout(self) -> HarnessCheckpointLayout:
+        return HarnessCheckpointLayout(
+            version="opencode-sqlite-v1",
+            agent_versions=("1.18.35",),
+            state_root="/home/agent/.local/share/opencode",
+        )
+
     @property
     def info(self) -> HarnessAdapterInfo:
         return HarnessAdapterInfo(

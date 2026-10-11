@@ -49,6 +49,7 @@ import { useAgentExecution } from '@/hooks/useAgentExecution'
 import AgentActivity from './AgentActivity'
 import AgentExecutionStatus from './AgentExecutionStatus'
 import AgentEvidencePanel from '@/components/Executions/AgentEvidencePanel'
+import AgentCheckpointPanel from '@/components/Executions/AgentCheckpointPanel'
 import {
   basenameFromValue,
   applyConvertedValues,
@@ -667,7 +668,7 @@ export default function ChatWindow({
   const agentTurnForMessage = (message: Message, index: number): AgentTurn | undefined => {
     if (message.role !== 'user' || !agent.execution) return undefined
     return agent.execution.turns.find((turn: AgentTurn) => message.pieceIds?.includes(turn.request_id))
-      ?? (!message.pieceIds
+      ?? (!message.pieceIds && !agent.execution.parent_execution_id
         ? agent.execution.turns[messages.slice(0, index + 1).filter((item: Message) => item.role === 'user').length - 1]
         : undefined)
   }
@@ -1849,6 +1850,8 @@ export default function ChatWindow({
         {editDraft === null && canConfigureAgents && agent.execution && <details>
           <summary>Execution evidence</summary>
           <AgentEvidencePanel key={agent.execution.id} executionId={agent.execution.id} closed={agent.execution.state === 'closed'} />
+          <AgentCheckpointPanel key={`checkpoint-${agent.execution.id}`} executionId={agent.execution.id}
+            onChanged={() => { agent.refresh() }} />
         </details>}
         {editDraft === null && agent.error && <MessageBar intent="error"><MessageBarBody>Agent activity unavailable: {agent.error}</MessageBarBody></MessageBar>}
         {editDraft === null && <MessageList

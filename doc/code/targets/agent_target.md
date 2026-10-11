@@ -652,9 +652,9 @@ launched by target construction or registry discovery.
 - On startup, the owner reconciles incomplete records and releases its recorded
   resources. A running backend is required to enforce expiry; there is no
   independent crash-proof TTL supervisor in this MVP.
-  Held executions are also closed during restart reconciliation; restorable
-  suspend/resume requires provider and harness reattachment support not implemented
-  in this slice. Unresolved permissions from interrupted owners are cancelled.
+  Held executions are also closed during restart reconciliation. Only an explicitly
+  saved checkpoint can restore native state; a crash is not a checkpoint.
+  Unresolved permissions from interrupted owners are cancelled.
 - Live executions block configuration replacement, including idle chats.
 - Cleanup uses exact process identities/container ownership labels. Failures
   remain visible; resource closure is not inferred from a disconnected pipe.
@@ -665,8 +665,9 @@ Closed/expired conversations cannot be silently recreated. **Copy configuration 
 target**, then start a new conversation, creates fresh state on first send.
 The copied profile uses the recorded image ID and fixture hash. A changed or
 missing source fixture fails explicitly; keep versioned fixtures available.
-This is not resume, rollback, or a snapshot of the previous agent. There are no used-session pools, restored checkpoint resume, operator takeover,
-or orchestrator steering.
+This is not resume, rollback, or a snapshot of the previous agent. The explicit
+checkpoint operation below is separate. There are no used-session pools,
+operator takeover, or orchestrator steering.
 
 Evidence is stored beneath the configured memory results directory in
 `agent_executions`, or the standalone manager's explicit directory. Records are
@@ -676,6 +677,90 @@ Operators manage evidence retention separately; protect that directory because
 prompts, tool outputs, and artifacts may be sensitive.
 
 ## Evidence and outcome semantics
+
+### Save and close / Restore same chat
+
+Administrators can open **Checkpoint options** from Executions or the chat's
+execution details. **Save and close** requires explicit consent to retain sensitive
+native session and workspace data. A completed checkpoint survives runtime restart;
+its original allocation stays closed. **Restore same chat** starts a new allocation
+with fresh lifetime, model lease, and permission state. It sends no prompt.
+
+The first runtime slice deliberately accepts only the tested combination:
+
+- Docker image workspace at `/workspace`, without overlays, relocated working
+  directories, mounted filesystems, or a volume-declaring restore image;
+- Copilot **1.0.93** or OpenCode **1.18.35**, as advertised by the running harness
+  and supported by the installed adapter's versioned checkpoint layout;
+- target-backed BYOK with no forwarded credential variables or ACP login;
+- an idle, connected execution with fully captured completed turns and no
+  unresolved permission request. Held, cancelled, failed, or in-flight work is
+  not a checkpointable state.
+
+Registered trusted adapters may declare their own `HarnessCheckpointLayout`.
+This is an explicit persistence contract, not automatic discovery of arbitrary
+home-directory contents. The two built-in state layouts are described in the
+feasibility proof below.
+
+Capture owns the execution transition until completion, even if its caller
+disconnects. It revokes the old model lease, stops and verifies the container,
+captures bounded archives, and releases the original resources before publishing
+a checkpoint. Incomplete capture or cleanup fails explicitly. Concurrent sends
+and checkpoint commands share the backend's existing conversation reservation.
+Standalone Python callers must also avoid unrelated direct memory writes.
+
+Restore is restricted to the **latest saved allocation of the same chat**:
+the original registered target configuration, model identity, transcript hash,
+source journal bytes/cursor, image ID, harness version, and installed state layout
+must still match. Neither an edited transcript nor a prior checkpoint can rewind
+a newer allocation. Preflight failures allocate nothing. Once a restore allocation
+is recorded, failures remain visible and that checkpoint cannot be silently
+retried or forked; start a fresh chat if restoration fails.
+
+The new execution references its parent and checkpoint. The original turns and
+journal are not copied or rewritten. Native `session/load` history notifications
+are retained with direction **`restore`**, no new-turn ID, and no canonical
+tool-execution projection. Model inference and permission approval are disabled
+during loading. Only a subsequent user prompt enables the normal tool loop.
+Before extraction, a trusted preparation process clears the fresh container's
+workspace contents and native-state subtree. This preserves deletions and
+file/directory replacements rather than merging files back over the original
+image. The preparation process then replaces itself with the configured harness;
+there is no persistent extra supervisor or host mount. This path requires the
+Linux shell and core file utilities provided by the tested images.
+
+Private state lives under the execution store's `checkpoints/<id>` directory,
+not in the evidence ZIP. Each checkpoint includes immutable metadata and two
+archives with exact SHA-256/byte lengths. Each archive is capped at **64 MiB**
+and **2,000 entries**, and transcript binding at **16 MiB**. The store retains at
+most **eight checkpoints**. Links, special files, escaped paths, and known live
+credential bytes are rejected; this is not a general secret scrubber.
+In-flight captures reserve retention capacity before stopping their source,
+so concurrent saves cannot oversubscribe the last slot.
+Protect this storage with the same host access controls as other sensitive test
+data. There is no automatic retention expiry or archive import in this slice.
+
+**Delete checkpoint** requires confirmation and removes only the private saved
+state. Original conversation/journal evidence and any restored running allocation
+are retained. Deleting a checkpoint removes the ability to restore it.
+Interrupted deletion remains visible and retryable; its checkpoint is marked
+non-restorable until cleanup finishes.
+
+The admin API uses:
+
+- `GET /executions/{id}/checkpoint`: metadata and readiness, not state bytes;
+- `POST /executions/{id}/checkpoint` with
+  `{"acknowledge_sensitive_state": true}`: save and close;
+- `POST /executions/{id}/checkpoint/restore`: resolve the unchanged registered
+  target and restore the latest same-chat checkpoint;
+- `DELETE /executions/{id}/checkpoint`: delete private checkpoint state.
+
+Python callers use `AgentExecutionManager.save_checkpoint_async`,
+`restore_checkpoint_async`, and `delete_checkpoint_async` with caller-owned
+memory and a resolved pinned model binding. These operations do not score,
+select prompts, or restore external side effects. They are application-state
+restoration, not process-memory checkpoints or exactly-once execution guarantees
+for arbitrary tools.
 
 ### Docker checkpoint feasibility proof
 
@@ -777,11 +862,11 @@ Important boundaries:
   supplies file archives from stopped containers; application restoration is
   demonstrated by the subsequent behavioral checks, not inferred from copying.
 
-The next runtime milestone needs explicit checkpoint identity/lineage, adapter-
-declared state layouts, capture admission, sensitive-state retention, fresh lease
-binding, and restored-history evidence boundaries. Until that is implemented,
-startup saves remain **configuration only**, evidence packages remain **read-only
-recordings**, and production resume readiness remains **unavailable**.
+The runtime operation above adds checkpoint identity/lineage, adapter-declared
+layouts, capture admission, sensitive-state retention, fresh leases, and
+restored-history evidence boundaries. The proof remains independently runnable.
+Startup saves are still **configuration only**, and evidence packages are still
+**read-only recordings**, not transferable executable checkpoints.
 
 ### Exporting a recording
 
@@ -838,7 +923,7 @@ The assessment distinguishes four operations:
 | Playback | Available or partial retained-event inspection; no execution |
 | Re-score | Partial when messages exist; compatible scorers may need original memory, observations, or a judge |
 | Recreate | Unverified: configuration exists, but image/binary availability, credentials, and model dependencies are not proved |
-| Resume | Unavailable: no coordinated harness/environment checkpoint was captured |
+| Resume | Unavailable without a saved checkpoint; unverified when a separate checkpoint is recorded, pending live compatibility checks |
 
 There is no archive import or automatic score rerun in this slice. Normal PyRIT
 message/observation scoring remains the evaluation path.

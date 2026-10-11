@@ -361,6 +361,9 @@ class AgentExecution(BaseModel):
     conversation_id: str
     target_id: str
     profile: AgentProfile
+    parent_execution_id: UUID | None = None
+    restored_from_checkpoint_id: UUID | None = None
+    checkpoint_id: UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_activity_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     state: AgentExecutionState = AgentExecutionState.STARTING

@@ -17,10 +17,13 @@ from pydantic import BaseModel, StrictBool
 from starlette.responses import Response, StreamingResponse
 
 from pyrit.agent.evidence import AgentEvidenceExporter, EvidenceBudgetError, EvidenceNotSettledError
+from pyrit.agent.model_binding import resolve_model_binding
 from pyrit.agent.runtime import get_agent_execution_manager
 from pyrit.backend.middleware.auth import AuthenticatedUser, require_admin
 from pyrit.backend.services.agent_execution_service import resolve_conversation_execution_async
+from pyrit.backend.services.manual_send_scheduler import get_manual_send_scheduler
 from pyrit.memory import CentralMemory
+from pyrit.models.agent_checkpoint import AgentCheckpoint, AgentCheckpointStatus
 from pyrit.models.agent_evidence import AgentEvidenceSnapshot
 from pyrit.models.agent_execution import (
     AgentApproval,
@@ -31,6 +34,8 @@ from pyrit.models.agent_execution import (
     AgentExecutionState,
     AgentTurn,
 )
+from pyrit.prompt_target import AgentTarget
+from pyrit.registry import TargetRegistry
 
 router = APIRouter(prefix="/executions", tags=["executions"], dependencies=[Depends(require_admin)])
 conversation_router = APIRouter(prefix="/attacks", tags=["attacks"])
@@ -59,6 +64,7 @@ class ConversationExecution(BaseModel):
     last_event_at: datetime | None = None
     approvals: list[AgentApproval] = []
     transcript_revision: int = 0
+    parent_execution_id: UUID | None = None
 
 
 async def _resolve_async(
@@ -102,6 +108,7 @@ async def get_conversation_execution_async(attack_result_id: str, conversation_i
         last_event_at=record.last_event_at,
         approvals=[approval.model_copy(deep=True) for approval in record.approvals],
         transcript_revision=record.transcript_revision,
+        parent_execution_id=record.parent_execution_id,
     )
 
 
@@ -161,7 +168,7 @@ async def stream_conversation_execution_async(
                         yield _sse("events", {"execution_id": str(identity), **page.model_dump(mode="json")})
                         if await request.is_disconnected():
                             return
-                    if current.state == AgentExecutionState.CLOSED:
+                    if current.state == AgentExecutionState.CLOSED and current.close_reason != "checkpoint_saved":
                         yield _sse("end", {"reason": "execution_closed"})
                         return
                 if await request.is_disconnected():
@@ -410,6 +417,123 @@ async def get_execution_evidence_async(execution_id: UUID, response: Response) -
     assert isinstance(snapshot, AgentEvidenceSnapshot)
     response.headers["Cache-Control"] = "no-store"
     return snapshot
+
+
+class SaveCheckpointRequest(BaseModel):
+    """Explicit approval to persist sensitive native state."""
+
+    acknowledge_sensitive_state: StrictBool
+
+
+@router.get("/{execution_id}/checkpoint")
+async def get_checkpoint_status_async(execution_id: UUID) -> AgentCheckpointStatus:
+    """
+    Inspect administrative checkpoint readiness.
+
+    Returns:
+        AgentCheckpointStatus: Metadata and current allocation readiness.
+    """
+    await get_execution_async(execution_id)
+    return await get_agent_execution_manager().checkpoint_status_async(execution_id)
+
+
+@router.post("/{execution_id}/checkpoint")
+async def save_checkpoint_async(
+    execution_id: UUID,
+    body: SaveCheckpointRequest,
+    request: Request,
+) -> AgentCheckpoint:
+    """
+    Persist sensitive native state and close a completed allocation.
+
+    Returns:
+        AgentCheckpoint: The immutable checkpoint description.
+    """
+    if not body.acknowledge_sensitive_state:
+        raise HTTPException(status_code=400, detail="Acknowledge sensitive native-state retention before saving")
+    record = await get_execution_async(execution_id)
+    try:
+        with get_manual_send_scheduler().reserve(conversation_id=record.conversation_id):
+            return await get_agent_execution_manager().save_checkpoint_async(
+                execution_id=execution_id,
+                memory=CentralMemory.get_memory_instance(),
+                actor=_actor(request),
+            )
+    except (ValueError, RuntimeError) as error:
+        logger.warning("Checkpoint capture failed for %s: %s", execution_id, type(error).__name__)
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
+        logger.exception("Checkpoint storage failed for %s", execution_id)
+        raise HTTPException(
+            status_code=500, detail="Checkpoint storage failed; inspect execution cleanup status"
+        ) from error
+
+
+@router.post("/{execution_id}/checkpoint/restore")
+async def restore_checkpoint_async(execution_id: UUID) -> AgentExecution:
+    """
+    Restore the unchanged chat using its currently registered original target.
+
+    Returns:
+        AgentExecution: A fresh allocation with immutable source lineage.
+    """
+    record = await get_execution_async(execution_id)
+    if record.checkpoint_id is None:
+        raise HTTPException(status_code=409, detail="Execution has no saved checkpoint")
+    targets = TargetRegistry.get_registry_singleton().instances
+    target = next(
+        (
+            target
+            for entry in targets.get_all_instances()
+            if isinstance((target := entry.instance), AgentTarget) and target.get_identifier().hash == record.target_id
+        ),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=409, detail="Register the unchanged original target before restoring")
+    try:
+        with get_manual_send_scheduler().reserve(conversation_id=record.conversation_id):
+            binding = resolve_model_binding(target.agent_configuration)
+            if binding is None:
+                raise ValueError("Checkpoint restoration requires its original BYOK model target")
+            return await get_agent_execution_manager().restore_checkpoint_async(
+                checkpoint_id=record.checkpoint_id,
+                profile=target.profile,
+                target_id=record.target_id,
+                memory=CentralMemory.get_memory_instance(),
+                model_binding=binding,
+            )
+    except (ValueError, RuntimeError) as error:
+        logger.warning("Checkpoint restore failed for %s: %s", execution_id, type(error).__name__)
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
+        logger.exception("Checkpoint storage could not be read for %s", execution_id)
+        raise HTTPException(status_code=500, detail="Checkpoint storage is unavailable or corrupt") from error
+
+
+@router.delete("/{execution_id}/checkpoint")
+async def delete_checkpoint_async(execution_id: UUID) -> AgentCheckpointStatus:
+    """
+    Delete private checkpoint state while retaining execution evidence.
+
+    Returns:
+        AgentCheckpointStatus: Updated unavailable checkpoint status.
+    """
+    record = await get_execution_async(execution_id)
+    if record.checkpoint_id is None:
+        raise HTTPException(status_code=404, detail="Execution has no saved checkpoint")
+    try:
+        await get_agent_execution_manager().delete_checkpoint_async(record.checkpoint_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Checkpoint was already removed") from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except OSError as error:
+        logger.exception("Checkpoint deletion is incomplete for %s", execution_id)
+        raise HTTPException(
+            status_code=500, detail="Checkpoint deletion is incomplete; refresh status and retry"
+        ) from error
+    return await get_agent_execution_manager().checkpoint_status_async(execution_id)
 
 
 @router.get("/{execution_id}/evidence.zip")

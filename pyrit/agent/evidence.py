@@ -175,9 +175,11 @@ class AgentEvidenceExporter:
                 "credentials, and model behavior are not revalidated. A new run has new tool effects.",
             ),
             resume=EvidenceOperation(
-                status=EvidenceReadiness.UNAVAILABLE,
-                detail="No coordinated harness/environment checkpoint was captured. "
-                "Copying configuration starts fresh.",
+                status=EvidenceReadiness.UNVERIFIED if record.checkpoint_id else EvidenceReadiness.UNAVAILABLE,
+                detail="A separate native checkpoint was recorded; availability and same-chat compatibility "
+                "must be checked through checkpoint controls. Native checkpoint bytes are not in this package."
+                if record.checkpoint_id
+                else "No coordinated harness/environment checkpoint was captured. Copying configuration starts fresh.",
             ),
         )
 

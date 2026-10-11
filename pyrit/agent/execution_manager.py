@@ -19,11 +19,20 @@ from uuid import UUID
 from filelock import BaseFileLock, FileLock
 
 from pyrit.agent.approvals import AgentApprovals
+from pyrit.agent.checkpoint import (
+    checkpoint_agent_version,
+    checkpoint_layout,
+    checkpoint_transcript_async,
+    require_checkpoint_ready,
+)
+from pyrit.agent.checkpoint_archive import CheckpointArchive
 from pyrit.agent.environment import ExecutionEnvironment
 from pyrit.agent.harness import inference_environment, validate_harness_authentication
 from pyrit.agent.tool_evidence import AgentToolProjection, project_agent_tools
 from pyrit.common.asyncio_task import await_task_completion_async
+from pyrit.memory.agent_checkpoint_store import AgentCheckpointStore
 from pyrit.memory.agent_execution_store import AgentExecutionStore
+from pyrit.models.agent_checkpoint import AgentCheckpoint, AgentCheckpointStatus
 from pyrit.models.agent_execution import (
     AgentApproval,
     AgentConnectionState,
@@ -43,6 +52,7 @@ if TYPE_CHECKING:
     from pyrit.agent.acp_connection import AcpConnection
     from pyrit.agent.inference_relay import InferenceLease, InferenceRelay
     from pyrit.agent.model_binding import ResolvedModelBinding
+    from pyrit.memory import MemoryInterface
 
 
 @dataclass
@@ -63,6 +73,9 @@ class _LiveExecution:
     model_binding: "ResolvedModelBinding | None" = None
     inference_lease: "InferenceLease | None" = None
     approvals: AgentApprovals | None = None
+    checkpoint_task: asyncio.Task[Any] | None = None
+    restoration: tuple[AgentCheckpoint, bytes, bytes] | None = None
+    replaying_history: bool = False
 
 
 class AgentExecutionManager:
@@ -78,6 +91,7 @@ class AgentExecutionManager:
         if max_executions < 1:
             raise ValueError("max_executions must be positive")
         self.store = AgentExecutionStore(root=root)
+        self.checkpoints = AgentCheckpointStore(root / "checkpoints")
         self.max_executions = max_executions
         self.records: dict[UUID, AgentExecution] = {}
         self._live: dict[UUID, _LiveExecution] = {}
@@ -87,6 +101,7 @@ class AgentExecutionManager:
         self._file_lock: BaseFileLock | None = None
         self._reaper: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[None] | None = None
+        self._checkpoint_tasks: set[asyncio.Task[Any]] = set()
         self._relay: InferenceRelay | None = None
         self._relay_lock = asyncio.Lock()
 
@@ -106,13 +121,29 @@ class AgentExecutionManager:
 
     @property
     def has_live_executions(self) -> bool:
-        """Whether resources remain allocated, including idle chats and failed cleanup."""
-        return bool(self._live)
+        """Whether allocations or checkpoint publication still own runtime work."""
+        return bool(self._live or self._checkpoint_tasks)
 
     @property
     def is_closed(self) -> bool:
         """Whether this owner has stopped admitting work."""
         return self._closed
+
+    def latest_execution(self, *, conversation_id: str, target_id: str | None = None) -> AgentExecution | None:
+        """
+        Find the latest allocation, including failed restore attempts; never silently rewind.
+
+        Returns:
+            AgentExecution | None: The most recent allocation for this conversation.
+        """
+        candidates = [
+            record
+            for record in self.records.values()
+            if record.conversation_id == conversation_id and (target_id is None or record.target_id == target_id)
+        ]
+        superseded = {record.parent_execution_id for record in candidates if record.parent_execution_id}
+        candidates = [record for record in candidates if record.id not in superseded]
+        return max(candidates, key=lambda record: (record.created_at, str(record.id))) if candidates else None
 
     async def start_async(self) -> None:
         """
@@ -191,10 +222,7 @@ class AgentExecutionManager:
         async with self._admission:
             if self._closed:
                 raise RuntimeError("Agent execution manager is closing")
-            existing = next(
-                (r for r in self.records.values() if r.target_id == target_id and r.conversation_id == conversation_id),
-                None,
-            )
+            existing = self.latest_execution(target_id=target_id, conversation_id=conversation_id)
             if existing:
                 if existing.interactive != interactive:
                     raise ValueError("Execution interaction mode cannot change within a conversation")
@@ -206,7 +234,12 @@ class AgentExecutionManager:
                 ):
                     raise RuntimeError("Agent connection is unavailable; close this execution and start fresh")
                 live = self._live[existing.id]
-                if any(turn.request_id == request_id for turn in existing.turns):
+                if any(
+                    turn.request_id == request_id
+                    for ancestor in self.records.values()
+                    if ancestor.conversation_id == conversation_id
+                    for turn in ancestor.turns
+                ):
                     raise RuntimeError("Refusing to resend an already dispatched agent request")
             else:
                 if has_history:
@@ -416,12 +449,21 @@ class AgentExecutionManager:
                 live.record.provider_id = f"pyrit-agent-{live.record.id}"
             await self.store.save_async(live.record)
             await live.environment.prepare_async()
+            if live.restoration is not None:
+                checkpoint, workspace, state = live.restoration
+                await live.environment.restore_checkpoint_async(
+                    layout=checkpoint.layout,
+                    workspace=workspace,
+                    state=state,
+                )
             await self.store.save_async(live.record)
             process = await live.environment.launch_async()
             await self.store.save_async(live.record)
             assert process.stdout is not None and process.stdin is not None and process.stderr is not None
 
             async def record_async(direction: str, payload: dict[str, Any]) -> None:
+                if live.replaying_history and direction == "incoming" and payload.get("method") == "session/update":
+                    direction = "restore"
                 await self._record_async(live, direction=direction, payload=payload)
 
             transport = RecordingTransport(reader=process.stdout, writer=process.stdin, record=record_async)
@@ -446,11 +488,20 @@ class AgentExecutionManager:
                 status_changed=status_changed_async,
             )
             live.stderr_task = asyncio.create_task(self._stderr_async(live, process.stderr))
+            restore = live.restoration[0] if live.restoration else None
+            live.replaying_history = restore is not None
             live.record.agent_info = await live.connection.initialize_async(
                 cwd=live.environment.agent_cwd,
                 model="" if live.model_binding else live.record.profile.model,
                 authentication_method=None if live.model_binding else live.record.profile.authentication_method,
+                **(
+                    {"session_id": restore.session_id, "expected_agent_version": restore.agent_version}
+                    if restore
+                    else {}
+                ),
             )
+            live.replaying_history = False
+            live.restoration = None
             live.record.session_id = live.connection.session_id
             live.record.connection_state = AgentConnectionState.READY
 
@@ -484,6 +535,7 @@ class AgentExecutionManager:
                 timeout_seconds=live.record.profile.turn_timeout_seconds,
                 max_calls=live.record.profile.max_inference_requests,
                 capture_content=live.record.profile.capture_inference_content,
+                active=live.restoration is None,
             )
             self._relay.add(lease)
             live.inference_lease = lease
@@ -651,6 +703,13 @@ class AgentExecutionManager:
         live = self._live.get(execution_id)
         if live is None:
             return
+        if live.checkpoint_task is not None and live.checkpoint_task is not asyncio.current_task():
+            try:
+                await await_task_completion_async(live.checkpoint_task)
+            finally:
+                if execution_id in self._live:
+                    await self._close_execution_async(live, reason=reason)
+            return
         if live.close_task is None or live.close_task.done():
             live.close_task = asyncio.create_task(self._close_execution_async(live, reason=reason))
         await await_task_completion_async(live.close_task)
@@ -724,11 +783,309 @@ class AgentExecutionManager:
 
     async def transcript_updated_async(self, conversation_id: str) -> None:
         """Publish the caller's completed memory write so reconnected viewers can reload safely."""
-        for record in self.records.values():
-            if record.conversation_id == conversation_id:
-                record.transcript_revision += 1
-                await self.store.save_async(record)
-                return
+        record = self.latest_execution(conversation_id=conversation_id)
+        if record is not None:
+            record.transcript_revision += 1
+            await self.store.save_async(record)
+
+    async def checkpoint_status_async(self, execution_id: UUID) -> AgentCheckpointStatus:
+        """
+        Describe checkpoint readiness without returning private archive contents.
+
+        Returns:
+            AgentCheckpointStatus: Current save/restore availability and limitations.
+
+        Raises:
+            ValueError: Stored checkpoint metadata is corrupt.
+        """
+        await self.start_async()
+        record = self.records[execution_id]
+        latest = self.latest_execution(conversation_id=record.conversation_id)
+        if record.checkpoint_id:
+            deleting = await self.checkpoints.deletion_pending_async(record.checkpoint_id)
+            try:
+                checkpoint = await self.checkpoints.get_async(record.checkpoint_id)
+            except FileNotFoundError:
+                return AgentCheckpointStatus(
+                    save_available=False,
+                    deletion_pending=deleting,
+                    detail="Checkpoint deletion is incomplete; retry deleting retained private state."
+                    if deleting
+                    else "Checkpoint was deleted or is unavailable.",
+                )
+            return AgentCheckpointStatus(
+                save_available=False,
+                checkpoint=checkpoint,
+                restore_available=not deleting and latest is record and record.state == AgentExecutionState.CLOSED,
+                deletion_pending=deleting,
+                detail="Sensitive native state retained. Restore requires unchanged transcript and configuration."
+                if latest is record and not deleting
+                else "Checkpoint deletion is incomplete; retry deleting retained private state."
+                if deleting
+                else "A later allocation exists; this checkpoint cannot rewind the conversation.",
+            )
+        try:
+            require_checkpoint_ready(record)
+            await self.checkpoints.ensure_capacity_async()
+            live = self._live.get(record.id)
+            if latest is not record or live is None or live.operation is not None or live.checkpoint_task is not None:
+                raise ValueError("Execution finalization is still in progress or a later allocation exists")
+        except ValueError as error:
+            return AgentCheckpointStatus(save_available=False, detail=str(error))
+        return AgentCheckpointStatus(
+            save_available=True, detail="Save sensitive native state and close this allocation."
+        )
+
+    async def save_checkpoint_async(
+        self,
+        *,
+        execution_id: UUID,
+        memory: "MemoryInterface",
+        actor: str,
+    ) -> AgentCheckpoint:
+        """
+        Save and close the latest completed allocation; callers must authorize private-state retention.
+
+        Returns:
+            AgentCheckpoint: Immutable state bound to the original transcript and journal cutoff.
+
+        Raises:
+            ValueError: The latest allocation is not eligible for capture.
+        """
+        await self.start_async()
+        async with self._admission:
+            if self._closed:
+                raise ValueError("Execution manager is closing")
+            record = self.records[execution_id]
+            require_checkpoint_ready(record)
+            await self.checkpoints.ensure_capacity_async()
+            live = self._live.get(execution_id)
+            if (
+                live is None
+                or live.operation is not None
+                or live.checkpoint_task is not None
+                or live.close_task is not None
+                or self.latest_execution(conversation_id=record.conversation_id) is not record
+            ):
+                raise ValueError("Only the latest settled allocation can be saved")
+            transcript = await checkpoint_transcript_async(
+                memory=memory,
+                conversation_id=record.conversation_id,
+                executions=[item for item in self.records.values() if item.conversation_id == record.conversation_id],
+            )
+            require_checkpoint_ready(record)
+            checkpoint_id = await self.checkpoints.reserve_async()
+            record.state = AgentExecutionState.CLOSING
+            record.close_reason = "checkpoint_capture"
+            live.checkpoint_task = asyncio.create_task(
+                self._save_checkpoint_async(
+                    live,
+                    memory=memory,
+                    actor=actor,
+                    transcript=transcript,
+                    checkpoint_id=checkpoint_id,
+                )
+            )
+            self._checkpoint_tasks.add(live.checkpoint_task)
+            live.checkpoint_task.add_done_callback(self._checkpoint_tasks.discard)
+        return await await_task_completion_async(live.checkpoint_task)
+
+    async def _save_checkpoint_async(
+        self,
+        live: _LiveExecution,
+        *,
+        memory: "MemoryInterface",
+        actor: str,
+        transcript: str,
+        checkpoint_id: UUID,
+    ) -> AgentCheckpoint:
+        record = live.record
+        checkpoint: AgentCheckpoint | None = None
+        published = False
+        try:
+            await self.store.save_async(record)
+            layout = checkpoint_layout(record)
+            if live.inference_lease and self._relay:
+                await self._relay.revoke_async(live.inference_lease)
+            workspace, state = await live.environment.capture_checkpoint_async(layout=layout, secrets=live.secrets)
+            await self._close_execution_async(live, reason="checkpoint_saved")
+            if record.cleanup_error or record.capture_error:
+                raise ValueError("Resource closure or evidence capture failed; checkpoint was not saved")
+            if transcript != await checkpoint_transcript_async(memory=memory, conversation_id=record.conversation_id):
+                raise ValueError("Conversation changed during checkpoint capture")
+            journal = await asyncio.to_thread(
+                self.checkpoints._read,
+                path=self.store.directory(record.id) / "events.jsonl",
+                maximum=record.profile.max_evidence_bytes,
+            )
+            if record.image_id is None or record.session_id is None:
+                raise ValueError("Native checkpoint identities disappeared during capture")
+            checkpoint = AgentCheckpoint(
+                id=checkpoint_id,
+                source_execution_id=record.id,
+                conversation_id=record.conversation_id,
+                target_id=record.target_id,
+                profile=record.profile,
+                image_id=record.image_id,
+                session_id=record.session_id,
+                layout=layout,
+                agent_version=checkpoint_agent_version(record),
+                transcript_sha256=transcript,
+                event_cursor=record.event_count,
+                journal=self.checkpoints.describe(journal),
+                workspace=self.checkpoints.describe(workspace),
+                harness_state=self.checkpoints.describe(state),
+                actor=actor,
+            )
+            await self.checkpoints.save_async(checkpoint=checkpoint, workspace=workspace, state=state)
+            published = True
+            record.checkpoint_id = checkpoint.id
+            await self.store.save_async(record)
+            return checkpoint
+        except BaseException:
+            record.checkpoint_id = None
+            if published and checkpoint is not None:
+                await self.checkpoints.delete_async(checkpoint.id)
+            await self._close_execution_async(live, reason="checkpoint_failed")
+            raise
+        finally:
+            await self.checkpoints.release_reservation_async(checkpoint_id)
+
+    async def restore_checkpoint_async(
+        self,
+        *,
+        checkpoint_id: UUID,
+        profile: AgentProfile,
+        target_id: str,
+        memory: "MemoryInterface",
+        model_binding: "ResolvedModelBinding",
+    ) -> AgentExecution:
+        """
+        Create one new allocation for the unchanged same-chat checkpoint; never replay a prompt.
+
+        Returns:
+            AgentExecution: The new idle allocation. Failed attempts remain visible and prevent rewind.
+
+        Raises:
+            ValueError: The checkpoint, transcript, configuration, or admission state is incompatible.
+        """
+        await self.start_async()
+        async with self._admission:
+            if self._closed or len(self._live) >= self.max_executions:
+                raise ValueError("Execution manager is closing or at capacity")
+            checkpoint, workspace, state = await self.checkpoints.load_async(checkpoint_id)
+            source = self.records.get(checkpoint.source_execution_id)
+            if (
+                source is None
+                or source.state != AgentExecutionState.CLOSED
+                or source.checkpoint_id != checkpoint_id
+                or self.latest_execution(conversation_id=checkpoint.conversation_id) is not source
+            ):
+                raise ValueError(
+                    "Only the latest saved allocation can be restored; rewinds and forks are not supported"
+                )
+            if profile != checkpoint.profile or target_id != checkpoint.target_id:
+                raise ValueError("Target configuration changed; restore requires the original pinned target")
+            if checkpoint_layout(source) != checkpoint.layout:
+                raise ValueError("Installed harness checkpoint layout changed")
+            if source.inference_target_hash != model_binding.identifier_hash:
+                raise ValueError("Model binding changed; restore requires the checkpoint's model")
+            if checkpoint.transcript_sha256 != await checkpoint_transcript_async(
+                memory=memory,
+                conversation_id=checkpoint.conversation_id,
+            ):
+                raise ValueError("Conversation changed since saving; restoration would rewind or mismatch history")
+            journal = await asyncio.to_thread(
+                self.checkpoints._read,
+                path=self.store.directory(source.id) / "events.jsonl",
+                maximum=source.profile.max_evidence_bytes,
+            )
+            if (
+                self.checkpoints.describe(journal) != checkpoint.journal
+                or source.event_count != checkpoint.event_cursor
+            ):
+                raise ValueError("Original execution evidence changed")
+            workspace = await asyncio.to_thread(
+                CheckpointArchive.normalize,
+                raw=workspace,
+                root="/workspace",
+                portable=True,
+            )
+            state = await asyncio.to_thread(
+                CheckpointArchive.normalize,
+                raw=state,
+                root=checkpoint.layout.state_root,
+                portable=True,
+            )
+            record = AgentExecution(
+                owner_id=self.store.root.resolve().as_posix(),
+                conversation_id=checkpoint.conversation_id,
+                target_id=target_id,
+                profile=profile,
+                image_id=checkpoint.image_id,
+                interactive=source.interactive,
+                parent_execution_id=source.id,
+                restored_from_checkpoint_id=checkpoint.id,
+            )
+            live = self._make_live(record)
+            live.model_binding = model_binding
+            live.restoration = (checkpoint, workspace, state)
+            self.records[record.id] = record
+            self._live[record.id] = live
+            live.checkpoint_task = asyncio.create_task(self._restore_checkpoint_async(live, memory=memory))
+            self._checkpoint_tasks.add(live.checkpoint_task)
+            live.checkpoint_task.add_done_callback(self._checkpoint_tasks.discard)
+        return await await_task_completion_async(live.checkpoint_task)
+
+    async def _restore_checkpoint_async(self, live: _LiveExecution, *, memory: "MemoryInterface") -> AgentExecution:
+        record = live.record
+        assert live.restoration is not None
+        checkpoint = live.restoration[0]
+        try:
+            await self.store.save_async(record)
+            await self._record_async(
+                live,
+                direction="lifecycle",
+                payload={
+                    "type": "checkpoint.restore_started",
+                    "checkpoint_id": str(checkpoint.id),
+                    "source_execution_id": str(checkpoint.source_execution_id),
+                },
+            )
+            live.startup = asyncio.create_task(self._launch_async(live))
+            await live.startup
+            if checkpoint.transcript_sha256 != await checkpoint_transcript_async(
+                memory=memory,
+                conversation_id=record.conversation_id,
+            ):
+                raise ValueError("Conversation changed during restore; restored allocation was closed")
+            await self._record_async(live, direction="lifecycle", payload={"type": "checkpoint.restore_completed"})
+            if live.inference_lease is not None:
+                live.inference_lease.active = True
+            record.state = AgentExecutionState.IDLE
+            record.last_activity_at = datetime.now(UTC)
+            await self.store.save_async(record)
+            return record
+        except BaseException:
+            await self._close_execution_async(live, reason="checkpoint_restore_failed")
+            raise
+        finally:
+            live.restoration = None
+            live.checkpoint_task = None
+
+    async def delete_checkpoint_async(self, checkpoint_id: UUID) -> None:
+        """
+        Delete private checkpoint bytes, not source execution evidence or running resources.
+
+        Raises:
+            ValueError: A checkpoint transition still owns the state.
+        """
+        await self.start_async()
+        async with self._admission:
+            if self._checkpoint_tasks:
+                raise ValueError("A checkpoint transition is in progress; retry deletion after it settles")
+            await self.checkpoints.delete_async(checkpoint_id)
+            self.store.notify()
 
     async def _expire_async(self) -> None:
         while True:
@@ -772,6 +1129,11 @@ class AgentExecutionManager:
                 await self._reaper
         errors: list[Exception] = []
         try:
+            for task in tuple(self._checkpoint_tasks):
+                try:
+                    await await_task_completion_async(task)
+                except Exception as error:
+                    errors.append(error)
             for execution_id in tuple(self._live):
                 try:
                     await self.close_execution_async(execution_id=execution_id, reason="runtime_shutdown")

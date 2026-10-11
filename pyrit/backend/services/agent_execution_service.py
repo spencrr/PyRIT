@@ -28,7 +28,9 @@ async def resolve_conversation_execution_async(
         raise ValueError("Conversation does not belong to this attack")
     manager = get_agent_execution_manager()
     await manager.start_async()
-    record = next((r for r in manager.records.values() if r.conversation_id == conversation_id), None)
-    if execution_id is not None and (record is None or record.id != execution_id):
+    record = (
+        manager.records.get(execution_id) if execution_id else manager.latest_execution(conversation_id=conversation_id)
+    )
+    if execution_id is not None and (record is None or record.conversation_id != conversation_id):
         raise ValueError("Execution does not belong to this conversation")
     return record

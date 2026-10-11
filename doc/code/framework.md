@@ -279,6 +279,15 @@ owned resources. Saving configuration does not provision or mutate an execution.
 Registry and New Chat share the same setup form; conversation-scoped tool activity
 is an operator view of retained evidence, separate from resource administration.
 
+Completed-turn Docker checkpoints are explicit save-and-close operations, not
+implicit resurrection after expiry or crash. Adapters declare supported native-state
+layouts; the execution manager owns quiescence, archives, new allocation lineage,
+and fresh model authority. The checkpoint store persists immutable metadata and
+bounded private-state files. The backend reuses conversation admission and admin
+authorization. Restore requires the unchanged same-chat transcript and original
+configuration, and cannot rewind a later allocation. Native load-time notifications
+are historical evidence, never new tool invocations or scorer input.
+
 An agent model binding may reference another registered target's optional
 single-inference capability. An execution-scoped relay invokes that target's
 provider transport/authentication while the harness retains ownership of its

@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
 import signal
 import stat
@@ -17,7 +18,9 @@ from typing import Any
 
 import psutil
 
+from pyrit.agent.checkpoint_archive import CheckpointArchive
 from pyrit.agent.harness import launch_environment
+from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
 from pyrit.models.agent_execution import AgentEnvironment, AgentExecution, AgentWorkspaceBase
 
 
@@ -25,6 +28,12 @@ class ExecutionEnvironment:
     """A single fresh workspace and harness process, never an arbitrary existing resource."""
 
     _MAX_WORKSPACE_ARCHIVE_BYTES = 32 * 1024 * 1024
+    _RESTORE_SUPERVISOR = (
+        "/bin/sh",
+        "-c",
+        'while [ ! -f "$1" ]; do sleep 0.1; done; rm -- "$1"; shift; exec "$@"',
+        "--",
+    )
 
     def __init__(self, *, execution: AgentExecution, directory: Path) -> None:
         """Bind the durable identity before acquiring any resources."""
@@ -110,8 +119,10 @@ class ExecutionEnvironment:
 
     async def _prepare_docker_async(self) -> None:
         profile = self.execution.profile
-        image = await self._docker_async("image", "inspect", str(profile.image))
+        image = await self._docker_async("image", "inspect", self.execution.image_id or str(profile.image))
         image_info = json.loads(image)[0]
+        if self.execution.restored_from_checkpoint_id and image_info["Config"].get("Volumes"):
+            raise ValueError("Checkpoint restoration refuses images with declared volumes")
         self.execution.image_id = image_info["Id"]
         self.execution.provider_id = f"pyrit-agent-{self.execution.id}"
         args = [
@@ -148,7 +159,12 @@ class ExecutionEnvironment:
             args.extend(["--env", name])
         for name in self._launch_environment():
             args.extend(["--env", name])
-        args.extend(["--entrypoint", profile.command[0], self.execution.image_id, *profile.command[1:]])
+        command = (
+            (*self._RESTORE_SUPERVISOR, f"/tmp/pyrit-restore-{self.execution.id}", *profile.command)
+            if self.execution.restored_from_checkpoint_id
+            else profile.command
+        )
+        args.extend(["--entrypoint", command[0], self.execution.image_id, *command[1:]])
         await self._docker_async(*args, credentials=True)
         image_user = image_info.get("Config", {}).get("User", "")
         if (
@@ -257,7 +273,11 @@ class ExecutionEnvironment:
             if (value := os.environ.get(name)) is not None
         }
         if profile.environment == AgentEnvironment.DOCKER:
-            command = ("docker", "start", "--attach", "--interactive", str(self.execution.provider_id))
+            command = (
+                ("docker", "attach", "--sig-proxy=false", str(self.execution.provider_id))
+                if self.execution.restored_from_checkpoint_id
+                else ("docker", "start", "--attach", "--interactive", str(self.execution.provider_id))
+            )
         else:
             environment.update(self.credential_values())
             environment.update(
@@ -286,6 +306,14 @@ class ExecutionEnvironment:
         self.execution.process_created_at = await asyncio.to_thread(
             lambda: psutil.Process(self.process.pid).create_time() if self.process else None
         )
+        if self.execution.restored_from_checkpoint_id:
+            await self._docker_async(
+                "exec",
+                str(self.execution.provider_id),
+                "touch",
+                "--",
+                f"/tmp/pyrit-restore-{self.execution.id}",
+            )
         return self.process
 
     @property
@@ -312,6 +340,77 @@ class ExecutionEnvironment:
         if self.execution.profile.environment == AgentEnvironment.LOCAL:
             await self._collect_artifacts_async()
         await asyncio.to_thread(self._remove_runtime_directories)
+
+    async def capture_checkpoint_async(
+        self,
+        *,
+        layout: HarnessCheckpointLayout,
+        secrets: tuple[str, ...],
+    ) -> tuple[bytes, bytes]:
+        """
+        Stop the exact owned container, then capture one consistent filesystem cut.
+
+        Returns:
+            tuple[bytes, bytes]: Workspace and native state archives.
+
+        Raises:
+            ValueError: Storage or archive layout is unsupported.
+            RuntimeError: The container did not stop cleanly.
+        """
+        info = await self._inspect_owned_container_async()
+        if info is None or info.get("Mounts"):
+            raise ValueError("Checkpoint capture requires an owned container without mounted filesystems")
+        await self._docker_async("stop", "--time", "10", str(self.execution.provider_id))
+        stopped = await self._inspect_owned_container_async()
+        if (
+            not stopped
+            or stopped["State"]["Running"]
+            or stopped["State"]["OOMKilled"]
+            or stopped["State"]["ExitCode"] not in (0, 143)
+        ):
+            raise RuntimeError("Harness did not stop cleanly; no checkpoint was captured")
+        if self.process:
+            await asyncio.wait_for(self.process.wait(), timeout=15)
+        archives = []
+        for path in ("/workspace", layout.state_root):
+            raw = await self._docker_archive_async(path=path, maximum_bytes=CheckpointArchive.MAX_BYTES)
+            archives.append(await asyncio.to_thread(CheckpointArchive.normalize, raw=raw, root=path, secrets=secrets))
+        return archives[0], archives[1]
+
+    async def restore_checkpoint_async(
+        self,
+        *,
+        layout: HarnessCheckpointLayout,
+        workspace: bytes,
+        state: bytes,
+    ) -> None:
+        """
+        Restore validated native state before starting a newly allocated harness.
+
+        Raises:
+            ValueError: The destination is not a fresh stopped unmounted container.
+        """
+        info = await self._inspect_owned_container_async()
+        if info is None or info.get("Mounts") or info["State"]["Running"]:
+            raise ValueError("Restore requires a fresh stopped owned container without mounts")
+        uid, gid = await self._docker_user_async(info["Config"].get("User", ""))
+        await self._docker_async("start", str(self.execution.provider_id))
+        root = PurePosixPath(layout.state_root)
+        checked = [
+            "/workspace",
+            *(str(path) for path in reversed(root.parents) if path != PurePosixPath("/")),
+            str(root),
+        ]
+        script = (
+            "set -eu; "
+            + "; ".join(f"test ! -L {shlex.quote(path)}" for path in checked)
+            + "; test -d /workspace; find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; "
+            + f"rm -rf -- {shlex.quote(layout.state_root)}"
+        )
+        await self._docker_async("exec", str(self.execution.provider_id), "/bin/sh", "-c", script)
+        parents = await asyncio.to_thread(CheckpointArchive.parents, root=layout.state_root, uid=uid, gid=gid)
+        for data in (parents, workspace, state):
+            await self._docker_async("cp", "--archive", "-", f"{self.execution.provider_id}:/", input_data=data)
 
     def _remove_runtime_directories(self) -> None:
         for path in (self.workspace, self.home):

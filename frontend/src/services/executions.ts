@@ -1,7 +1,21 @@
-import type { AgentEventPage, AgentEvidenceSnapshot, AgentExecution, ConversationExecution } from '@/types'
+import type { AgentCheckpoint, AgentCheckpointStatus, AgentEventPage, AgentEvidenceSnapshot, AgentExecution, ConversationExecution } from '@/types'
 import { apiClient, openApiEventStream } from './api'
 
 export const executionsApi = {
+  async checkpoint(id: string): Promise<AgentCheckpointStatus> {
+    return (await apiClient.get<AgentCheckpointStatus>(`/executions/${encodeURIComponent(id)}/checkpoint`)).data
+  },
+  async saveCheckpoint(id: string): Promise<AgentCheckpoint> {
+    return (await apiClient.post<AgentCheckpoint>(`/executions/${encodeURIComponent(id)}/checkpoint`, {
+      acknowledge_sensitive_state: true,
+    })).data
+  },
+  async restoreCheckpoint(id: string): Promise<AgentExecution> {
+    return (await apiClient.post<AgentExecution>(`/executions/${encodeURIComponent(id)}/checkpoint/restore`)).data
+  },
+  async deleteCheckpoint(id: string): Promise<AgentCheckpointStatus> {
+    return (await apiClient.delete<AgentCheckpointStatus>(`/executions/${encodeURIComponent(id)}/checkpoint`)).data
+  },
   async evidence(id: string): Promise<AgentEvidenceSnapshot> {
     return (await apiClient.get<AgentEvidenceSnapshot>(`/executions/${encodeURIComponent(id)}/evidence`)).data
   },

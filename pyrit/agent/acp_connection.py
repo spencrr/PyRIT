@@ -175,10 +175,16 @@ class AcpConnection:
         self.status_changed = status_changed
 
     async def initialize_async(
-        self, *, cwd: str, model: str = "", authentication_method: str | None = None
+        self,
+        *,
+        cwd: str,
+        model: str = "",
+        authentication_method: str | None = None,
+        session_id: str | None = None,
+        expected_agent_version: str | None = None,
     ) -> dict[str, Any]:
         """
-        Negotiate ACP v1 and open a new, never replayed session.
+        Negotiate ACP v1; load native state only for an explicit validated checkpoint restore.
 
         Returns:
             dict[str, Any]: Negotiated agent information and capabilities.
@@ -193,14 +199,25 @@ class AcpConnection:
         )
         if result.protocol_version != 1:
             raise ValueError(f"Agent selected unsupported ACP version {result.protocol_version}")
+        if expected_agent_version is not None and (
+            result.agent_info is None or result.agent_info.version != expected_agent_version
+        ):
+            raise ValueError("Restored harness version does not match the checkpoint")
         if authentication_method:
             if self.status_changed:
                 await self.status_changed(AgentConnectionState.AUTHENTICATING)
             if not any(method.id == authentication_method for method in result.auth_methods or []):
                 raise ValueError("Configured ACP authentication method was not advertised by the agent")
             await self.connection.authenticate(method_id=authentication_method)
-        session = await self.connection.new_session(cwd=cwd, mcp_servers=[])
-        self.session_id = session.session_id
+        if session_id is not None:
+            if result.agent_capabilities is None or not result.agent_capabilities.load_session:
+                raise ValueError("Harness does not advertise session loading")
+            self.client.cancelled = True
+            session = await self.connection.load_session(cwd=cwd, session_id=session_id, mcp_servers=[])
+            self.session_id = session_id
+        else:
+            session = await self.connection.new_session(cwd=cwd, mcp_servers=[])
+            self.session_id = session.session_id
         if model:
             option = next((option for option in session.config_options or [] if option.category == "model"), None)
             if option is None:
