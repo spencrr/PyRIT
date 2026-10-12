@@ -152,6 +152,7 @@ class AgentProfile(BaseModel):
     workspace_base: AgentWorkspaceBase | None = None
     working_directory: str = "."
     credential_env: tuple[str, ...] = ()
+    use_github_cli_login: bool = False
     authentication_method: str | None = None
     permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY
     model: str = ""
@@ -215,6 +216,7 @@ class HarnessProfile(BaseModel):
     command: tuple[str, ...] = ("copilot", "--acp", "--stdio")
     harness_kind: str = AgentHarnessKind.COPILOT
     credential_env: tuple[str, ...] = ()
+    use_github_cli_login: bool = False
     authentication_method: str | None = None
     permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY
     inference_requirements: InferenceRequirements = Field(default_factory=InferenceRequirements)

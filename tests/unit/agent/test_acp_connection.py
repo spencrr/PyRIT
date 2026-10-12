@@ -9,6 +9,7 @@ import pytest
 
 pytest.importorskip("acp")
 
+from acp import RequestError
 from acp.schema import (
     AgentCapabilities,
     Implementation,
@@ -107,3 +108,20 @@ async def test_explicit_native_load_checks_capability_and_disables_permission_ac
                 await connection.initialize_async(cwd="/workspace", session_id="old-session")
             sdk.load_session.assert_not_awaited()
         sdk.new_session.assert_not_awaited()
+
+
+async def test_native_auth_required_explains_private_home_without_retrying_async() -> None:
+    sdk = MagicMock()
+    sdk.initialize = AsyncMock(return_value=InitializeResponse(protocol_version=1))
+    sdk.new_session = AsyncMock(side_effect=RequestError.auth_required())
+    with patch("pyrit.agent.acp_connection.connect_to_agent", return_value=sdk):
+        connection = AcpConnection(
+            transport=RecordingTransport(
+                reader=asyncio.StreamReader(), writer=MagicMock(spec=asyncio.StreamWriter), record=AsyncMock()
+            ),
+            permission_policy=AgentPermissionPolicy.DENY,
+        )
+        with pytest.raises(RequestError, match="COPILOT_GITHUB_TOKEN") as caught:
+            await connection.initialize_async(cwd="/workspace", model="gpt-6-astra")
+        assert caught.value.code == -32000
+        sdk.new_session.assert_awaited_once()

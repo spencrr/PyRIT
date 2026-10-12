@@ -3,6 +3,7 @@
 
 import json
 from collections.abc import AsyncIterator
+from copy import deepcopy
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -98,15 +99,103 @@ async def test_inference_does_not_run_responses_tool_loop() -> None:
 
 
 @pytest.mark.usefixtures("patch_central_database")
-async def test_conflicting_parameters_fail_before_provider_dispatch() -> None:
-    target = OpenAIChatTarget(endpoint="https://provider.test/v1", model_name="model", api_key="test", temperature=0)
-    with pytest.raises(ValueError, match="conflicts.*temperature"):
+@pytest.mark.parametrize(
+    ("target_type", "wire", "limit"),
+    [
+        (OpenAIChatTarget, InferenceWireApi.CHAT_COMPLETIONS, "max_completion_tokens"),
+        (OpenAIResponseTarget, InferenceWireApi.RESPONSES, "max_output_tokens"),
+    ],
+)
+async def test_bound_target_settings_override_harness_suggestions_without_mutation_async(
+    target_type: type[OpenAIChatTarget] | type[OpenAIResponseTarget],
+    wire: InferenceWireApi,
+    limit: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[dict] = []
+
+    async def upstream_async(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, content=b'data: {"ok":true}\n\ndata: [DONE]\n\n')
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream_async)) as http:
+        target = target_type(
+            endpoint="https://provider.test/v1",
+            model_name="configured-model",
+            api_key="test",
+            temperature=0.35,
+            top_p=0.8,
+            **{limit: 512},
+            httpx_client_kwargs={"http_client": http},
+        )
+        body = {
+            "model": "hint",
+            "messages": [{"role": "user", "content": "benign"}],
+            "input": "benign",
+            "temperature": 1,
+            "top_p": 1,
+            limit: 8192,
+            "stream": True,
+            "tools": [{"type": "function", "function": {"name": "read", "parameters": {}}}],
+            "vendor_extension": {"retained": True},
+        }
+        if wire == InferenceWireApi.CHAT_COMPLETIONS:
+            body["max_tokens"] = 1000
+        original = deepcopy(body)
+        identity = target.get_identifier().hash
         async with target.open_inference_async(
-            body={"messages": [], "temperature": 1},
-            requirements=InferenceRequirements(),
-            request_id="id",
+            body=body, requirements=InferenceRequirements(wire_api=wire), request_id="id"
+        ) as response:
+            assert b"".join([chunk async for chunk in response.body]).endswith(b"[DONE]\n\n")
+        assert body == original and target.get_identifier().hash == identity
+        assert calls[0]["temperature"] == 0.35 and calls[0]["top_p"] == 0.8 and calls[0][limit] == 512
+        assert calls[0]["model"] == "configured-model" and calls[0]["tools"] == body["tools"]
+        assert calls[0]["vendor_extension"] == body["vendor_extension"] and calls[0]["stream"] is True
+        assert "max_tokens" not in calls[0]
+        assert "override harness inference parameters" in caplog.text and "temperature" in caplog.text
+
+
+@pytest.mark.usefixtures("patch_central_database")
+async def test_unconfigured_target_parameters_remain_harness_owned_async() -> None:
+    target = OpenAIChatTarget(endpoint="https://provider.test/v1", model_name="model", api_key="test")
+    body = {"messages": [], "temperature": 0.4, "max_tokens": 222, "seed": 3}
+    assert target._inference_body(body) == {**body, "model": "model"}
+    await target.cleanup_target_async()
+
+
+@pytest.mark.usefixtures("patch_central_database")
+async def test_multiple_completion_request_is_still_rejected_async() -> None:
+    target = OpenAIChatTarget(endpoint="https://provider.test/v1", model_name="model", api_key="test", n=1)
+    with pytest.raises(ValueError, match="parameter 'n'"):
+        async with target.open_inference_async(
+            body={"messages": [], "n": 2}, requirements=InferenceRequirements(), request_id="id"
         ):
-            pytest.fail("Conflict must not dispatch")
+            pytest.fail("Multiple completions must not dispatch")
+    await target.cleanup_target_async()
+
+
+@pytest.mark.usefixtures("patch_central_database")
+@pytest.mark.parametrize(
+    ("configured", "requested", "expected"),
+    [
+        ({"reasoning_summary": "auto"}, {"effort": "high"}, {"effort": "high", "summary": "auto"}),
+        ({"reasoning_effort": "low"}, {"effort": "high", "summary": "auto"}, {"effort": "low", "summary": "auto"}),
+    ],
+)
+async def test_reasoning_precedence_preserves_unconfigured_nested_fields_async(
+    configured: dict,
+    requested: dict,
+    expected: dict,
+) -> None:
+    target = OpenAIResponseTarget(endpoint="https://provider.test/v1", model_name="model", api_key="test", **configured)
+    body = {"input": "hello", "reasoning": requested}
+    before = deepcopy(body)
+    effective = target._inference_body(body)
+    assert effective["reasoning"] == expected
+    assert body == before
+    effective["reasoning"]["summary"] = "concise"
+    assert body == before and target._inference_defaults()["reasoning"] != effective["reasoning"]
+    await target.cleanup_target_async()
 
 
 @pytest.mark.usefixtures("patch_central_database")

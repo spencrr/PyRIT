@@ -65,6 +65,39 @@ function environmentCatalog(): AgentPresetCatalog {
 }
 
 describe('AgentTargetForm', () => {
+  it('submits developer login only after an explicit opt-in and retains it as an error under BYOK', async () => {
+    const user = userEvent.setup()
+    jest.mocked(targetsApi.listAgentPresets).mockResolvedValue({ ...presetCatalog(), github_cli_login_enabled: true })
+    jest.mocked(listRegisteredTargets).mockResolvedValue([modelSource('hash')])
+    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
+    const login = await screen.findByRole('checkbox', { name: 'Use backend GitHub CLI login (development only)' })
+    expect(login).not.toBeChecked()
+    await user.click(login)
+    await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'native')
+    await user.type(screen.getByRole('textbox', { name: /Docker image/ }), 'copilot:test')
+    await user.click(screen.getByRole('button', { name: 'Create Target', exact: true }))
+    await waitFor(() => expect(targetsApi.createTarget).toHaveBeenCalledTimes(1))
+    expect(jest.mocked(targetsApi.createTarget).mock.calls[0][0].params).toMatchObject({
+      agent_configuration: { harness_profile: { use_github_cli_login: true } },
+    })
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Model', exact: true }), 'model_source')
+    expect(login).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Create Target', exact: true })).toBeDisabled()
+    expect(screen.getByText(/Deselect it explicitly to use BYOK/)).toBeVisible()
+    await user.click(login)
+    expect(screen.getByRole('button', { name: 'Create Target', exact: true })).toBeEnabled()
+  })
+
+  it('does not enable developer login when the backend has not opted in', async () => {
+    const user = userEvent.setup()
+    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
+    const login = await screen.findByRole('checkbox', { name: 'Use backend GitHub CLI login (development only)' })
+    expect(login).toBeDisabled()
+    await user.click(login)
+    expect(login).not.toBeChecked()
+    expect(screen.getByText(/PYRIT_ALLOW_GITHUB_CLI_LOGIN=true/)).toBeVisible()
+  })
+
   it('selects installed harness adapters and preserves their explicit command and supported API', async () => {
     const user = userEvent.setup()
     const source = modelSource('source-hash')

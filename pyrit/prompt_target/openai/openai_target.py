@@ -102,6 +102,30 @@ class OpenAITarget(PromptTarget):
     def _inference_defaults(self) -> dict[str, Any]:
         return {}
 
+    def _inference_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        effective = dict(body)
+        defaults = self._inference_defaults()
+        overridden = []
+        for key, value in defaults.items():
+            if value is None:
+                continue
+            if key == "n" and effective.get(key, value) != value:
+                raise ValueError("Harness request conflicts with configured target parameter 'n'")
+            if key == "reasoning" and isinstance(value, dict) and isinstance(effective.get(key), dict):
+                value = {**effective[key], **value}
+            if key in effective and effective[key] != value:
+                overridden.append(key)
+            effective[key] = value
+        if defaults.get("max_completion_tokens") is not None and "max_tokens" in effective:
+            effective.pop("max_tokens")
+            overridden.append("max_tokens")
+        if overridden:
+            logger.warning(
+                "Bound model target settings override harness inference parameters: %s", ", ".join(overridden)
+            )
+        effective["model"] = self._model_name
+        return effective
+
     async def cleanup_target_async(self) -> None:
         """Close the HTTP transport shared by direct prompts and bound inference requests."""
         if self._async_client is not None:
@@ -119,7 +143,7 @@ class OpenAITarget(PromptTarget):
             InferenceResponse: Unparsed provider bytes, preserving unknown fields and SSE frames.
 
         Raises:
-            ValueError: Required capabilities or configured parameters conflict.
+            ValueError: Required capabilities or completion-count constraints conflict.
             InferenceAdmissionError: The shared target pacing budget cannot admit this request promptly.
         """
         capabilities = self.inference_capabilities
@@ -128,13 +152,7 @@ class OpenAITarget(PromptTarget):
         reasons = capabilities.incompatibilities(requirements)
         if reasons:
             raise ValueError("; ".join(reasons))
-        effective = dict(body)
-        for key, value in self._inference_defaults().items():
-            if value is not None:
-                if key in effective and effective[key] != value:
-                    raise ValueError(f"Harness request conflicts with configured target parameter '{key}'")
-                effective[key] = value
-        effective["model"] = self._model_name
+        effective = self._inference_body(body)
         if self._max_requests_per_minute and self._max_requests_per_minute > 0:
             try:
                 async with asyncio.timeout(5):

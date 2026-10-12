@@ -54,6 +54,56 @@ def test_authentication_method_is_not_silently_dropped() -> None:
         validate_harness_authentication(harness=harness, target_backed=True)
 
 
+@pytest.mark.parametrize(
+    ("harness", "target_backed"),
+    [
+        (HarnessProfile(use_github_cli_login=True), True),
+        (HarnessProfile(harness_kind="opencode", use_github_cli_login=True), False),
+        (HarnessProfile(authentication_method="copilot-login", use_github_cli_login=True), False),
+        (HarnessProfile(use_github_cli_login=True, credential_env=("GITHUB_TOKEN",)), False),
+    ],
+)
+def test_developer_login_rejects_ambiguous_authentication(harness: HarnessProfile, target_backed: bool) -> None:
+    with patch.dict("os.environ", {"PYRIT_ALLOW_GITHUB_CLI_LOGIN": "true"}):
+        with pytest.raises(ValueError, match="native Copilot|not both"):
+            validate_harness_authentication(harness=harness, target_backed=target_backed)
+
+
+def test_developer_login_requires_backend_authorization() -> None:
+    with patch.dict("os.environ", {"PYRIT_ALLOW_GITHUB_CLI_LOGIN": "false"}):
+        with pytest.raises(ValueError, match="disabled"):
+            validate_harness_authentication(harness=HarnessProfile(use_github_cli_login=True), target_backed=False)
+
+
+async def test_developer_login_reaches_docker_as_runtime_environment_not_argv_or_record_async(tmp_path: Path) -> None:
+    profile = AgentProfile(image="test", use_github_cli_login=True)
+    record = AgentExecution(owner_id="test", conversation_id="one", target_id="target", profile=profile)
+    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
+    with patch(
+        "pyrit.agent.environment.github_cli_token_async", new_callable=AsyncMock, return_value="gho_synthetic"
+    ) as login:
+        await environment.resolve_credentials_async()
+    login.assert_awaited_once()
+    with patch.object(
+        environment, "_docker_async", new_callable=AsyncMock, side_effect=['[{"Id":"test"}]', "id"]
+    ) as docker:
+        await environment.prepare_async()
+    assert "COPILOT_GITHUB_TOKEN" in docker.call_args.args
+    assert "gho_synthetic" not in str(docker.call_args)
+    assert environment.credential_values()["COPILOT_GITHUB_TOKEN"] == "gho_synthetic"
+    assert "gho_synthetic" not in record.model_dump_json()
+
+
+@pytest.mark.usefixtures("patch_central_database")
+def test_developer_login_participates_in_identity_without_changing_legacy_hashes() -> None:
+    profile = AgentProfile(image="test")
+    legacy = AgentTarget(profile=profile)
+    with patch.dict("os.environ", {"PYRIT_ALLOW_GITHUB_CLI_LOGIN": "true"}):
+        opted = AgentTarget(profile=profile.model_copy(update={"use_github_cli_login": True}))
+    assert legacy.get_identifier().hash != opted.get_identifier().hash
+    assert AgentTargetConfiguration.from_profile(opted.profile).harness_profile.use_github_cli_login
+
+
 @pytest.mark.usefixtures("patch_central_database")
 def test_python_target_applies_auth_validation_before_source_resolution() -> None:
     with pytest.raises(ValueError, match="native model credentials"):

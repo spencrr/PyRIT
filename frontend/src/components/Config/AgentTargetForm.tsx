@@ -56,6 +56,7 @@ export default function AgentTargetForm({
   const [command, setCommand] = useState(initialConfiguration?.harness_profile.command[0] ?? 'copilot')
   const [argumentsText, setArgumentsText] = useState(initialConfiguration?.harness_profile.command.slice(1).join('\n') ?? '--acp\n--stdio')
   const [authentication, setAuthentication] = useState(initialConfiguration?.harness_profile.authentication_method ?? '')
+  const [githubCliLogin, setGithubCliLogin] = useState(initialConfiguration?.harness_profile.use_github_cli_login ?? false)
   const [source, setSource] = useState(initialConfiguration?.model_binding.target_registry_name ?? '')
   const [sourceHash, setSourceHash] = useState<string | null>(initialConfiguration?.model_binding.target_identifier_hash ?? null)
   const [wireApi, setWireApi] = useState<InferenceWireApi>(initialConfiguration?.model_binding.wire_api ?? 'completions')
@@ -127,6 +128,9 @@ export default function AgentTargetForm({
 
   const catalog = catalogState?.generation === generation ? catalogState.catalog : null
   const catalogUnavailable = !ready || loadingCatalog || !catalog || Boolean(catalogError)
+  const loginBlocked = githubCliLogin && (catalogUnavailable || !catalog?.github_cli_login_enabled
+    || harness !== 'copilot' || Boolean(source) || Boolean(authentication.trim())
+    || credential.split(/[\n,]/).some((name) => ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'].includes(name.trim().toUpperCase())))
   const adapters = catalog?.harness_adapters ?? BUILTIN_HARNESS_ADAPTERS
   const adapterMissing = !adapters.some((item) => item.name === harness)
   const adapterBlocked = adapterMissing || (!BUILTIN_HARNESS_ADAPTERS.some((item) => item.name === harness) && catalogUnavailable)
@@ -177,6 +181,7 @@ export default function AgentTargetForm({
     setCommand(adapter.default_command[0] ?? '')
     setArgumentsText(adapter.default_command.slice(1).join('\n'))
     setAuthentication('')
+    setGithubCliLogin(false)
     setCredential('')
     if (selectedSource) {
       const options = modelBindingOptions(selectedSource, kind, undefined, adapters).protocols
@@ -196,6 +201,7 @@ export default function AgentTargetForm({
     setArgumentsText(profile.command.slice(1).join('\n'))
     setCredential(profile.credential_env.join('\n'))
     setAuthentication(profile.authentication_method ?? '')
+    setGithubCliLogin(profile.use_github_cli_login ?? false)
     setPermissionPolicy(profile.permission_policy)
     if (selectedSource) {
       const options = modelBindingOptions(selectedSource, profile.harness_kind, profile.inference_requirements, adapters).protocols
@@ -229,7 +235,7 @@ export default function AgentTargetForm({
       setError('Environment edits are preserved. Refresh their settings before creating the target.')
       return
     }
-    if (!ready || adapterBlocked || sourceBlocked || presetsBlocked || (source && authentication.trim())) {
+    if (!ready || loginBlocked || adapterBlocked || sourceBlocked || presetsBlocked || (source && authentication.trim())) {
       setError('Selected model or preset settings are unavailable or changed. Confirm your selection before registering.')
       return
     }
@@ -256,6 +262,7 @@ export default function AgentTargetForm({
           command: [command.trim(), ...argumentsText.split('\n').filter((value) => value.length > 0)],
           authentication_method: authentication.trim() || null,
           credential_env: credential.split(/[\n,]/).map((value: string) => value.trim()).filter(Boolean),
+          use_github_cli_login: githubCliLogin,
           permission_policy: permissionPolicy,
           inference_requirements: {
             wire_api: wireApi, streaming: true, tool_calls: true, input_modalities: ['text'],
@@ -300,7 +307,7 @@ export default function AgentTargetForm({
   const actions = (
     <div className={styles.actions}>
       <Button onClick={onClose} disabled={busy}>{saved ? 'Close' : 'Cancel'}</Button>
-      <Button form={formId} type="submit" appearance="primary" disabled={busy || !ready || adapterBlocked || startupBlocked || environmentEditsBlocked || presetsBlocked || sourceBlocked || (Boolean(source) && Boolean(authentication.trim())) || !command.trim()
+      <Button form={formId} type="submit" appearance="primary" disabled={busy || !ready || loginBlocked || adapterBlocked || startupBlocked || environmentEditsBlocked || presetsBlocked || sourceBlocked || (Boolean(source) && Boolean(authentication.trim())) || !command.trim()
         || !name.trim() || (environment === 'docker' && !image.trim()) || (environment === 'local' && !acknowledged)}>
         {busy ? saveForStartup ? 'Saving...' : 'Creating...' : saveForStartup ? 'Save for startup' : selectForChat ? 'Create and select' : 'Create Target'}
       </Button>
@@ -360,6 +367,7 @@ export default function AgentTargetForm({
                 <Input value={model} onChange={(_, data) => setModel(data.value)} />
               </Field>
               <Text block size={200}>Provider keys are not forwarded. Local execution does not isolate credentials.</Text>
+              <Text block size={200}>Configured model-target settings, including temperature and output limits, override harness suggestions.</Text>
             </details>}
           </section>
           <section className={styles.section} aria-label="Harness">
@@ -389,6 +397,16 @@ export default function AgentTargetForm({
                   <option value="ask">Ask me</option><option value="deny">Deny requests</option><option value="allow_once">Allow requests</option>
                 </Select>
               </Field>
+              {((harness === 'copilot' && !source) || githubCliLogin) && <>
+                <Checkbox checked={githubCliLogin} disabled={!catalog?.github_cli_login_enabled && !githubCliLogin}
+                  label="Use backend GitHub CLI login (development only)"
+                  onChange={(_, data) => setGithubCliLogin(data.checked === true)} />
+                <Text size={200}>{catalog?.github_cli_login_enabled
+                  ? 'Uses the backend account from gh auth login, not the web operator. Its token is exposed to this agent and its tools; the private home is not copied.'
+                  : 'For development, enable PYRIT_ALLOW_GITHUB_CLI_LOGIN=true on the backend and run gh auth login there. Otherwise configure a token reference below.'}</Text>
+                {!githubCliLogin && !credential.trim() && <Text size={200}>A model ID does not authenticate Copilot. Select a login source or provide a token environment reference.</Text>}
+              </>}
+              {loginBlocked && <MessageBar intent="error">Backend GitHub CLI login is unavailable or conflicts with this configuration. It requires native Copilot, backend opt-in, and no native token references or ACP login method. Deselect it explicitly to use BYOK.</MessageBar>}
               <details open={harness === 'acp' || Boolean(source && authentication.trim())}>
                 <summary>Launch and authentication</summary>
                 <Field label="Executable"><Input value={command} onChange={(_, data) => setCommand(data.value)} required /></Field>
@@ -399,7 +417,7 @@ export default function AgentTargetForm({
                 <Field label="ACP authentication method" hint="Optional advertised method; not supported with current BYOK adapters.">
                   <Input value={authentication} onChange={(_, data) => setAuthentication(data.value)} />
                 </Field>
-                <Text size={200}>No backend login is inherited. Permission policy only answers requests the harness raises.</Text>
+                <Text size={200}>No stored home or login files are copied. Local processes may still discover same-user credentials. Permission policy only answers requests the harness raises.</Text>
               </details>
             </fieldset>
             {source && authentication.trim() && <MessageBar intent="error">Remove the ACP authentication method explicitly before using BYOK.</MessageBar>}

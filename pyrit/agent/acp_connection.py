@@ -191,6 +191,7 @@ class AcpConnection:
 
         Raises:
             ValueError: The selected protocol version is unsupported.
+            RequestError: The harness rejects the session, including missing authentication.
         """
         result = await self.connection.initialize(
             protocol_version=1,
@@ -216,7 +217,18 @@ class AcpConnection:
             session = await self.connection.load_session(cwd=cwd, session_id=session_id, mcp_servers=[])
             self.session_id = session_id
         else:
-            session = await self.connection.new_session(cwd=cwd, mcp_servers=[])
+            try:
+                session = await self.connection.new_session(cwd=cwd, mcp_servers=[])
+            except RequestError as error:
+                if error.code != -32000:
+                    raise
+                raise RequestError(
+                    error.code,
+                    "Harness authentication required. Executions use a private home, not the backend's stored login. "
+                    "Configure a token environment reference (for Copilot, COPILOT_GITHUB_TOKEN), "
+                    "explicitly select backend GitHub CLI login for development, "
+                    "or bind an existing PyRIT model target.",
+                ) from error
             self.session_id = session.session_id
         if model:
             option = next((option for option in session.config_options or [] if option.category == "model"), None)

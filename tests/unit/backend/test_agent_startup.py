@@ -109,6 +109,28 @@ async def test_save_preserves_comments_settings_and_recreates_exact_target_after
     assert AgentConfigurationRegistry.get_registry_singleton().get_harness("original").harness_kind == "opencode"
 
 
+async def test_startup_saves_developer_login_selection_without_resolving_or_storing_credentials_async(
+    source: ConfigurationFileService,
+) -> None:
+    snapshot = AgentTargetConfiguration(
+        harness_profile=HarnessProfile(use_github_cli_login=True),
+        environment_template=EnvironmentTemplate(image="copilot:test"),
+    )
+    _, version = await source.read_with_version_async()
+    with (
+        patch.dict(os.environ, {"PYRIT_ALLOW_GITHUB_CLI_LOGIN": "true"}),
+        patch("pyrit.agent.environment.github_cli_token_async", new_callable=AsyncMock) as login,
+    ):
+        result = await save_agent_startup_async(
+            request=SaveAgentStartupRequest(name="dev_agent", configuration=snapshot, version=version),
+            source=source,
+        )
+        content = await source.read_async()
+        assert safe_load_yaml(content)["initializers"][-3]["args"]["use_github_cli_login"] is True
+        assert result.target_identifier_hash == AgentTarget(agent_configuration=snapshot).get_identifier().hash
+        login.assert_not_awaited()
+
+
 @pytest.mark.parametrize("name", ["on", "yes", "off", "no"])
 async def test_saved_yaml_preserves_strings_under_the_startup_loader_async(
     source: ConfigurationFileService,

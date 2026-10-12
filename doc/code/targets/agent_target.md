@@ -323,11 +323,48 @@ explicit `github_token`, then `GITHUB_TOKEN`, then SDK login discovery. For a
 hosted CoPyRIT instance, that is the **backend runtime's** login context, not the
 web operator's identity.
 
-Managed ACP profiles instead forward only their explicit `credential_env`
-references into the tested process/container. These are exposed to the agent and
+Managed ACP profiles forward their explicit `credential_env` references into the
+tested process/container, or may explicitly use the developer login option below.
+These credentials are exposed to the agent and
 its tools, and indirectly to users who can prompt that target. Values are resolved
 at launch; they are not refreshed inside the environment. Docker environment
 values are inspectable by Docker administrators while the container exists.
+
+For **local development**, a backend operator can enable
+`PYRIT_ALLOW_GITHUB_CLI_LOGIN=true` and sign into `gh auth login --hostname github.com`
+on the machine running the backend. Then select **Use backend GitHub CLI login
+(development only)** in Create Target. The equivalent initializer/Python harness
+field is `use_github_cli_login=True`. Both the backend flag and the per-target
+selection are required; neither merely installing `gh` nor setting a model ID
+enables delegation.
+
+This uses the backend GitHub CLI account, **not the web operator's identity** and
+not necessarily the account signed into Copilot CLI. On allocation, PyRIT resolves
+the token through `gh auth token`, passes it as `COPILOT_GITHUB_TOKEN` only to the
+selected process/container, and includes it in execution-evidence redaction.
+The token is not an argument, target identifier, initializer value, or saved
+checkpoint. Each allocation retains a fresh private home; no login files, CLI
+configuration, or prior sessions are copied. Missing login/CLI and timeouts fail
+explicitly without printing token-command output or silently trying another
+credential source.
+
+The developer option is only for native Copilot models. It cannot be combined
+with BYOK, an ACP login method, or explicit native-model token references.
+Switching model source retains the selection and blocks creation until it is
+explicitly removed. Independent tool credential references are still supported.
+Do not enable this feature on a shared hosted backend as a substitute for a
+deployment authentication design. Hosted native Copilot should use deliberately
+configured credential references; organization-owned GitHub App authentication
+is a possible future integration, not implemented automatic token brokering.
+
+A fresh Docker home without supplied credentials normally reports authentication
+required. Selecting `gpt-6-astra` or another native model does not authenticate it.
+Local execution is different: a process running as the same OS user may discover
+keychain or other login state despite its private home. This was observed with
+Copilot CLI **1.0.95**; a private directory is not credential isolation.
+The native Docker **1.0.93** probe verified that explicit developer delegation
+can authenticate `gpt-6-astra`, without requiring that model to be a registered
+BYOK source. Availability still depends on the selected account's entitlements.
 
 Selecting a PyRIT model target does not clear independent tool credentials.
 Backend validation rejects known native-model credential variables under BYOK
@@ -392,7 +429,18 @@ wire passthrough only, not tool-history input support or observed execution.
 
 Source targets with host-side tool configuration or custom body overrides that
 cannot be safely composed are rejected. Configured sampling/output parameters
-remain target-owned; conflicting harness values fail explicitly. Inference uses
+remain target-owned: non-null configured values override harness suggestions,
+including temperature, top-p, penalties, seed, reasoning and output limits.
+Reasoning options are merged by key, so a configured summary does not remove
+an unconfigured harness reasoning effort (and vice versa).
+Unconfigured parameters and tool/history/streaming payloads remain harness-owned.
+For Chat Completions, a configured `max_completion_tokens` also replaces the
+harness's legacy `max_tokens` alias rather than sending conflicting limit fields.
+Completion-count conflicts still fail. Overrides are logged by parameter name,
+without request/credential values; neither the target's configuration nor the
+caller's request object is mutated. This lets an existing model connection with
+configured temperature serve a Copilot/OpenCode harness without changing its
+direct-chat settings. Inference uses
 the existing target client and refreshable authentication. It shares target
 pacing, with a five-second admission budget, and performs no inference retries: the
 harness owns inference retries. Mid-stream failure is never rewritten as a

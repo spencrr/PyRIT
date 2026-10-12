@@ -13,6 +13,7 @@ from azure.core.exceptions import AzureError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from pyrit.agent.harness import HarnessAdapterRegistry
+from pyrit.auth.github_cli import github_cli_login_enabled
 from pyrit.backend.middleware.auth import AuthenticatedUser, require_admin
 from pyrit.backend.models.common import IdentifierStr, ProblemDetail
 from pyrit.backend.models.configuration import (
@@ -115,6 +116,7 @@ async def get_agent_presets_async() -> AgentPresetCatalog:
     """
     catalog = AgentConfigurationRegistry.get_registry_singleton().catalog()
     catalog.harness_adapters = HarnessAdapterRegistry.get_registry_singleton().list_adapters()
+    catalog.github_cli_login_enabled = github_cli_login_enabled()
     fields = initializer_parameters(model=EnvironmentTemplate)
     catalog.environment_parameters = {
         environment: [

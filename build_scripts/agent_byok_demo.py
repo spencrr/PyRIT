@@ -44,6 +44,7 @@ async def run_async(args: argparse.Namespace) -> None:
         body = await request.json()
         calls.append(body)
         assert body["model"] == "test-deployment"
+        assert body["temperature"] == 0.35
         has_result = any(message.get("role") == "tool" for message in body.get("messages", []))
         tool_name = "read" if args.harness == "opencode" else "view"
         view = next(
@@ -117,6 +118,7 @@ async def run_async(args: argparse.Namespace) -> None:
                 "model_name": "test-deployment",
                 "underlying_model": "gpt-4.1",
                 "api_key": provider_secret,
+                "temperature": 0.35,
             },
         )
         cleanup.push_async_callback(source.cleanup_target_async)
@@ -194,7 +196,8 @@ async def run_async(args: argparse.Namespace) -> None:
             assert provider_secret not in content, "Provider credential leaked into execution evidence"
         print(
             f"PASS: {len(calls)} target-owned streaming requests, "
-            f"{args.harness} tool roundtrip ({args.permission_policy}), no provider credential in evidence."
+            f"{args.harness} tool roundtrip ({args.permission_policy}), configured temperature retained, "
+            "no provider credential in evidence."
         )
         print(f"Evidence: {root}")
     finally:

@@ -441,6 +441,7 @@ class AgentExecutionManager:
         from pyrit.agent.acp_connection import AcpConnection, RecordingTransport
 
         async with asyncio.timeout(live.record.profile.startup_timeout_seconds):
+            await live.environment.resolve_credentials_async()
             live.secrets = tuple(live.environment.credential_values().values())
             if live.model_binding is not None:
                 await self._bind_inference_async(live)

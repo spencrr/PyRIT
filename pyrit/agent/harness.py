@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from threading import RLock
 from typing import ClassVar
 
+from pyrit.auth.github_cli import github_cli_login_enabled
 from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
 from pyrit.models.agent_execution import HarnessProfile
 from pyrit.models.harness_adapter import HarnessAdapterInfo
@@ -231,6 +232,16 @@ def validate_harness_authentication(*, harness: HarnessProfile, target_backed: b
         ValueError: Settings override execution configuration or conflict with the adapter.
     """
     adapter = HarnessAdapterRegistry.get_registry_singleton().get(harness.harness_kind)
+    if harness.use_github_cli_login:
+        if harness.harness_kind != "copilot" or target_backed or harness.authentication_method:
+            raise ValueError("Backend GitHub CLI login is only for native Copilot models without an ACP login method")
+        if {name.upper() for name in harness.credential_env} & {"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}:
+            raise ValueError("Choose backend GitHub CLI login or native token references, not both")
+        if not github_cli_login_enabled():
+            raise ValueError(
+                "Backend GitHub CLI login is disabled. For local development set "
+                "PYRIT_ALLOW_GITHUB_CLI_LOGIN=true on the backend, or use explicit credential references."
+            )
     reserved = {
         "HOME",
         "USERPROFILE",
