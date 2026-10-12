@@ -17,6 +17,23 @@ const turn: AgentTurn = {
 }
 
 describe('AgentActivity', () => {
+  it('shows failed model inference even when the harness completed with an error reply', () => {
+    render(<TestWrapper><AgentActivity turn={{ ...turn, response_text: 'Provider could not be reached' }}
+      activity={{ text: '', tools: [], inference: {
+        request: { status: 'failed', target: 'target', bytes: 0, error: 'Check the target endpoint and backend DNS.' },
+      } }} /></TestWrapper>)
+    expect(screen.getByText(/Check the target endpoint and backend DNS.*Harness completion does not mean/)).toBeVisible()
+  })
+
+  it('reports earlier model failures without declaring a recovered turn failed', () => {
+    render(<TestWrapper><AgentActivity turn={{ ...turn, response_text: 'Recovered answer' }}
+      activity={{ text: '', tools: [], inference: {
+        first: { status: 'failed' }, second: { status: 'completed', bytes: 42 },
+      } }} /></TestWrapper>)
+    expect(screen.getByText(/1 model request\(s\) failed during this turn/)).toBeVisible()
+    expect(screen.getByText('completed', { exact: true })).toBeVisible()
+  })
+
   it('shows tool-only completion and expandable agent-reported evidence', async () => {
     const user = userEvent.setup()
     render(<TestWrapper><AgentActivity turn={turn} activity={{ text: '', tools: [{

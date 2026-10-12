@@ -1,4 +1,4 @@
-import { Badge, Button, Text } from '@fluentui/react-components'
+import { Badge, Button, MessageBar, Text } from '@fluentui/react-components'
 import MarkdownContent from '@/components/Markdown/MarkdownContent'
 
 import type { AgentApproval, AgentToolActivity, AgentTurn, AgentTurnActivity } from '@/types'
@@ -21,6 +21,8 @@ function details(value: unknown): string {
 
 export default function AgentActivity({ turn, activity, approvals = [], onDecision, disabled }: AgentActivityProps) {
   const styles = useAgentActivityStyles()
+  const inferences = Object.values(activity?.inference ?? {})
+  const failures = inferences.filter((item) => item.status === 'failed' || item.status === 'provider_error')
   const approvalCard = (approval: AgentApproval) => (
     <section key={approval.id} className={styles.tool} aria-label="Tool permission">
       <Text block weight="semibold">{approval.title}</Text>
@@ -54,6 +56,11 @@ export default function AgentActivity({ turn, activity, approvals = [], onDecisi
   return (
     <section className={styles.root} aria-label="Agent turn activity">
       <Text weight="semibold">Agent activity <Badge appearance="tint">{turn.status}</Badge></Text>
+      {failures.length > 0 && <MessageBar intent={inferences.some((item) => item.status === 'completed') ? 'warning' : 'error'}>
+        {failures.length} model request(s) failed during this turn.{' '}
+        {failures[failures.length - 1].error ?? 'Inspect model inference details below.'}
+        {turn.status === 'completed' && ' Harness completion does not mean the model requests succeeded.'}
+      </MessageBar>}
       {approvals.filter((approval) => approval.turn_id === turn.id
         && !activity?.tools.some((tool) => tool.id === approval.tool_call_id)).map(approvalCard)}
       {activity?.inference && <details>
@@ -61,6 +68,8 @@ export default function AgentActivity({ turn, activity, approvals = [], onDecisi
         {Object.entries(activity.inference).map(([id, inference]) => <Text key={id} block size={200}>
           {id.slice(0, 8)} · {inference.status} · target {inference.target?.slice(0, 8) ?? 'not reported'}
           {inference.bytes !== undefined ? ` · ${inference.bytes} bytes` : ''}
+          {inference.statusCode !== undefined ? ` · HTTP ${inference.statusCode}` : ''}
+          {inference.error ? ` · ${inference.error}` : ''}
         </Text>)}
       </details>}
       {activity?.blocks ? activity.blocks.map((block) => {

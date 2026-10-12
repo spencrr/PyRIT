@@ -18,6 +18,8 @@ export function reduceAgentEvents(
         ...prior, status: typeof event.payload.outcome === 'string' ? event.payload.outcome : prior?.status ?? 'running',
         target: typeof event.payload.target_hash === 'string' ? event.payload.target_hash : prior?.target,
         bytes: typeof event.payload.bytes === 'number' ? event.payload.bytes : prior?.bytes,
+        error: typeof event.payload.detail === 'string' ? event.payload.detail : prior?.error,
+        statusCode: typeof event.payload.status_code === 'number' ? event.payload.status_code : prior?.statusCode,
       } } }
       continue
     }

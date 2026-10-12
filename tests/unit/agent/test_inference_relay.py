@@ -2,6 +2,8 @@
 # Licensed under the MIT license.
 
 import asyncio
+import socket
+import ssl
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -180,6 +182,58 @@ async def test_oversized_request_does_not_leak_admission_slots(relay: tuple[Infe
             json={"model": "bound-model", "messages": []},
         )
         assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("cause", "code", "detail"),
+    [
+        (socket.gaierror(11001, "private-host-and-secret"), "model_dns_resolution_failed", "could not resolve"),
+        (
+            ssl.SSLCertVerificationError("private-certificate-diagnostic"),
+            "model_tls_verification_failed",
+            "TLS certificate",
+        ),
+        (ConnectionRefusedError("private-endpoint"), "model_connection_failed", "could not connect"),
+    ],
+)
+async def test_connection_failures_report_actionable_sanitized_details_async(
+    relay: tuple[InferenceRelay, InferenceLease],
+    cause: Exception,
+    code: str,
+    detail: str,
+) -> None:
+    from unittest.mock import patch
+
+    instance, lease = relay
+
+    @asynccontextmanager
+    async def unavailable_async(**kwargs: Any) -> AsyncGenerator[InferenceResponse, None]:
+        raise httpx.ConnectError("provider-secret-in-exception") from cause
+        yield  # pragma: no cover
+
+    with patch.object(lease.binding.target, "open_inference_async", unavailable_async):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=instance.app), base_url="http://relay"
+        ) as client:
+            response = await client.post(
+                "/v1/chat/completions",
+                headers={"authorization": "Bearer " + lease.token},
+                json={"model": "bound-model", "messages": [], "stream": True},
+            )
+    assert response.status_code == 502
+    assert detail in response.json()["error"]["message"]
+    assert "private-" not in response.text and "provider-secret" not in response.text
+    finished = lease.record.call_args_list[-1].args[0]
+    assert finished["outcome"] == "failed" and finished["error_code"] == code
+    assert finished["detail"] == response.json()["error"]["message"]
+    assert not lease.tasks
+
+
+def test_connection_cause_inspects_suppressed_context_without_exposing_raw_error() -> None:
+    error = httpx.ConnectError("private-url")
+    error.__context__ = socket.gaierror(11001, "secret")
+    assert InferenceRelay._connection_failure(error)[0] == "model_dns_resolution_failed"
+    assert "secret" not in str(InferenceRelay._connection_failure(error))
 
 
 async def test_provider_file_reference_is_rejected_before_dispatch(

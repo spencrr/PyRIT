@@ -10,6 +10,25 @@ function event(sequence: number, update: Record<string, unknown>, turn = 'turn')
 }
 
 describe('reduceAgentEvents', () => {
+  it('retains actionable inference errors separately from harness text and completion', () => {
+    const events: AgentExecutionEvent[] = [
+      { ...event(1, {}), direction: 'inference', payload: {
+        type: 'inference.started', request_id: 'request', target_hash: 'target',
+      } },
+      { ...event(2, {}), direction: 'inference', payload: {
+        type: 'inference.finished', request_id: 'request', outcome: 'failed', error_type: 'ConnectError',
+        error_code: 'model_dns_resolution_failed', detail: 'Check model hostname and backend DNS.', bytes: 0,
+      } },
+      event(3, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Harness error reply' } }),
+    ]
+    const result = reduceAgentEvents({}, events)
+    expect(result.turn.inference?.request).toMatchObject({
+      status: 'failed', target: 'target', error: 'Check model hostname and backend DNS.', bytes: 0,
+    })
+    expect(result.turn.text).toBe('Harness error reply')
+    expect(reduceAgentEvents(result, events)).toEqual(result)
+  })
+
   it('preserves text/tool interleaving independently of page boundaries and replay duplicates', () => {
     const events = [
       event(1, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'First' } }),

@@ -290,7 +290,7 @@ export interface AgentToolActivity {
 export interface AgentTurnActivity {
   readonly text: string
   readonly tools: AgentToolActivity[]
-  readonly inference?: Record<string, { status: string; target?: string; bytes?: number }>
+  readonly inference?: Record<string, { status: string; target?: string; bytes?: number; error?: string; statusCode?: number }>
   readonly blocks?: AgentActivityBlock[]
   readonly lastSequence?: number
 }

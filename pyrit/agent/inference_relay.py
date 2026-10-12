@@ -11,12 +11,14 @@ import json
 import logging
 import secrets
 import socket
+import ssl
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse, Response
@@ -55,6 +57,44 @@ class InferenceRelay:
     """Share a listener, not authority, between executions. No generic forwarding routes exist."""
 
     MAX_REQUEST_BYTES = 8 * 1024 * 1024
+
+    @staticmethod
+    def _connection_failure(error: BaseException) -> tuple[str, str] | None:
+        if isinstance(error, (TimeoutError, httpx.TimeoutException)):
+            return "model_connection_timeout", "The PyRIT backend timed out contacting the configured model target."
+        if not isinstance(error, httpx.TransportError):
+            return None
+        pending: list[BaseException] = [error]
+        visited: set[int] = set()
+        while pending and len(visited) < 16:
+            current = pending.pop()
+            if id(current) in visited:
+                continue
+            visited.add(id(current))
+            if isinstance(current, socket.gaierror):
+                return (
+                    "model_dns_resolution_failed",
+                    (
+                        "The PyRIT backend could not resolve the model target hostname. "
+                        "Check the target endpoint and the backend's DNS/VPN configuration."
+                    ),
+                )
+            if isinstance(current, ssl.SSLCertVerificationError):
+                return (
+                    "model_tls_verification_failed",
+                    (
+                        "The PyRIT backend could not verify the model target TLS certificate. "
+                        "Check the configured endpoint and trusted certificate chain; do not disable TLS verification."
+                    ),
+                )
+            pending.extend(child for child in (current.__cause__, current.__context__) if child is not None)
+        return (
+            "model_connection_failed",
+            (
+                "The PyRIT backend could not connect to the configured model target. "
+                "Check its endpoint, service availability, and backend network access."
+            ),
+        )
 
     def __init__(self, *, host: str = "127.0.0.1", advertised_host: str = "127.0.0.1") -> None:
         """Configure an explicitly reachable listener; the default is local-only."""
@@ -355,13 +395,25 @@ class _InferenceResponse(Response):
             await send({"type": "http.response.body", "body": b"", "more_body": False})
         except BaseException as error:
             outcome = "cancelled" if isinstance(error, asyncio.CancelledError) else "failed"
-            logger.warning("Inference %s ended %s (%s)", request_id, outcome, type(error).__name__)
+            connection_failure = InferenceRelay._connection_failure(error)
+            logger.warning(
+                "Inference %s ended %s (%s)%s",
+                request_id,
+                outcome,
+                type(error).__name__,
+                f": {connection_failure[1]}" if connection_failure else "",
+            )
             await lease.record(
                 {
                     "type": "inference.finished",
                     "request_id": request_id,
                     "outcome": outcome,
                     "error_type": type(error).__name__,
+                    **(
+                        {"error_code": connection_failure[0], "detail": connection_failure[1]}
+                        if connection_failure
+                        else {}
+                    ),
                     "bytes": count,
                 }
             )
@@ -371,7 +423,11 @@ class _InferenceResponse(Response):
                 429 if isinstance(error, InferenceAdmissionError) else 400 if isinstance(error, ValueError) else 502
             )
             message = (
-                str(error) if isinstance(error, (InferenceAdmissionError, ValueError)) else "Target inference failed"
+                connection_failure[1]
+                if connection_failure
+                else str(error)
+                if isinstance(error, (InferenceAdmissionError, ValueError))
+                else "Target inference failed"
             )
             response = JSONResponse({"error": {"message": message}}, status_code=status)
             if status == 429:

@@ -632,6 +632,10 @@ Chat uses authenticated **fetch-based SSE**, not a periodic summary/events poll.
 The browser supplies its normal authorization header; bearer tokens are not placed
 in URLs. A connection lasts at most 60 seconds before reconnecting through the
 existing HTTP authorization checks (including their normal cache policy).
+The fetch-based stream also supplies the frontend's bundled
+`PyRIT-Compatibility-ID`, just like normal API requests. Missing/mismatched build
+identities block the frontend rather than appearing as an unexplained activity
+failure. Stream errors retain the backend's actionable problem detail.
 The feed carries execution-scoped cursors, state snapshots and retained event
 pages; a reconnect catches up before continuing live delivery.
 
@@ -647,6 +651,17 @@ The chat status strip distinguishes **browser feed**, **ACP session**, and
 is based on session initialization, not just process creation; EOF marks its
 connection disconnected. Additional details show the last retained event and
 absolute execution expiry.
+
+**Harness completion is not model-inference success.** A harness can finish a
+turn by returning an error after its provider retries fail. Failed model requests
+are shown visibly in agent activity, even when the harness reports `completed`;
+request history distinguishes failures followed by a successful retry.
+Backend connection failures report sanitized DNS, TLS verification, timeout, or
+general connectivity guidance in both the journal and relay response. Credentials,
+raw exception diagnostics, and provider URLs are not included in these messages.
+For DNS failures, inspect the selected target's endpoint and DNS/VPN access from
+the **backend machine**, not the agent container or browser. A configured
+temperature-override warning alone is not a model connection failure.
 
 The operator routes are under
 `/api/attacks/{attack_id}/conversations/{conversation_id}/execution`:
