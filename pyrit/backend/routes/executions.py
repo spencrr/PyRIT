@@ -28,7 +28,6 @@ from pyrit.models.agent_evidence import AgentEvidenceSnapshot
 from pyrit.models.agent_execution import (
     AgentApproval,
     AgentConnectionState,
-    AgentEnvironment,
     AgentEventPage,
     AgentExecution,
     AgentExecutionState,
@@ -49,7 +48,7 @@ class ConversationExecution(BaseModel):
     id: UUID
     conversation_id: str
     state: AgentExecutionState
-    environment: AgentEnvironment
+    environment: str
     model: str
     turns: list[AgentTurn]
     capture_error: str | None

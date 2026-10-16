@@ -252,7 +252,7 @@ default. Older custom commands stay generic ACP; they are not silently opted
 into a new adapter.
 
 The harness owns provider configuration and private-home settings. The
-environment owns process/container placement and filesystem preparation. For
+environment provider owns process/container placement and filesystem preparation. For
 Docker, `workspace_base="image"` uses the image's `/workspace`;
 `workspace_base="empty"` uses a unique private path instead. Local execution
 always starts with a private empty workspace. `working_directory` is relative to
@@ -347,8 +347,83 @@ in the startup sequence. Missing adapters block new target use explicitly but do
 not prevent historical record decoding, evidence export, or interrupted resource
 cleanup. Like other trusted Python components, an adapter is not a security boundary.
 
-Local and Docker remain the implemented provisioners. Registering a harness does
-not imply support for a hosted environment or coordinated checkpoint restoration.
+Registering a harness does not imply support for a hosted environment or
+coordinated checkpoint restoration; those are environment provider capabilities.
+
+### Installing another execution environment provider
+
+`ExecutionEnvironmentProvider` and `EnvironmentProviderRegistry` in
+`pyrit.agent.environment` are the seam between the runtime and the place a harness
+runs. The runtime owns policy: timeouts, evidence budgets, cancellation, approvals,
+secret redaction, and the ACP protocol. A provider owns resources: it allocates and
+releases exactly what it created, seeds the workspace, passes the launch
+specification to the harness, and exposes the harness's ACP byte streams and stderr.
+`docker` (isolated, checkpoint-capable) and `local` (explicitly not a sandbox) are the
+first-party providers and are authored through the typed `EnvironmentTemplate` fields.
+
+A registered provider is selected by name in `EnvironmentTemplate.environment` and
+reads its own validated `environment_settings`. Its `EnvironmentProviderInfo`
+declares `capabilities` (`isolated`, `checkpoint`) and an optional flat JSON
+`settings_schema` that Create Target renders as fields. A provider that is not
+isolated requires the same explicit `local_execution_acknowledged` consent as local
+execution. Checkpoint operations are refused, not emulated, for providers without the
+capability. Startup authoring persists only the first-party providers; register
+templates for other providers from a Python initializer.
+
+```python
+from pathlib import Path
+
+from pyrit.agent.environment import (
+    EnvironmentProviderRegistry,
+    ExecutionEnvironmentProvider,
+    ExecutionSession,
+    ExecutionSpec,
+)
+from pyrit.models.agent_environment import EnvironmentCapabilities, EnvironmentProviderInfo
+from pyrit.models.agent_execution import AgentExecution
+
+
+class PoolSession(ExecutionSession):
+    harness_home = "/home/agent"
+    agent_cwd = "/workspace"
+
+    def reserve(self) -> None:
+        # Deterministic identifiers keep a crash during allocation reconcilable.
+        self.execution.provider_id = f"pool-{self.execution.id}"
+
+    async def inference_endpoint_async(self, *, relay_url: str) -> str:
+        return relay_url  # or the address of a forward the session establishes
+
+    async def launch_async(self, spec: ExecutionSpec) -> None:
+        ...  # allocate, seed the workspace, start spec.command with spec.environment and spec.credentials
+
+    async def close_async(self) -> None:
+        ...  # release exactly the owned allocation; idempotent, also after a backend restart
+
+    # acp_reader / acp_writer / stderr expose the harness streams after launch_async
+
+
+class PoolProvider(ExecutionEnvironmentProvider):
+    @property
+    def info(self) -> EnvironmentProviderInfo:
+        return EnvironmentProviderInfo(
+            name="team_pool",
+            display_name="Team sandbox pool",
+            capabilities=EnvironmentCapabilities(isolated=True, checkpoint=False),
+            settings_schema={"type": "object", "required": ["pool"], "properties": {"pool": {"type": "string"}}},
+        )
+
+    def create_session(self, *, execution: AgentExecution, directory: Path) -> ExecutionSession:
+        return PoolSession(execution=execution, directory=directory)
+
+
+EnvironmentProviderRegistry.get_registry_singleton().register(PoolProvider())
+```
+
+Providers must never log, journal, or persist `spec.credentials`, and must release
+only resources they can prove they own (labels, deterministic names). A record whose
+provider is no longer installed at startup is marked `cleanup_failed` with the
+reason, rather than silently treated as released.
 
 ### Authentication boundaries
 

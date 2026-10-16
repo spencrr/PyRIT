@@ -3,6 +3,7 @@
 
 """Trusted launch adapters; protocol and resource lifecycle remain independently owned."""
 
+import os
 from abc import ABC, abstractmethod
 from threading import RLock
 from typing import ClassVar
@@ -223,6 +224,25 @@ def validate_harness_authentication(*, harness: HarnessProfile, target_backed: b
             "BYOK cannot forward native model credentials: "
             f"{', '.join(sorted(conflicts))}. Use separately scoped, tool-specific references."
         )
+
+
+def resolve_credential_values(*, credential_env: tuple[str, ...]) -> dict[str, str]:
+    """
+    Resolve explicitly referenced credentials from the backend process, without persisting values.
+
+    Returns:
+        dict[str, str]: Named credential values for one launch.
+
+    Raises:
+        ValueError: A referenced credential is missing.
+    """
+    values: dict[str, str] = {}
+    for name in credential_env:
+        value = os.environ.get(name)
+        if not value:
+            raise ValueError(f"Required credential environment variable is missing: {name}")
+        values[name] = value
+    return values
 
 
 def validate_inference_adapter(*, kind: str, wire_api: InferenceWireApi) -> None:

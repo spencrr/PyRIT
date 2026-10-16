@@ -12,48 +12,84 @@ import pytest
 
 pytest.importorskip("psutil")
 
-from pyrit.agent.environment import ExecutionEnvironment
-from pyrit.models.agent_execution import AgentExecution, AgentProfile
+from pyrit.agent.environment import (
+    CheckpointRestore,
+    EnvironmentProviderRegistry,
+    ExecutionSpec,
+    create_execution_session,
+    validate_environment_template,
+)
+from pyrit.agent.environments.docker import DockerSession
+from pyrit.agent.environments.local import LocalSession
+from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
+from pyrit.models.agent_execution import AgentProfile, EnvironmentTemplate
+from tests.unit.agent.session_helpers import create_container_async, execution, session_directory, spec_for
 
 
 async def test_recreated_profile_rejects_changed_fixture(tmp_path: Path) -> None:
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "orders.json").write_text('{"total": 31}')
-    profile = AgentProfile(environment="local", local_execution_acknowledged=True, fixture_directory=str(fixture))
-    first = AgentExecution(owner_id="test", conversation_id="one", target_id="target", profile=profile)
-    first_directory = tmp_path / "first"
-    first_directory.mkdir()
-    environment = ExecutionEnvironment(execution=first, directory=first_directory)
-    await environment.prepare_async()
-    await environment.close_async()
-    (fixture / "orders.json").write_text('{"total": 36}')
-    second = AgentExecution(
-        owner_id="test",
-        conversation_id="two",
-        target_id="target",
-        profile=profile.model_copy(update={"expected_fixture_sha256": first.fixture_sha256}),
+    profile = AgentProfile(
+        environment="local",
+        local_execution_acknowledged=True,
+        fixture_directory=str(fixture),
+        command=("python", "-c", "import sys; sys.stdin.read()"),
     )
-    second_directory = tmp_path / "second"
-    second_directory.mkdir()
-    recreated = ExecutionEnvironment(execution=second, directory=second_directory)
+    first = execution(profile)
+    session = LocalSession(execution=first, directory=session_directory(tmp_path, "first"))
+    await session.launch_async(spec_for(profile))
+    await session.close_async()
+    (fixture / "orders.json").write_text('{"total": 36}')
+    second = execution(
+        profile.model_copy(update={"expected_fixture_sha256": first.fixture_sha256}), conversation_id="two"
+    )
+    recreated = LocalSession(execution=second, directory=session_directory(tmp_path, "second"))
     with pytest.raises(ValueError, match="fixture changed"):
-        await recreated.prepare_async()
+        await recreated.launch_async(spec_for(profile))
     await recreated.close_async()
+    assert not (recreated.workspace).exists()
+
+
+async def test_local_launch_uses_private_home_and_exposes_streams(tmp_path: Path) -> None:
+    profile = AgentProfile(
+        environment="local",
+        local_execution_acknowledged=True,
+        command=(
+            "python",
+            "-c",
+            "import os,sys; print(os.environ['HOME'], os.environ['TOKEN']); sys.stderr.write('warned')",
+        ),
+    )
+    record = execution(profile)
+    session = LocalSession(execution=record, directory=session_directory(tmp_path))
+    with pytest.raises(RuntimeError, match="not been launched"):
+        _ = session.acp_reader
+    await session.launch_async(ExecutionSpec(command=profile.command, environment={}, credentials={"TOKEN": "secret"}))
+    line = await asyncio.wait_for(session.acp_reader.readline(), timeout=10)
+    assert line.decode().split() == [str(session.home), "secret"]
+    assert (await asyncio.wait_for(session.stderr.read(), timeout=10)) == b"warned"
+    assert record.process_id is not None and record.process_created_at is not None
+    await session.close_async()
+
+
+async def test_local_refuses_checkpoint_restore(tmp_path: Path) -> None:
+    profile = AgentProfile(environment="local", local_execution_acknowledged=True)
+    session = LocalSession(execution=execution(profile), directory=session_directory(tmp_path))
+    layout = HarnessCheckpointLayout(version="v", agent_versions=("1",), state_root="/home/agent/.state")
+    restore = CheckpointRestore(layout=layout, workspace=b"", state=b"")
+    with pytest.raises(ValueError, match="no checkpoint capability"):
+        await session.launch_async(
+            ExecutionSpec(command=profile.command, environment={}, credentials={}, restore=restore)
+        )
+    with pytest.raises(NotImplementedError, match="no checkpoint capability"):
+        await session.capture_checkpoint_async(layout=layout, secrets=())
 
 
 async def test_docker_creation_pins_image_and_does_not_mount_host(tmp_path: Path) -> None:
-    record = AgentExecution(
-        owner_id="test",
-        conversation_id="one",
-        target_id="target",
-        profile=AgentProfile(image="receipt:latest"),
-    )
-    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
-    with patch.object(
-        environment, "_docker_async", AsyncMock(side_effect=['[{"Id":"sha256:pinned"}]', "id", ""])
-    ) as docker:
-        await environment.prepare_async()
+    record = execution(AgentProfile(image="receipt:latest"))
+    session = DockerSession(execution=record, directory=tmp_path)
+    docker = await create_container_async(session)
     command = docker.call_args_list[1].args
     assert "sha256:pinned" in command
     assert "--cap-drop=ALL" in command
@@ -61,6 +97,25 @@ async def test_docker_creation_pins_image_and_does_not_mount_host(tmp_path: Path
     assert "--mount" not in command
     assert "--volume" not in command
     assert record.image_id == "sha256:pinned"
+    assert record.provider_id == f"pyrit-agent-{record.id}"
+    assert record.provenance["image"] == "receipt:latest"
+
+
+async def test_docker_reserve_is_deterministic_before_any_resource(tmp_path: Path) -> None:
+    record = execution(AgentProfile(image="receipt:latest"))
+    session = DockerSession(execution=record, directory=tmp_path)
+    session.reserve()
+    assert record.provider_id == f"pyrit-agent-{record.id}"
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8021/v1", "http://localhost:8021/v1", "http://[::1]:8021/v1"])
+async def test_docker_rejects_loopback_relay(tmp_path: Path, url: str) -> None:
+    session = DockerSession(execution=execution(AgentProfile(image="test")), directory=tmp_path)
+    with pytest.raises(ValueError, match="reachable"):
+        await session.inference_endpoint_async(relay_url=url)
+    assert await session.inference_endpoint_async(relay_url="http://host.docker.internal:8021/v1") == (
+        "http://host.docker.internal:8021/v1"
+    )
 
 
 def account_archive(text: str) -> bytes:
@@ -85,12 +140,9 @@ def account_archive(text: str) -> bytes:
     ],
 )
 async def test_image_user_resolution_async(tmp_path: Path, user: str, uid: int, gid: int, reads: int) -> None:
-    record = AgentExecution(
-        owner_id="test", conversation_id="one", target_id="target", profile=AgentProfile(image="test")
-    )
-    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
+    session = DockerSession(execution=execution(AgentProfile(image="test")), directory=tmp_path)
     with patch.object(
-        environment,
+        session,
         "_docker_archive_async",
         AsyncMock(
             side_effect=[
@@ -99,53 +151,39 @@ async def test_image_user_resolution_async(tmp_path: Path, user: str, uid: int, 
             ]
         ),
     ) as read:
-        assert await environment._docker_user_async(user) == (uid, gid)
+        assert await session._docker_user_async(user) == (uid, gid)
     assert read.await_count == reads
 
 
 async def test_unknown_image_user_fails_before_launch_async(tmp_path: Path) -> None:
-    record = AgentExecution(
-        owner_id="test", conversation_id="one", target_id="target", profile=AgentProfile(image="test")
-    )
-    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
+    session = DockerSession(execution=execution(AgentProfile(image="test")), directory=tmp_path)
     with (
-        patch.object(environment, "_docker_archive_async", AsyncMock(return_value=account_archive(""))),
+        patch.object(session, "_docker_archive_async", AsyncMock(return_value=account_archive(""))),
         pytest.raises(ValueError, match="not found"),
     ):
-        await environment._docker_user_async("missing")
+        await session._docker_user_async("missing")
 
 
 @pytest.mark.parametrize("base", ["empty", "image"])
 async def test_workspace_and_overlay_are_owned_by_image_user_async(tmp_path: Path, base: str) -> None:
-    record = AgentExecution(
-        owner_id="test",
-        conversation_id="one",
-        target_id="target",
-        profile=AgentProfile(
+    record = execution(
+        AgentProfile(
             image="test",
             workspace_base=base,
             working_directory="sub/work",
             fixture_directory=str(Path(__file__).resolve().parents[3] / "assets" / "agent_receipt"),
-        ),
+        )
     )
-    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
-    with patch.object(
-        environment,
-        "_docker_async",
-        AsyncMock(
-            side_effect=[
-                json.dumps([{"Id": "sha256:test", "Config": {"User": "1001:1002"}}]),
-                "id",
-                "",
-            ]
-        ),
-    ) as docker:
-        await environment.prepare_async()
+    session = DockerSession(execution=record, directory=tmp_path)
+    docker = await create_container_async(
+        session,
+        docker_responses=[json.dumps([{"Id": "sha256:test", "Config": {"User": "1001:1002"}}]), "id", ""],
+    )
     with tarfile.open(fileobj=io.BytesIO(docker.call_args.kwargs["input_data"])) as archive:
         entries = archive.getmembers()
         assert all((entry.uid, entry.gid) == (1001, 1002) for entry in entries)
         names = {entry.name for entry in entries}
-        root = environment.container_workspace.lstrip("/")
+        root = session.container_workspace.lstrip("/")
         assert f"{root}/orders.json" in names
         assert f"{root}/sub/work" in names and f"{root}/sub" in names
         assert "home/agent" in names
@@ -156,13 +194,38 @@ async def test_workspace_and_overlay_are_owned_by_image_user_async(tmp_path: Pat
 
 
 async def test_archive_preparation_budget_is_enforced_async(tmp_path: Path) -> None:
-    record = AgentExecution(
-        owner_id="test",
-        conversation_id="one",
-        target_id="target",
-        profile=AgentProfile(image="test", workspace_base="empty"),
+    session = DockerSession(execution=execution(AgentProfile(image="test", workspace_base="empty")), directory=tmp_path)
+    await asyncio.to_thread(session.workspace.mkdir)
+    with patch.object(DockerSession, "MAX_WORKSPACE_ARCHIVE_BYTES", 1024), pytest.raises(ValueError, match="budget"):
+        await asyncio.to_thread(session._workspace_archive, uid=1001, gid=1002)
+
+
+def test_registry_lists_first_party_providers_and_rejects_unknown_names() -> None:
+    registry = EnvironmentProviderRegistry()
+    names = [info.name for info in registry.list_providers()]
+    assert names == ["docker", "local"]
+    docker, local = registry.get("docker").info, registry.get("local").info
+    assert docker.capabilities.isolated and docker.capabilities.checkpoint
+    assert not local.capabilities.isolated and not local.capabilities.checkpoint
+    with pytest.raises(ValueError, match="unavailable"):
+        registry.get("aca_sandbox")
+    with pytest.raises(TypeError, match="ExecutionEnvironmentProvider"):
+        registry.register(object())  # type: ignore[arg-type]
+
+
+def test_template_validation_follows_provider_capabilities() -> None:
+    validate_environment_template(EnvironmentTemplate(image="test"))
+    validate_environment_template(EnvironmentTemplate(environment="local"), require_consent=False)
+    with pytest.raises(ValueError, match="NOT sandboxed"):
+        validate_environment_template(EnvironmentTemplate(environment="local"))
+    with pytest.raises(ValueError, match="unavailable"):
+        validate_environment_template(EnvironmentTemplate(environment="aca_sandbox", image="x"))
+
+
+def test_sessions_are_created_through_the_record_provider(tmp_path: Path) -> None:
+    docker = create_execution_session(execution=execution(AgentProfile(image="test")), directory=tmp_path)
+    local = create_execution_session(
+        execution=execution(AgentProfile(environment="local", local_execution_acknowledged=True)), directory=tmp_path
     )
-    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
-    await asyncio.to_thread(environment.workspace.mkdir)
-    with patch.object(environment, "_MAX_WORKSPACE_ARCHIVE_BYTES", 1024), pytest.raises(ValueError, match="budget"):
-        await asyncio.to_thread(environment._workspace_archive, uid=1001, gid=1002)
+    assert isinstance(docker, DockerSession) and docker.harness_home == "/home/agent"
+    assert isinstance(local, LocalSession) and local.harness_home == str(tmp_path / "home")

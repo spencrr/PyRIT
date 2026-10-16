@@ -19,6 +19,7 @@ import { targetEndpoint, targetModelName } from '@/utils/targetIdentity'
 
 import { useAgentTargetFormStyles } from './AgentTargetForm.styles'
 import { BUILTIN_HARNESS_ADAPTERS, modelBindingLabel, modelBindingOptions } from './agentModelBinding'
+import { BUILTIN_ENVIRONMENT_PROVIDERS, FIRST_PARTY_ENVIRONMENTS, providerSettingsParameters } from './environmentProviders'
 
 interface AgentTargetFormProps {
   readonly onClose: () => void
@@ -65,7 +66,7 @@ export default function AgentTargetForm({
   const [sourceError, setSourceError] = useState<string | null>(null)
   const [captureInference, setCaptureInference] = useState(initialConfiguration?.capture_inference_content ?? false)
   const [maxInference, setMaxInference] = useState(String(initialConfiguration?.max_inference_requests ?? 100))
-  const [environment, setEnvironment] = useState<'docker' | 'local'>(
+  const [environment, setEnvironment] = useState<string>(
     initialConfiguration?.environment_template.environment ?? 'docker',
   )
   const [image, setImage] = useState(initialConfiguration?.environment_template.image ?? '')
@@ -74,6 +75,7 @@ export default function AgentTargetForm({
       ?? (initialConfiguration?.environment_template.environment === 'local' ? 'empty' : 'image'),
   )
   const [environmentValues, setEnvironmentValues] = useState<Record<string, ParameterFormValue>>({})
+  const [providerSettingValues, setProviderSettingValues] = useState<Record<string, ParameterFormValue>>({})
   const [credential, setCredential] = useState(
     initialConfiguration?.harness_profile.credential_env.join('\n') ?? '',
   )
@@ -145,6 +147,11 @@ export default function AgentTargetForm({
   const sourceChanged = Boolean(selectedSource && selectedSource.identifier.hash !== sourceHash)
   const sourceBlocked = Boolean(source) && (!sourcesCurrent || !sourceHash || Boolean(sourceError)
     || !selectedSource || sourceChanged || eligibility(selectedSource) !== null || !protocols.includes(wireApi))
+  const providers = catalog?.environment_providers ?? BUILTIN_ENVIRONMENT_PROVIDERS
+  const provider = providers.find((item) => item.name === environment)
+  const firstPartyEnvironment = FIRST_PARTY_ENVIRONMENTS.has(environment)
+  const providerBlocked = !provider || (!firstPartyEnvironment && catalogUnavailable)
+  const consentRequired = provider ? !provider.capabilities.isolated : environment === 'local'
   const environmentParameters = catalog?.environment_parameters?.[environment] ?? []
   const knownEnvironmentFields = new Set(Object.values(catalog?.environment_parameters ?? {})
     .flatMap((parameters) => (parameters ?? []).map((parameter) => parameter.name)))
@@ -154,6 +161,11 @@ export default function AgentTargetForm({
   const environmentFormValues = {
     ...getInitialFormValues(environmentParameters, { ...environmentBase }),
     ...environmentValues,
+  }
+  const providerSettingParameters = firstPartyEnvironment ? [] : providerSettingsParameters(provider?.settings_schema)
+  const providerSettingFormValues = {
+    ...getInitialFormValues(providerSettingParameters, environmentBase?.environment_settings ?? null),
+    ...providerSettingValues,
   }
 
   const selectModelSource = (name: string): void => {
@@ -214,6 +226,13 @@ export default function AgentTargetForm({
     setImage(template.image ?? '')
     setWorkspaceBase(template.workspace_base ?? (template.environment === 'local' ? 'empty' : 'image'))
     setEnvironmentValues({})
+    setProviderSettingValues({})
+    setAcknowledged(false)
+  }
+
+  const selectEnvironment = (name: string): void => {
+    setEnvironment(name)
+    setProviderSettingValues({})
     setAcknowledged(false)
   }
 
@@ -229,16 +248,18 @@ export default function AgentTargetForm({
       setError('Environment edits are preserved. Refresh their settings before creating the target.')
       return
     }
-    if (!ready || adapterBlocked || sourceBlocked || presetsBlocked || (source && authentication.trim())) {
-      setError('Selected model or preset settings are unavailable or changed. Confirm your selection before registering.')
+    if (!ready || adapterBlocked || providerBlocked || sourceBlocked || presetsBlocked || (source && authentication.trim())) {
+      setError('Selected model, environment, or preset settings are unavailable or changed. Confirm your selection before registering.')
       return
     }
-    if (environment === 'local' && !acknowledged) {
-      setError('Acknowledge local host access before creating the target.')
+    if (consentRequired && !acknowledged) {
+      setError('Acknowledge that this environment is not sandboxed before creating the target.')
       return
     }
     const parsedEnvironment = buildParametersFromForm(environmentParameters, environmentFormValues)
     if (!environmentPreset && !parsedEnvironment.ok) { setError(parsedEnvironment.error); return }
+    const parsedProviderSettings = buildParametersFromForm(providerSettingParameters, providerSettingFormValues)
+    if (!environmentPreset && !parsedProviderSettings.ok) { setError(parsedProviderSettings.error); return }
     setBusy(true)
     onBusyChange?.(true)
     setError(null)
@@ -264,13 +285,15 @@ export default function AgentTargetForm({
         },
         environment_template: environmentPreset ? {
           ...environmentPreset.template,
-          local_execution_acknowledged: environmentPreset.template.environment === 'local' && acknowledged,
+          local_execution_acknowledged: consentRequired && acknowledged,
         } : {
           ...environmentBase,
           ...(parsedEnvironment.ok ? parsedEnvironment.parameters : {}),
-          environment, image: environment === 'docker' ? image.trim() : null,
+          environment,
+          environment_settings: !firstPartyEnvironment && parsedProviderSettings.ok ? (parsedProviderSettings.parameters ?? {}) : {},
+          image: environment === 'docker' ? image.trim() : environment === 'local' ? null : (image.trim() || environmentBase?.image || null),
           workspace_base: environment === 'local' ? 'empty' : workspaceBase,
-          local_execution_acknowledged: environment === 'local' && acknowledged,
+          local_execution_acknowledged: consentRequired && acknowledged,
         },
         turn_timeout_seconds: Number(turnTimeout), idle_timeout_seconds: Number(idleTimeout),
         lifetime_seconds: Number(lifetime),
@@ -300,8 +323,8 @@ export default function AgentTargetForm({
   const actions = (
     <div className={styles.actions}>
       <Button onClick={onClose} disabled={busy}>{saved ? 'Close' : 'Cancel'}</Button>
-      <Button form={formId} type="submit" appearance="primary" disabled={busy || !ready || adapterBlocked || startupBlocked || environmentEditsBlocked || presetsBlocked || sourceBlocked || (Boolean(source) && Boolean(authentication.trim())) || !command.trim()
-        || !name.trim() || (environment === 'docker' && !image.trim()) || (environment === 'local' && !acknowledged)}>
+      <Button form={formId} type="submit" appearance="primary" disabled={busy || !ready || adapterBlocked || providerBlocked || startupBlocked || environmentEditsBlocked || presetsBlocked || sourceBlocked || (Boolean(source) && Boolean(authentication.trim())) || !command.trim()
+        || !name.trim() || (environment === 'docker' && !image.trim()) || (consentRequired && !acknowledged)}>
         {busy ? saveForStartup ? 'Saving...' : 'Creating...' : saveForStartup ? 'Save for startup' : selectForChat ? 'Create and select' : 'Create Target'}
       </Button>
     </div>
@@ -424,12 +447,15 @@ export default function AgentTargetForm({
             </>}
             <fieldset className={styles.settingsFields} disabled={Boolean(environmentPreset)}>
               <Field label="Execution environment">
-                <Select className={styles.select} value={environment} onChange={(_, data) => { setEnvironment(data.value === 'local' ? 'local' : 'docker'); setAcknowledged(false) }}>
-                  <option value="docker">Docker</option><option value="local">Local (not sandboxed)</option>
+                <Select className={styles.select} value={environment} onChange={(_, data) => selectEnvironment(data.value)}>
+                  {!provider && <option value={environment} disabled>{environment} (unavailable)</option>}
+                  {providers.map((item) => <option key={item.name} value={item.name}>{item.display_name}</option>)}
                 </Select>
               </Field>
+              {provider?.description && !firstPartyEnvironment && <Text size={200}>{provider.description}</Text>}
+              {!provider && <MessageBar intent="error"><MessageBarBody>Environment provider is unavailable. Register it on the backend or refresh options.</MessageBarBody></MessageBar>}
               {environment === 'docker' && <Field label="Docker image" required><Input value={image} onChange={(_, data) => setImage(data.value)} required /></Field>}
-              <details>
+              <details open={!firstPartyEnvironment && providerSettingParameters.length > 0}>
                 <summary>Environment settings</summary>
                 {environment === 'docker' && <Field label="Starting workspace">
                   <Select className={styles.select} value={workspaceBase} onChange={(_, data) => setWorkspaceBase(data.value === 'empty' ? 'empty' : 'image')}>
@@ -440,12 +466,16 @@ export default function AgentTargetForm({
                   label={ENVIRONMENT_LABELS[parameter.name] ?? parameter.name.replace(/_/g, ' ')}
                   value={environmentFormValues[parameter.name] ?? ''} disabled={busy || Boolean(environmentPreset)}
                   onChange={(name, value) => setEnvironmentValues((previous) => ({ ...previous, [name]: value }))} />)}
-                {!environmentParameters.length && <Text size={200}>Additional settings unavailable; existing values will be preserved.</Text>}
+                {providerSettingParameters.map((parameter) => <ParameterField key={parameter.name} parameter={parameter}
+                  label={parameter.name.replace(/_/g, ' ')}
+                  value={providerSettingFormValues[parameter.name] ?? ''} disabled={busy || Boolean(environmentPreset)}
+                  onChange={(name, value) => setProviderSettingValues((previous) => ({ ...previous, [name]: value }))} />)}
+                {!environmentParameters.length && !providerSettingParameters.length && <Text size={200}>Additional settings unavailable; existing values will be preserved.</Text>}
                 {environmentBase?.fixture_directory && <Text size={200}>Workspace initialization is retained from the original configuration.</Text>}
-                {source && environment === 'docker' && <Text size={200}>The container must be able to reach the backend model relay.</Text>}
+                {source && environment !== 'local' && <Text size={200}>The environment must be able to reach the backend model relay.</Text>}
               </details>
             </fieldset>
-            {environment === 'local' && <Checkbox label="I understand local tools can access the host"
+            {consentRequired && <Checkbox label="I understand local tools can access the host"
               checked={acknowledged} onChange={(_, data) => setAcknowledged(data.checked === true)} />}
           </section>
         </div>

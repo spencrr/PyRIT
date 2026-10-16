@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("acp")
 
 from pyrit.agent.acp_connection import AcpConnection
-from pyrit.agent.environment import ExecutionEnvironment
+from pyrit.agent.environment import ExecutionSession
 from pyrit.agent.execution_manager import AgentExecutionManager
 from pyrit.models.agent_execution import AgentExecutionState, AgentProfile, AgentTurnStatus
 
@@ -33,17 +33,17 @@ def connection() -> MagicMock:
 
 @pytest.fixture(name="environment")
 async def environment_async() -> MagicMock:
-    value = MagicMock(spec=ExecutionEnvironment)
-    value.prepare_async = AsyncMock()
+    value = MagicMock(spec=ExecutionSession)
+    value.launch_async = AsyncMock()
     value.close_async = AsyncMock()
-    value.credential_values.return_value = {}
+    value.inference_endpoint_async = AsyncMock(side_effect=lambda *, relay_url: relay_url)
     value.agent_cwd = "workspace"
-    process = MagicMock(spec=asyncio.subprocess.Process)
-    process.stdout = asyncio.StreamReader()
-    process.stdin = MagicMock(spec=asyncio.StreamWriter)
-    process.stderr = asyncio.StreamReader()
-    process.stderr.feed_eof()
-    value.launch_async = AsyncMock(return_value=process)
+    value.harness_home = "home"
+    value.acp_reader = asyncio.StreamReader()
+    value.acp_writer = MagicMock(spec=asyncio.StreamWriter)
+    stderr = asyncio.StreamReader()
+    stderr.feed_eof()
+    value.stderr = stderr
     return value
 
 
@@ -51,7 +51,7 @@ async def test_fresh_execution_multiturn_and_no_implicit_resurrection(
     tmp_path: Path, profile: AgentProfile, connection: MagicMock, environment: MagicMock
 ) -> None:
     with (
-        patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment),
+        patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment),
         patch("pyrit.agent.acp_connection.AcpConnection", return_value=connection),
     ):
         async with AgentExecutionManager(root=tmp_path) as manager:
@@ -103,8 +103,8 @@ async def test_fresh_execution_multiturn_and_no_implicit_resurrection(
 async def test_startup_failure_is_retained_and_cleaned(
     tmp_path: Path, profile: AgentProfile, environment: MagicMock
 ) -> None:
-    environment.prepare_async.side_effect = RuntimeError("image missing")
-    with patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment):
+    environment.launch_async.side_effect = RuntimeError("image missing")
+    with patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment):
         async with AgentExecutionManager(root=tmp_path) as manager:
             with pytest.raises(RuntimeError, match="image missing"):
                 await manager.send_async(
@@ -139,7 +139,7 @@ async def test_cancel_settles_turn_without_closing_session(
     connection.prompt_async.side_effect = prompt_async
     connection.cancel_async.side_effect = cancel_async
     with (
-        patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment),
+        patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment),
         patch("pyrit.agent.acp_connection.AcpConnection", return_value=connection),
     ):
         async with AgentExecutionManager(root=tmp_path) as manager:
@@ -178,7 +178,7 @@ async def test_store_ownership_and_interrupted_reconciliation(
         turns=[AgentTurn(request_id="1", prompt="Prepared before dispatch")],
     )
     await manager.store.save_async(record)
-    with patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment):
+    with patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment):
         async with manager:
             assert manager.records[record.id].turns[0].status == AgentTurnStatus.UNKNOWN
             assert manager.records[record.id].state == AgentExecutionState.CLOSED
@@ -192,13 +192,13 @@ async def test_cancel_during_provisioning_does_not_dispatch_and_next_turn_can_co
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def prepare_async() -> None:
+    async def launch_async(spec: object) -> None:
         entered.set()
         await release.wait()
 
-    environment.prepare_async.side_effect = prepare_async
+    environment.launch_async.side_effect = launch_async
     with (
-        patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment),
+        patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment),
         patch("pyrit.agent.acp_connection.AcpConnection", return_value=connection),
     ):
         async with AgentExecutionManager(root=tmp_path) as manager:
@@ -248,7 +248,7 @@ async def test_deadline_holds_interactive_but_closes_automated(
     connection.cancel_async.side_effect = cancel_async
     profile = profile.model_copy(update={"turn_timeout_seconds": 0.03, "interactive_hold_seconds": 1})
     with (
-        patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment),
+        patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment),
         patch("pyrit.agent.acp_connection.AcpConnection", return_value=connection),
     ):
         async with AgentExecutionManager(root=tmp_path) as manager:

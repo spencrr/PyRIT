@@ -300,6 +300,14 @@ or resource lifecycle. The built-in Copilot adapter and any registered adapter
 reuse the same ACP target, manager, and inference relay; custom ACP launches do
 not inherit an adapter's settings. Environment templates describe a starting filesystem (image
 or empty) and optional overlay, not a mandatory fixture-copy operation.
+
+Execution environment providers own *where* a harness runs: they allocate and release
+resources, seed the workspace, and expose the harness's ACP byte streams. They never
+decide timeouts, budgets, cancellation, approvals, redaction, or what the harness does;
+those stay with the execution manager. `docker` (isolated, checkpoint-capable) and
+`local` (explicitly not a sandbox) are the first-party providers; others register through
+`EnvironmentProviderRegistry` and declare their capabilities honestly rather than
+emulating ones they lack.
 The registry and chat share target creation; the specialized harness form is
 an authoring view, not a separate target registry or conversation model.
 

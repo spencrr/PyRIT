@@ -17,7 +17,7 @@ from fastapi import FastAPI
 
 from pyrit.agent.checkpoint import checkpoint_transcript_async, require_checkpoint_ready
 from pyrit.agent.checkpoint_archive import CheckpointArchive
-from pyrit.agent.environment import ExecutionEnvironment
+from pyrit.agent.environments.docker import DockerSession
 from pyrit.agent.execution_manager import AgentExecutionManager, _LiveExecution
 from pyrit.agent.model_binding import ResolvedModelBinding
 from pyrit.memory import SQLiteMemory
@@ -90,12 +90,12 @@ async def prepared_async(
         state = archive(root=STATE_ROOT)
         with (
             patch.object(
-                ExecutionEnvironment,
+                DockerSession,
                 "capture_checkpoint_async",
                 new_callable=AsyncMock,
                 return_value=(workspace, state),
             ),
-            patch.object(ExecutionEnvironment, "close_async", new_callable=AsyncMock),
+            patch.object(DockerSession, "close_async", new_callable=AsyncMock),
         ):
             yield manager, record, binding
 
@@ -248,7 +248,7 @@ async def test_capture_failure_closes_without_publishing_success_async(
 ) -> None:
     manager, record, _ = prepared_async
     with patch.object(
-        ExecutionEnvironment, "capture_checkpoint_async", new_callable=AsyncMock, side_effect=ValueError("unsafe state")
+        DockerSession, "capture_checkpoint_async", new_callable=AsyncMock, side_effect=ValueError("unsafe state")
     ):
         with pytest.raises(ValueError, match="unsafe state"):
             await save_async(manager=manager, record=record, memory=sqlite_instance)
@@ -268,7 +268,7 @@ async def test_capture_cancellation_keeps_ownership_until_capture_and_cleanup_fi
         await release.wait()
         return archive(root="workspace"), archive(root=STATE_ROOT)
 
-    with patch.object(ExecutionEnvironment, "capture_checkpoint_async", side_effect=capture_async):
+    with patch.object(DockerSession, "capture_checkpoint_async", side_effect=capture_async):
         task = asyncio.create_task(save_async(manager=manager, record=record, memory=sqlite_instance))
         await started.wait()
         task.cancel()
@@ -450,7 +450,7 @@ async def test_concurrent_saves_reserve_retention_before_either_execution_is_clo
 
     with (
         patch.object(manager.checkpoints, "MAX_CHECKPOINTS", 1),
-        patch.object(ExecutionEnvironment, "capture_checkpoint_async", side_effect=capture_async),
+        patch.object(DockerSession, "capture_checkpoint_async", side_effect=capture_async),
     ):
         task = asyncio.create_task(save_async(manager=manager, record=record, memory=sqlite_instance))
         await entered.wait()

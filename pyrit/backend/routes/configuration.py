@@ -12,6 +12,7 @@ import yaml
 from azure.core.exceptions import AzureError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from pyrit.agent.environment import EnvironmentProviderRegistry
 from pyrit.agent.harness import HarnessAdapterRegistry
 from pyrit.backend.middleware.auth import AuthenticatedUser, require_admin
 from pyrit.backend.models.common import IdentifierStr, ProblemDetail
@@ -115,9 +116,11 @@ async def get_agent_presets_async() -> AgentPresetCatalog:
     """
     catalog = AgentConfigurationRegistry.get_registry_singleton().catalog()
     catalog.harness_adapters = HarnessAdapterRegistry.get_registry_singleton().list_adapters()
+    catalog.environment_providers = EnvironmentProviderRegistry.get_registry_singleton().list_providers()
+    # The first-party providers are authored through typed template fields; others declare a settings schema.
     fields = initializer_parameters(model=EnvironmentTemplate)
     catalog.environment_parameters = {
-        environment: [
+        environment.value: [
             parameter
             for parameter in fields
             if parameter.name == "working_directory"

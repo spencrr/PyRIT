@@ -11,6 +11,7 @@ import { makeTarget } from '@/test-utils/targetFixtures'
 import type { AgentPresetCatalog, AgentTargetConfiguration, HarnessAdapterInfo, TargetInstance } from '@/types'
 
 import AgentTargetForm from './AgentTargetForm'
+import { BUILTIN_ENVIRONMENT_PROVIDERS } from './environmentProviders'
 
 jest.mock('@/services/api', () => ({ targetsApi: {
   createTarget: jest.fn(), listAgentPresets: jest.fn(), getStartupDestination: jest.fn(), saveForStartup: jest.fn(),
@@ -688,6 +689,62 @@ describe('AgentTargetForm', () => {
       harness_profile: { harness_kind: 'acp', command: ['test-agent', '--stdio', '--no-login'] },
       environment_template: { environment: 'local', workspace_base: 'empty' },
     })
+  })
+
+  it('configures a registered environment provider from its settings schema and isolation claim', async () => {
+    const user = userEvent.setup()
+    jest.mocked(targetsApi.listAgentPresets).mockResolvedValue({
+      harness_profiles: [], environment_templates: [], unavailable_targets: {}, harness_adapters: CATALOG_ADAPTERS,
+      environment_providers: [
+        ...BUILTIN_ENVIRONMENT_PROVIDERS,
+        {
+          name: 'team_sandbox', display_name: 'Team sandbox', description: 'Runs on the team pool.',
+          capabilities: { isolated: false, checkpoint: false },
+          settings_schema: {
+            type: 'object', required: ['pool'],
+            properties: {
+              pool: { type: 'string', description: 'Pool name' },
+              cpu_count: { type: 'integer', default: 2 },
+              nested: { type: 'object' },
+            },
+          },
+        },
+      ],
+    })
+    jest.mocked(targetsApi.createTarget).mockResolvedValue(makeTarget({ target_registry_name: 'pooled', target_type: 'AgentTarget' }))
+    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
+    await screen.findByRole('option', { name: 'Team sandbox' })
+    await user.selectOptions(screen.getByLabelText('Execution environment'), 'team_sandbox')
+    expect(screen.getByText('Runs on the team pool.')).toBeVisible()
+    expect(screen.queryByRole('textbox', { name: /Docker image/ })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/nested/)).not.toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'pooled')
+    await user.type(screen.getByLabelText(/^pool/), 'blue')
+    expect(screen.getByRole('button', { name: 'Create Target' })).toBeDisabled()
+    await user.click(screen.getByLabelText('I understand local tools can access the host'))
+    await user.click(screen.getByRole('button', { name: 'Create Target' }))
+    await waitFor(() => expect(targetsApi.createTarget).toHaveBeenCalled())
+    expect(jest.mocked(targetsApi.createTarget).mock.calls[0][0].params.agent_configuration).toMatchObject({
+      environment_template: {
+        environment: 'team_sandbox', environment_settings: { pool: 'blue', cpu_count: 2 },
+        local_execution_acknowledged: true, image: null,
+      },
+    })
+  })
+
+  it('does not silently reinterpret a copied target whose environment provider is unavailable', async () => {
+    const user = userEvent.setup()
+    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} initialConfiguration={{
+      name: 'copied', model_binding: { model: '' },
+      harness_profile: { harness_kind: 'copilot', command: ['copilot', '--acp', '--stdio'], permission_policy: 'deny',
+        credential_env: [], authentication_method: null },
+      environment_template: { environment: 'team_sandbox', environment_settings: { pool: 'blue' }, image: null, local_execution_acknowledged: false },
+    }} /></TestWrapper>)
+    expect(await screen.findByText(/Environment provider is unavailable/)).toBeVisible()
+    expect(screen.getByLabelText('Execution environment')).toHaveValue('team_sandbox')
+    await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'copied')
+    expect(screen.getByRole('button', { name: 'Create Target', exact: true })).toBeDisabled()
+    expect(targetsApi.createTarget).not.toHaveBeenCalled()
   })
 
   beforeEach(() => {

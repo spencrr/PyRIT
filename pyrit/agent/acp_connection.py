@@ -22,6 +22,7 @@ from acp.schema import (
 )
 
 from pyrit.agent.approvals import AgentApprovals
+from pyrit.agent.environment import AcpByteReader, AcpByteWriter
 from pyrit.models.agent_execution import AgentConnectionState, AgentPermissionPolicy
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,11 @@ class RecordingTransport:
     def __init__(
         self,
         *,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
+        reader: AcpByteReader,
+        writer: AcpByteWriter,
         record: Callable[[str, dict[str, Any]], Awaitable[None]],
     ) -> None:
-        """Bind existing byte streams; the environment owns the process."""
+        """Bind existing byte streams; the environment session owns whatever carries them."""
         self.reader = reader
         self.writer = writer
         self.record = record

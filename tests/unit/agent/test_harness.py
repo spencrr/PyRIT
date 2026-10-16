@@ -5,11 +5,10 @@ import io
 import json
 import tarfile
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from pyrit.agent.environment import ExecutionEnvironment
+from pyrit.agent.environments.docker import DockerSession
 from pyrit.agent.harness import inference_environment, launch_environment, validate_inference_adapter
 from pyrit.models.agent_execution import (
     AgentExecution,
@@ -24,6 +23,7 @@ from pyrit.models.model_inference import InferenceWireApi
 from pyrit.prompt_target import AgentTarget
 from pyrit.registry import TargetRegistry
 from tests.unit.agent.example_adapters import OPENCODE_COMMAND, OpenCodeAdapter
+from tests.unit.agent.session_helpers import create_container_async
 
 
 @pytest.mark.parametrize("model", [AgentProfile, HarnessProfile])
@@ -152,20 +152,17 @@ async def test_docker_workspace_is_not_implicitly_overlaid_async(tmp_path: Path,
         target_id="target",
         profile=AgentProfile(image="test", harness_kind="opencode", command=OPENCODE_COMMAND, workspace_base=base),
     )
-    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
-    with patch.object(
-        environment, "_docker_async", AsyncMock(side_effect=['[{"Id":"sha256:pinned"}]', "id", ""])
-    ) as docker:
-        await environment.prepare_async()
+    session = DockerSession(execution=record, directory=tmp_path)
+    docker = await create_container_async(session, environment=launch_environment(kind="opencode", home="/home/agent"))
     assert docker.await_count == (3 if base == "empty" else 2)
     command = docker.call_args_list[1].args
     assert "opencode" in command
     assert not any("COPILOT" in arg for arg in command)
     assert "--mount" not in command and "--volume" not in command
     if base == "empty":
-        assert str(record.id) in environment.agent_cwd
+        assert str(record.id) in session.agent_cwd
         assert docker.call_args.args[:3] == ("cp", "--archive", "-")
         with tarfile.open(fileobj=io.BytesIO(docker.call_args.kwargs["input_data"])) as archive:
             assert all(member.isdir() for member in archive.getmembers())
     else:
-        assert environment.agent_cwd == "/workspace"
+        assert session.agent_cwd == "/workspace"

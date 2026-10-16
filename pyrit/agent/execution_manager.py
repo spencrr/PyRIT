@@ -26,8 +26,20 @@ from pyrit.agent.checkpoint import (
     require_checkpoint_ready,
 )
 from pyrit.agent.checkpoint_archive import CheckpointArchive
-from pyrit.agent.environment import ExecutionEnvironment
-from pyrit.agent.harness import inference_environment, validate_harness_authentication
+from pyrit.agent.environment import (
+    AcpByteReader,
+    CheckpointRestore,
+    ExecutionSession,
+    ExecutionSpec,
+    create_execution_session,
+    validate_environment_template,
+)
+from pyrit.agent.harness import (
+    inference_environment,
+    launch_environment,
+    resolve_credential_values,
+    validate_harness_authentication,
+)
 from pyrit.agent.tool_evidence import AgentToolProjection, project_agent_tools
 from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.memory.agent_checkpoint_store import AgentCheckpointStore
@@ -58,7 +70,7 @@ if TYPE_CHECKING:
 @dataclass
 class _LiveExecution:
     record: AgentExecution
-    environment: ExecutionEnvironment
+    environment: ExecutionSession
     connection: "AcpConnection | None" = None
     startup: asyncio.Task[None] | None = None
     operation: asyncio.Task[tuple[str, str]] | None = None
@@ -72,6 +84,7 @@ class _LiveExecution:
     close_task: asyncio.Task[None] | None = None
     model_binding: "ResolvedModelBinding | None" = None
     inference_lease: "InferenceLease | None" = None
+    inference_environment: dict[str, str] = field(default_factory=dict)
     approvals: AgentApprovals | None = None
     checkpoint_task: asyncio.Task[Any] | None = None
     restoration: tuple[AgentCheckpoint, bytes, bytes] | None = None
@@ -170,21 +183,34 @@ class AgentExecutionManager:
                 for record in records:
                     self.records[record.id] = record
                     if record.state != AgentExecutionState.CLOSED:
-                        for approval in record.approvals:
-                            if approval.decision is None:
-                                approval.decision, approval.actor = "cancelled", "interrupted_runtime"
-                        for turn in record.turns:
-                            if turn.status == AgentTurnStatus.RUNNING:
-                                turn.status = AgentTurnStatus.UNKNOWN
-                                turn.error = "Owning runtime stopped before the turn was finalized"
-                        self._live[record.id] = self._make_live(record)
-                        await self.close_execution_async(execution_id=record.id, reason="interrupted_runtime")
+                        await self._reconcile_interrupted_async(record)
             except BaseException:
                 await await_task_completion_async(asyncio.create_task(asyncio.to_thread(lock.release)))
                 self._file_lock = None
                 raise
             self._started = True
             self._reaper = asyncio.create_task(self._expire_async())
+
+    async def _reconcile_interrupted_async(self, record: AgentExecution) -> None:
+        for approval in record.approvals:
+            if approval.decision is None:
+                approval.decision, approval.actor = "cancelled", "interrupted_runtime"
+        for turn in record.turns:
+            if turn.status == AgentTurnStatus.RUNNING:
+                turn.status = AgentTurnStatus.UNKNOWN
+                turn.error = "Owning runtime stopped before the turn was finalized"
+        try:
+            self._live[record.id] = self._make_live(record)
+        except ValueError as error:
+            # Without its provider the resources cannot be released; say so rather than claim closure.
+            record.state = AgentExecutionState.CLEANUP_FAILED
+            record.close_reason = "interrupted_runtime"
+            record.cleanup_error = f"{error}; resources may remain allocated"
+            record.connection_state = AgentConnectionState.DISCONNECTED
+            logger.error("Cannot reconcile agent execution %s: %s", record.id, error)
+            await self.store.save_async(record)
+            return
+        await self.close_execution_async(execution_id=record.id, reason="interrupted_runtime")
 
     async def send_async(
         self,
@@ -214,10 +240,12 @@ class AgentExecutionManager:
             raise ValueError("Automated agent runs require an explicit allow_once or deny permission policy")
         if profile.target_registry_name is not None and model_binding is None:
             raise ValueError("A target-backed agent execution requires a resolved model binding")
+        configuration = AgentTargetConfiguration.from_profile(profile)
         validate_harness_authentication(
-            harness=AgentTargetConfiguration.from_profile(profile).harness_profile,
+            harness=configuration.harness_profile,
             target_backed=model_binding is not None,
         )
+        validate_environment_template(configuration.environment_template)
         await self.start_async()
         async with self._admission:
             if self._closed:
@@ -257,7 +285,7 @@ class AgentExecutionManager:
                 )
                 live = self._make_live(record)
                 live.model_binding = model_binding
-                live.secrets = tuple(live.environment.credential_values().values())
+                live.secrets = tuple(resolve_credential_values(credential_env=profile.credential_env).values())
                 self.records[record.id] = record
                 self._live[record.id] = live
             record = live.record
@@ -377,7 +405,7 @@ class AgentExecutionManager:
     def _make_live(self, record: AgentExecution) -> _LiveExecution:
         live = _LiveExecution(
             record=record,
-            environment=ExecutionEnvironment(execution=record, directory=self.store.directory(record.id)),
+            environment=create_execution_session(execution=record, directory=self.store.directory(record.id)),
         )
 
         async def approval_changed_async(approval: AgentApproval) -> None:
@@ -440,33 +468,40 @@ class AgentExecutionManager:
     async def _launch_async(self, live: _LiveExecution) -> None:
         from pyrit.agent.acp_connection import AcpConnection, RecordingTransport
 
-        async with asyncio.timeout(live.record.profile.startup_timeout_seconds):
-            live.secrets = tuple(live.environment.credential_values().values())
+        profile = live.record.profile
+        async with asyncio.timeout(profile.startup_timeout_seconds):
+            credentials = resolve_credential_values(credential_env=profile.credential_env)
+            live.secrets = tuple(credentials.values())
             if live.model_binding is not None:
                 await self._bind_inference_async(live)
-            # Container names are deterministic, so a crash during create remains reconcilable.
-            if live.record.profile.environment == "docker":
-                live.record.provider_id = f"pyrit-agent-{live.record.id}"
+            live.environment.reserve()
             await self.store.save_async(live.record)
-            await live.environment.prepare_async()
+            restore = None
             if live.restoration is not None:
                 checkpoint, workspace, state = live.restoration
-                await live.environment.restore_checkpoint_async(
-                    layout=checkpoint.layout,
-                    workspace=workspace,
-                    state=state,
-                )
-            await self.store.save_async(live.record)
-            process = await live.environment.launch_async()
-            await self.store.save_async(live.record)
-            assert process.stdout is not None and process.stdin is not None and process.stderr is not None
+                restore = CheckpointRestore(layout=checkpoint.layout, workspace=workspace, state=state)
+            spec = ExecutionSpec(
+                command=profile.command,
+                environment={
+                    **launch_environment(kind=profile.harness_kind, home=live.environment.harness_home),
+                    **live.inference_environment,
+                },
+                credentials=credentials,
+                restore=restore,
+            )
+            try:
+                await live.environment.launch_async(spec)
+            finally:
+                await self.store.save_async(live.record)
 
             async def record_async(direction: str, payload: dict[str, Any]) -> None:
                 if live.replaying_history and direction == "incoming" and payload.get("method") == "session/update":
                     direction = "restore"
                 await self._record_async(live, direction=direction, payload=payload)
 
-            transport = RecordingTransport(reader=process.stdout, writer=process.stdin, record=record_async)
+            transport = RecordingTransport(
+                reader=live.environment.acp_reader, writer=live.environment.acp_writer, record=record_async
+            )
 
             async def status_changed_async(state: AgentConnectionState) -> None:
                 live.record.connection_state = state
@@ -487,7 +522,7 @@ class AgentExecutionManager:
                 approvals=live.approvals,
                 status_changed=status_changed_async,
             )
-            live.stderr_task = asyncio.create_task(self._stderr_async(live, process.stderr))
+            live.stderr_task = asyncio.create_task(self._stderr_async(live, live.environment.stderr))
             restore = live.restoration[0] if live.restoration else None
             live.replaying_history = restore is not None
             live.record.agent_info = await live.connection.initialize_async(
@@ -516,15 +551,8 @@ class AgentExecutionManager:
                     host=os.getenv("PYRIT_INFERENCE_RELAY_HOST", "127.0.0.1"),
                     advertised_host=os.getenv("PYRIT_INFERENCE_RELAY_ADVERTISED_HOST", "127.0.0.1"),
                 )
-            if live.record.profile.environment == "docker" and self._relay.advertised_host in (
-                "127.0.0.1",
-                "localhost",
-            ):
-                raise ValueError(
-                    "Docker BYOK requires an explicitly reachable PYRIT_INFERENCE_RELAY_HOST and "
-                    "PYRIT_INFERENCE_RELAY_ADVERTISED_HOST (for example host.docker.internal on Docker Desktop)"
-                )
             await self._relay.start_async()
+            base_url = await live.environment.inference_endpoint_async(relay_url=self._relay.url)
 
             async def record_async(payload: dict[str, Any]) -> None:
                 await self._record_async(live, direction="inference", payload=payload)
@@ -542,11 +570,11 @@ class AgentExecutionManager:
             live.secrets = (*live.secrets, lease.token)
             live.record.inference_target_hash = binding.identifier_hash
             live.record.inference_protocol = binding.requirements.wire_api
-            live.environment.runtime_environment = inference_environment(
+            live.inference_environment = inference_environment(
                 kind=live.record.profile.harness_kind,
                 model=binding.model,
                 wire_api=binding.requirements.wire_api,
-                base_url=self._relay.url,
+                base_url=base_url,
                 token=lease.token,
             )
 
@@ -591,7 +619,7 @@ class AgentExecutionManager:
                 text = text.replace(secret, "[REDACTED]")
         return text
 
-    async def _stderr_async(self, live: _LiveExecution, reader: asyncio.StreamReader) -> None:
+    async def _stderr_async(self, live: _LiveExecution, reader: AcpByteReader) -> None:
         pending = ""
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         overlap = max((len(secret) for secret in live.secrets), default=1) - 1

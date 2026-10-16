@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("acp")
 
 from build_scripts.agent_checkpoint_demo import CheckpointOracle, CheckpointProbe
-from pyrit.agent.environment import ExecutionEnvironment
+from pyrit.agent.environments.docker import DockerSession
 from pyrit.agent.inference_relay import InferenceLease
 from pyrit.agent.model_binding import ResolvedModelBinding
 from pyrit.models.agent_execution import AgentExecution, AgentProfile
@@ -66,13 +66,6 @@ def test_portable_archive_preserves_owned_state_without_host_extraction(probe: C
         assert (member.uid, member.gid, member.mode) == (1000, 1001, 0o600)
         stream = archive.extractfile(member)
         assert stream is not None and stream.read() == b'{"total":31}'
-
-
-def test_fresh_native_state_parents_belong_to_the_image_user(probe: CheckpointProbe) -> None:
-    data = probe._state_parent_archive(uid=1000, gid=1001)
-    with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-        assert archive.getnames() == ["home/agent/.copilot"]
-        assert all(entry.isdir() and (entry.uid, entry.gid, entry.mode) == (1000, 1001, 0o700) for entry in archive)
 
 
 @pytest.mark.parametrize("name", ["/workspace/x", "workspace/../x", "workspace\\x", "workspace/C:x", "other/x"])
@@ -142,7 +135,7 @@ async def test_unsettled_or_force_killed_process_does_not_produce_checkpoint_asy
     probe: CheckpointProbe,
     state: dict[str, object],
 ) -> None:
-    environment = ExecutionEnvironment(
+    environment = DockerSession(
         execution=AgentExecution(
             owner_id="test", target_id="target", conversation_id="c", profile=AgentProfile(image="test")
         ),
@@ -185,7 +178,7 @@ async def test_revocation_probe_uses_configured_local_interface_without_ambient_
         record=AsyncMock(),
     )
     probe.leases.append(lease)
-    environment = ExecutionEnvironment(
+    environment = DockerSession(
         execution=AgentExecution(
             owner_id="test", target_id="target", conversation_id="c", profile=AgentProfile(image="test")
         ),

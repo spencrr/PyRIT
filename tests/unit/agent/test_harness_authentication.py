@@ -6,9 +6,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from pyrit.agent.environment import ExecutionEnvironment
+from pyrit.agent.environment import ExecutionSpec
+from pyrit.agent.environments.docker import DockerSession
 from pyrit.agent.execution_manager import AgentExecutionManager
-from pyrit.agent.harness import validate_harness_authentication
+from pyrit.agent.harness import resolve_credential_values, validate_harness_authentication
 from pyrit.models.agent_execution import (
     AgentExecution,
     AgentProfile,
@@ -74,26 +75,23 @@ async def test_credential_reference_reaches_docker_as_runtime_environment_not_ar
 ) -> None:
     profile = AgentProfile(image="test", credential_env=("COPILOT_GITHUB_TOKEN",))
     record = AgentExecution(owner_id="test", conversation_id="one", target_id="target", profile=profile)
-    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
-    with (
-        patch.dict("os.environ", {"COPILOT_GITHUB_TOKEN": "gho_synthetic"}),
-        patch.object(
-            environment, "_docker_async", new_callable=AsyncMock, side_effect=['[{"Id":"test"}]', "id"]
-        ) as docker,
-    ):
-        await environment.prepare_async()
-        assert environment.credential_values()["COPILOT_GITHUB_TOKEN"] == "gho_synthetic"
-    assert "COPILOT_GITHUB_TOKEN" in docker.call_args.args
-    assert "gho_synthetic" not in str(docker.call_args)
+    session = DockerSession(execution=record, directory=tmp_path)
+    with patch.dict("os.environ", {"COPILOT_GITHUB_TOKEN": "gho_synthetic"}):
+        credentials = resolve_credential_values(credential_env=profile.credential_env)
+    assert credentials == {"COPILOT_GITHUB_TOKEN": "gho_synthetic"}
+    docker = AsyncMock(side_effect=['[{"Id":"test"}]', "id"])
+    with patch.object(session, "_docker_async", docker), patch.object(session, "_spawn_async", AsyncMock()):
+        await session.launch_async(ExecutionSpec(command=profile.command, environment={}, credentials=credentials))
+    create = docker.call_args_list[1]
+    assert "COPILOT_GITHUB_TOKEN" in create.args
+    assert "gho_synthetic" not in str(create.args)
+    assert create.kwargs["environment"]["COPILOT_GITHUB_TOKEN"] == "gho_synthetic"
     assert "gho_synthetic" not in record.model_dump_json()
 
 
-def test_missing_credential_reference_fails_before_provisioning(tmp_path: Path) -> None:
-    profile = AgentProfile(image="test", credential_env=("COPILOT_GITHUB_TOKEN",))
-    record = AgentExecution(owner_id="test", conversation_id="one", target_id="target", profile=profile)
-    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
+def test_missing_credential_reference_fails_before_provisioning() -> None:
     with patch.dict("os.environ", {}, clear=True), pytest.raises(ValueError, match="COPILOT_GITHUB_TOKEN"):
-        environment.credential_values()
+        resolve_credential_values(credential_env=("COPILOT_GITHUB_TOKEN",))
 
 
 @pytest.mark.usefixtures("patch_central_database")
@@ -120,15 +118,18 @@ async def test_tool_credentials_survive_byok_without_provider_credential_export_
             )
         )
     record = AgentExecution(owner_id="test", target_id="target", conversation_id="one", profile=target.profile)
-    environment = ExecutionEnvironment(execution=record, directory=tmp_path)
-    with (
-        patch.dict("os.environ", {"TEST_REPO_CREDENTIAL": "sentinel-tool-secret"}),
-        patch.object(environment, "_docker_async", AsyncMock(side_effect=['[{"Id":"sha256:test"}]', "id"])) as docker,
-    ):
-        assert environment.credential_values() == {"TEST_REPO_CREDENTIAL": "sentinel-tool-secret"}
-        await environment.prepare_async()
-    assert "TEST_REPO_CREDENTIAL" in docker.call_args.args
-    assert "sentinel-tool-secret" not in str(docker.call_args)
+    session = DockerSession(execution=record, directory=tmp_path)
+    with patch.dict("os.environ", {"TEST_REPO_CREDENTIAL": "sentinel-tool-secret"}):
+        credentials = resolve_credential_values(credential_env=target.profile.credential_env)
+    assert credentials == {"TEST_REPO_CREDENTIAL": "sentinel-tool-secret"}
+    docker = AsyncMock(side_effect=['[{"Id":"sha256:test"}]', "id"])
+    with patch.object(session, "_docker_async", docker), patch.object(session, "_spawn_async", AsyncMock()):
+        await session.launch_async(
+            ExecutionSpec(command=target.profile.command, environment={}, credentials=credentials)
+        )
+    create = docker.call_args_list[1]
+    assert "TEST_REPO_CREDENTIAL" in create.args
+    assert "sentinel-tool-secret" not in str(create.args)
     assert "sentinel-tool-secret" not in target.get_identifier().model_dump_json()
 
 

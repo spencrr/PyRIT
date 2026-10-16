@@ -61,8 +61,13 @@ async def save_agent_startup_async(
     harness = resolved.harness_profile.model_dump(mode="json", exclude={"inference_requirements"}, exclude_none=True)
     requirements = resolved.harness_profile.inference_requirements.model_dump(mode="json")
     harness.update({f"inference_{name}": value for name, value in requirements.items()})
+    if resolved.environment_template.environment_settings:
+        raise ValueError(
+            "Startup authoring supports the first-party environment providers; register templates for "
+            f"'{resolved.environment_template.environment}' from a Python initializer"
+        )
     template = resolved.environment_template.model_dump(
-        mode="json", exclude={"local_execution_acknowledged"}, exclude_none=True
+        mode="json", exclude={"local_execution_acknowledged", "environment_settings"}, exclude_none=True
     )
     composition = AgentTargetComposition(
         **resolved.model_dump(exclude={"name", "model_binding", "harness_profile", "environment_template"}),

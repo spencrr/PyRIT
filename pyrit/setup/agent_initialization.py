@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, get_origin
 
 from pydantic import BaseModel
 
+from pyrit.agent.environment import validate_environment_template
 from pyrit.agent.harness import validate_harness_authentication, validate_inference_adapter
 from pyrit.agent.model_binding import resolve_model_binding
 from pyrit.common import REQUIRED_VALUE
@@ -141,6 +142,7 @@ def resolve_agent_configuration(
         ),
     )
     configuration.to_profile()
+    validate_environment_template(template)
     validate_harness_authentication(harness=harness, target_backed=composition.model_target is not None)
     if composition.model_target is not None:
         validate_inference_adapter(

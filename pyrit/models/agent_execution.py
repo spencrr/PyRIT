@@ -16,7 +16,7 @@ from pyrit.models.model_inference import InferenceRequirements, InferenceWireApi
 
 
 class AgentEnvironment(str, Enum):
-    """Where the tested harness runs."""
+    """The first-party execution environment providers; registered providers use their own names."""
 
     LOCAL = "local"
     DOCKER = "docker"
@@ -126,11 +126,16 @@ def _validate_artifacts(value: tuple[str, ...]) -> tuple[str, ...]:
     return value
 
 
-def _validate_environment(*, environment: AgentEnvironment, image: str | None, acknowledged: bool) -> None:
+def _validate_environment(*, environment: str, image: str | None, acknowledged: bool) -> None:
     if environment == AgentEnvironment.DOCKER and not image:
         raise ValueError("A Docker image is required")
     if environment == AgentEnvironment.LOCAL and not acknowledged:
         raise ValueError("Local execution is NOT sandboxed; set local_execution_acknowledged=True explicitly")
+
+
+def _validate_environment_name(value: str) -> str:
+    validate_registry_name(value)
+    return value
 
 
 class AgentProfile(BaseModel):
@@ -141,7 +146,8 @@ class AgentProfile(BaseModel):
     name: str = Field(default="copilot", min_length=1, max_length=100)
     command: tuple[str, ...] = ("copilot", "--acp", "--stdio")
     harness_kind: str = AgentHarnessKind.COPILOT
-    environment: AgentEnvironment = AgentEnvironment.DOCKER
+    environment: str = AgentEnvironment.DOCKER.value
+    environment_settings: dict[str, JsonValue] = Field(default_factory=dict)
     image: str | None = None
     fixture_directory: str | None = None
     expected_fixture_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -174,6 +180,7 @@ class AgentProfile(BaseModel):
 
     _command_validator = field_validator("command")(_validate_command)
     _harness_validator = model_validator(mode="before")(_resolve_harness)
+    _environment_validator = field_validator("environment")(_validate_environment_name)
     _working_directory_validator = field_validator("working_directory")(_validate_working_directory)
     _artifact_validator = field_validator("artifact_paths")(_validate_artifacts)
     _credentials_validator = field_validator("credential_env")(_validate_credentials)
@@ -221,10 +228,16 @@ class HarnessProfile(BaseModel):
 
 
 class EnvironmentTemplate(BaseModel):
-    """Reusable starting filesystem and resource/access policy; never a running environment."""
+    """
+    Reusable starting filesystem and resource/access policy; never a running environment.
+
+    ``environment`` names an installed provider. The first-party ``docker`` and ``local`` providers
+    read the typed fields below; a registered provider reads its own validated ``environment_settings``.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    environment: AgentEnvironment = AgentEnvironment.DOCKER
+    environment: str = AgentEnvironment.DOCKER.value
+    environment_settings: dict[str, JsonValue] = Field(default_factory=dict)
     image: str | None = None
     fixture_directory: str | None = None
     expected_fixture_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -235,6 +248,7 @@ class EnvironmentTemplate(BaseModel):
     docker_memory: str = "1g"
     docker_cpus: float = Field(default=1, gt=0, le=32)
 
+    _environment_validator = field_validator("environment")(_validate_environment_name)
     _working_directory_validator = field_validator("working_directory")(_validate_working_directory)
 
     @model_validator(mode="after")
@@ -375,6 +389,8 @@ class AgentExecution(BaseModel):
     process_created_at: float | None = None
     image_id: str | None = None
     fixture_sha256: str | None = None
+    resource: dict[str, JsonValue] = Field(default_factory=dict)
+    provenance: dict[str, str] = Field(default_factory=dict)
     agent_info: dict[str, JsonValue] = Field(default_factory=dict)
     turns: list[AgentTurn] = Field(default_factory=list)
     event_count: int = 0

@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("acp")
 
-from pyrit.agent.environment import ExecutionEnvironment
+from pyrit.agent.environment import ExecutionSession
 from pyrit.agent.execution_manager import AgentExecutionManager
 from pyrit.models.agent_execution import AgentExecution, AgentExecutionState, AgentProfile
 
@@ -31,9 +31,9 @@ def make_manager(tmp_path: Path) -> tuple[AgentExecutionManager, AgentExecution]
 
 async def test_cancelled_close_waits_for_startup(tmp_path: Path) -> None:
     manager, record = make_manager(tmp_path)
-    environment = MagicMock(spec=ExecutionEnvironment)
+    environment = MagicMock(spec=ExecutionSession)
     environment.close_async = AsyncMock()
-    with patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment):
+    with patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment):
         live = manager._make_live(record)
     manager._live[record.id] = live
     startup_done = asyncio.Event()
@@ -53,9 +53,9 @@ async def test_cancelled_close_waits_for_startup(tmp_path: Path) -> None:
 
 async def test_persistence_failure_still_releases_resources(tmp_path: Path) -> None:
     manager, record = make_manager(tmp_path)
-    environment = MagicMock(spec=ExecutionEnvironment)
+    environment = MagicMock(spec=ExecutionSession)
     environment.close_async = AsyncMock()
-    with patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment):
+    with patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment):
         manager._live[record.id] = manager._make_live(record)
     with patch.object(manager.store, "save_async", AsyncMock(side_effect=OSError("disk full"))):
         with pytest.raises(ExceptionGroup, match="persistence failed"):
@@ -174,8 +174,8 @@ async def test_approval_journal_commit_survives_snapshot_failure(
     assert reloaded.approvals == record.approvals
     assert reloaded.event_count == 2
     assert reloaded.evidence_bytes == (tmp_path / str(record.id) / "events.jsonl").stat().st_size
-    environment = MagicMock(spec=ExecutionEnvironment)
+    environment = MagicMock(spec=ExecutionSession)
     environment.close_async = AsyncMock()
-    with patch("pyrit.agent.execution_manager.ExecutionEnvironment", return_value=environment):
+    with patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment):
         async with AgentExecutionManager(root=tmp_path) as restarted:
             assert restarted.records[record.id].approvals[0].decision == "operator_allow"

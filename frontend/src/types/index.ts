@@ -35,10 +35,15 @@ export interface HarnessProfile {
   readonly inference_requirements?: InferenceRequirements
 }
 
+/** Settings owned by a registered environment provider; empty for the first-party docker/local providers. */
+export type EnvironmentSettings = Record<string, unknown>
+
 export interface EnvironmentTemplate {
   readonly workspace_base?: 'image' | 'empty' | null
   readonly working_directory?: string
-  readonly environment: 'local' | 'docker'
+  /** Installed provider name; `docker` and `local` are first-party. */
+  readonly environment: string
+  readonly environment_settings?: EnvironmentSettings
   readonly image: string | null
   readonly fixture_directory?: string | null
   readonly expected_fixture_sha256?: string | null
@@ -64,8 +69,9 @@ export interface AgentPresetCatalog {
   readonly harness_profiles: RegisteredHarnessProfile[]
   readonly environment_templates: RegisteredEnvironmentTemplate[]
   readonly unavailable_targets: Record<string, string>
-  readonly environment_parameters?: Partial<Record<EnvironmentTemplate['environment'], Parameter[]>>
+  readonly environment_parameters?: Record<string, Parameter[]>
   readonly harness_adapters?: HarnessAdapterInfo[]
+  readonly environment_providers?: EnvironmentProviderInfo[]
 }
 
 export interface HarnessAdapterInfo {
@@ -73,6 +79,20 @@ export interface HarnessAdapterInfo {
   readonly display_name: string
   readonly default_command: readonly string[]
   readonly wire_apis: readonly InferenceWireApi[]
+}
+
+export interface EnvironmentCapabilities {
+  readonly isolated: boolean
+  readonly checkpoint: boolean
+}
+
+export interface EnvironmentProviderInfo {
+  readonly name: string
+  readonly display_name: string
+  readonly description?: string
+  readonly capabilities: EnvironmentCapabilities
+  /** JSON schema for provider-owned settings; empty for the first-party providers. */
+  readonly settings_schema?: Record<string, unknown>
 }
 
 export interface AgentPresetSelection {

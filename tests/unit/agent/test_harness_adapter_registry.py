@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from pyrit.agent.environment import ExecutionEnvironment
+from pyrit.agent.environments.docker import DockerSession
 from pyrit.agent.execution_manager import AgentExecutionManager
 from pyrit.agent.harness import (
     HarnessAdapter,
@@ -118,7 +118,7 @@ async def test_interrupted_cleanup_does_not_require_missing_adapter_async(
         "State": {"Running": True},
     }
     with patch.object(
-        ExecutionEnvironment,
+        DockerSession,
         "_docker_async",
         new_callable=AsyncMock,
         side_effect=["container-id", json.dumps([info]), "", ""],

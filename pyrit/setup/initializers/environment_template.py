@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+from pyrit.agent.environment import validate_environment_template
 from pyrit.models import Parameter
 from pyrit.models.agent_execution import EnvironmentTemplate
 from pyrit.models.agent_setup import EnvironmentTemplateDefinition
@@ -13,9 +14,15 @@ class EnvironmentTemplateInitializer(AgentConfigurationInitializer):
 
     @property
     def supported_parameters(self) -> list[Parameter]:
-        """The starting filesystem and resource policy, without execution consent."""
+        """
+        The starting filesystem and resource policy, without execution consent.
+
+        Provider-owned ``environment_settings`` are nested values; templates for registered providers
+        are created from a Python initializer rather than the scalar/list parameter bag.
+        """
         return initializer_parameters(
-            model=EnvironmentTemplateDefinition, exclude=frozenset({"local_execution_acknowledged"})
+            model=EnvironmentTemplateDefinition,
+            exclude=frozenset({"local_execution_acknowledged", "environment_settings"}),
         )
 
     def definition(self) -> EnvironmentTemplateDefinition:
@@ -37,10 +44,8 @@ class EnvironmentTemplateInitializer(AgentConfigurationInitializer):
         self.preflight(AgentConfigurationRegistry.get_registry_singleton())
 
     def preflight(self, presets: AgentConfigurationRegistry) -> None:
-        """Register the inert definition in the supplied namespace."""
+        """Register the inert definition in the supplied namespace after its provider accepts it."""
         definition = self.definition()
-        presets.register_environment(
-            name=definition.name,
-            template=EnvironmentTemplate.model_validate(definition.model_dump(exclude={"name"})),
-            initializer=type(self).__name__,
-        )
+        template = EnvironmentTemplate.model_validate(definition.model_dump(exclude={"name"}))
+        validate_environment_template(template, require_consent=False)
+        presets.register_environment(name=definition.name, template=template, initializer=type(self).__name__)

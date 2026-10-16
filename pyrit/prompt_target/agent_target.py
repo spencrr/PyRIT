@@ -61,8 +61,10 @@ class AgentTarget(PromptTarget):
         else:
             self.profile = profile if isinstance(profile, AgentProfile) else AgentProfile.model_validate(profile)
             self.agent_configuration = AgentTargetConfiguration.from_profile(self.profile)
+        from pyrit.agent.environment import validate_environment_template
         from pyrit.agent.model_binding import pinned_configuration, resolve_model_binding
 
+        validate_environment_template(self.agent_configuration.environment_template)
         self._model_binding = resolve_model_binding(self.agent_configuration)
         if self._model_binding is not None:
             self.agent_configuration = pinned_configuration(
@@ -96,6 +98,8 @@ class AgentTarget(PromptTarget):
         values = self.profile.model_dump(mode="json")
         if self.profile.harness_kind == legacy_harness_kind(self.profile.command):
             values.pop("harness_kind")
+        if not self.profile.environment_settings:
+            values.pop("environment_settings")
         original_base = AgentWorkspaceBase.IMAGE if self.profile.environment == "docker" else AgentWorkspaceBase.EMPTY
         if self.profile.workspace_base is None or self.profile.workspace_base == original_base:
             values.pop("workspace_base")

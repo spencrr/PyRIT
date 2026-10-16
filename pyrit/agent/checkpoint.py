@@ -7,6 +7,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING
 
+from pyrit.agent.environment import EnvironmentProviderRegistry
 from pyrit.agent.harness import HarnessAdapterRegistry
 from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
 from pyrit.models.agent_execution import AgentConnectionState, AgentExecution, AgentExecutionState, AgentTurnStatus
@@ -26,8 +27,11 @@ def checkpoint_layout(record: AgentExecution) -> HarnessCheckpointLayout:
         ValueError: The execution or adapter has no supported persistence contract.
     """
     profile = record.profile
-    if profile.environment != "docker" or profile.workspace_base == "empty" or profile.working_directory != ".":
-        raise ValueError("Checkpoints currently require a Docker image workspace at /workspace")
+    provider = EnvironmentProviderRegistry.get_registry_singleton().get(profile.environment)
+    if not provider.info.capabilities.checkpoint:
+        raise ValueError(f"Environment provider '{profile.environment}' has no checkpoint capability")
+    if profile.workspace_base == "empty" or profile.working_directory != ".":
+        raise ValueError("Checkpoints currently require an image workspace at its root")
     if profile.fixture_directory:
         raise ValueError("Checkpoint restoration does not yet support workspace overlays")
     if not profile.target_registry_name or profile.credential_env or profile.authentication_method:

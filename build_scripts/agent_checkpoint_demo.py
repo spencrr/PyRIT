@@ -22,8 +22,9 @@ from acp import RequestError
 from acp.schema import ClientCapabilities, Implementation
 
 from pyrit.agent.acp_connection import AcpConnection, RecordingTransport
-from pyrit.agent.environment import ExecutionEnvironment
-from pyrit.agent.harness import inference_environment
+from pyrit.agent.environment import AcpByteReader, CheckpointRestore, ExecutionSpec
+from pyrit.agent.environments.docker import DockerSession
+from pyrit.agent.harness import HarnessAdapterRegistry, inference_environment, launch_environment
 from pyrit.agent.inference_relay import InferenceLease, InferenceRelay
 from pyrit.agent.model_binding import ResolvedModelBinding
 from pyrit.models.agent_execution import AgentExecution, AgentPermissionPolicy, AgentProfile
@@ -269,8 +270,7 @@ class CheckpointProbe:
             [
                 await environment._inspect_owned_container_async() is None
                 for environment in [
-                    ExecutionEnvironment(execution=record, directory=self.root / str(record.id))
-                    for record in self.resources
+                    DockerSession(execution=record, directory=self.root / str(record.id)) for record in self.resources
                 ]
             ]
         )
@@ -286,7 +286,7 @@ class CheckpointProbe:
         phase: str,
         workspace: bytes | None = None,
         state: bytes | None = None,
-    ) -> tuple[ExecutionEnvironment, AcpConnection]:
+    ) -> tuple[DockerSession, AcpConnection]:
         profile = AgentProfile(
             harness_kind=self.harness, image=self.image, permission_policy=AgentPermissionPolicy.ALLOW_ONCE
         )
@@ -296,7 +296,7 @@ class CheckpointProbe:
         self.resources.append(record)
         directory = self.root / str(record.id)
         await asyncio.to_thread(directory.mkdir)
-        environment = ExecutionEnvironment(execution=record, directory=directory)
+        environment = DockerSession(execution=record, directory=directory)
         cleanup.push_async_callback(environment.close_async)
 
         async def inference_record_async(payload: dict[str, Any]) -> None:
@@ -316,45 +316,51 @@ class CheckpointProbe:
         self.leases.append(lease)
         self.relay.add(lease)
         cleanup.push_async_callback(self.relay.revoke_async, lease)
-        environment.runtime_environment = inference_environment(
-            kind=self.harness,
-            model=lease.binding.model,
-            wire_api=InferenceWireApi.CHAT_COMPLETIONS,
-            base_url=self.relay.url,
-            token=lease.token,
-        )
         image_info = json.loads(await environment._docker_async("image", "inspect", self.image))[0]
         if image_info["Config"].get("Volumes"):
             raise ValueError("Checkpoint proof refuses images declaring volumes before allocating a container")
         record.profile = record.profile.model_copy(update={"image": image_info["Id"]})
-        await environment.prepare_async()
+        restore = None
+        if workspace is not None and state is not None:
+            layout = HarnessAdapterRegistry.get_registry_singleton().get(self.harness).checkpoint_layout
+            if layout is None or layout.state_root != self.STATE_ROOTS[self.harness]:
+                raise ValueError("Installed adapter layout does not match the proof's native state root")
+            restore = CheckpointRestore(layout=layout, workspace=workspace, state=state)
+        spec = ExecutionSpec(
+            command=profile.command,
+            environment={
+                **launch_environment(kind=self.harness, home=environment.harness_home),
+                **inference_environment(
+                    kind=self.harness,
+                    model=lease.binding.model,
+                    wire_api=InferenceWireApi.CHAT_COMPLETIONS,
+                    base_url=self.relay.url,
+                    token=lease.token,
+                ),
+            },
+            credentials={},
+            restore=restore,
+        )
+        await environment.launch_async(spec)
         info = json.loads(await environment._docker_async("inspect", str(record.provider_id)))[0]
         if info.get("Mounts"):
             raise ValueError("Checkpoint proof requires a fixture image/container without volumes or mounts")
-        if state is not None:
-            uid, gid = await environment._docker_user_async(image_info["Config"].get("User", ""))
-            parents = await asyncio.to_thread(self._state_parent_archive, uid=uid, gid=gid)
-            await environment._docker_async("cp", "--archive", "-", f"{record.provider_id}:/", input_data=parents)
-        for data in (workspace, state):
-            if data is not None:
-                await environment._docker_async("cp", "--archive", "-", f"{record.provider_id}:/", input_data=data)
-        process = await environment.launch_async()
-        if process.stdout is None or process.stdin is None or process.stderr is None:
-            raise RuntimeError("Harness transport is unavailable")
-        stderr = asyncio.create_task(self._drain_async(stream=process.stderr, phase=phase))
+        stderr = asyncio.create_task(self._drain_async(stream=environment.stderr, phase=phase))
         cleanup.push_async_callback(self._join_stderr_async, environment=environment, task=stderr)
 
         async def capture_async(direction: str, payload: dict[str, Any]) -> None:
             self.events.append({"phase": phase, "direction": direction, "payload": payload})
 
         connection = AcpConnection(
-            transport=RecordingTransport(reader=process.stdout, writer=process.stdin, record=capture_async),
+            transport=RecordingTransport(
+                reader=environment.acp_reader, writer=environment.acp_writer, record=capture_async
+            ),
             permission_policy=AgentPermissionPolicy.ALLOW_ONCE,
         )
         cleanup.push_async_callback(connection.close_async)
         return environment, connection
 
-    async def _stop_async(self, environment: ExecutionEnvironment) -> None:
+    async def _stop_async(self, environment: DockerSession) -> None:
         info = await environment._inspect_owned_container_async()
         if info is None:
             raise RuntimeError("Owned container disappeared before capture")
@@ -382,7 +388,7 @@ class CheckpointProbe:
             if response.status_code != 401:
                 raise ValueError("Original execution authority survived checkpoint capture")
 
-    async def _capture_async(self, *, environment: ExecutionEnvironment, path: str) -> bytes:
+    async def _capture_async(self, *, environment: DockerSession, path: str) -> bytes:
         raw = await environment._docker_archive_async(path=path, maximum_bytes=self.MAX_ARCHIVE_BYTES)
         return await asyncio.to_thread(self._portable_archive, raw=raw, root=path)
 
@@ -420,18 +426,6 @@ class CheckpointProbe:
         if len(result) > self.MAX_ARCHIVE_BYTES or any(lease.token.encode() in result for lease in self.leases):
             raise ValueError("Checkpoint is oversized or contains an execution relay credential")
         return result
-
-    def _state_parent_archive(self, *, uid: int, gid: int) -> bytes:
-        home = PurePosixPath("home/agent")
-        state = PurePosixPath(self.STATE_ROOTS[self.harness].lstrip("/"))
-        parents = [path for path in reversed(state.parents) if path != home and path.is_relative_to(home)]
-        output = io.BytesIO()
-        with tarfile.open(fileobj=output, mode="w") as archive:
-            for path in parents:
-                entry = tarfile.TarInfo(str(path))
-                entry.type, entry.mode, entry.uid, entry.gid = tarfile.DIRTYPE, 0o700, uid, gid
-                archive.addfile(entry)
-        return output.getvalue()
 
     @classmethod
     def _read_saved(cls, *, path: Path, expected: dict[str, Any]) -> bytes:
@@ -504,12 +498,12 @@ class CheckpointProbe:
             "execution_id": str(environment.execution.id),
         }
 
-    async def _drain_async(self, *, stream: asyncio.StreamReader, phase: str) -> None:
+    async def _drain_async(self, *, stream: AcpByteReader, phase: str) -> None:
         while data := await stream.read(65536):
             self.stderr[phase] = (self.stderr.get(phase, "") + data.decode(errors="replace"))[-65536:]
 
     @staticmethod
-    async def _join_stderr_async(*, environment: ExecutionEnvironment, task: asyncio.Task[None]) -> None:
+    async def _join_stderr_async(*, environment: DockerSession, task: asyncio.Task[None]) -> None:
         await environment.close_async()
         await asyncio.wait_for(task, timeout=15)
 
