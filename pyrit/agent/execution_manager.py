@@ -94,6 +94,8 @@ class _LiveExecution:
 class AgentExecutionManager:
     """Own resources, not attack decisions. One manager exclusively owns its storage directory."""
 
+    MAX_ERROR_CHARS = 2048
+
     def __init__(self, *, root: Path, max_executions: int = 4) -> None:
         """
         Configure storage and capacity without acquiring resources.
@@ -254,6 +256,11 @@ class AgentExecutionManager:
             if existing:
                 if existing.interactive != interactive:
                     raise ValueError("Execution interaction mode cannot change within a conversation")
+                if existing.state == AgentExecutionState.CLEANUP_FAILED and existing.id not in self._live:
+                    raise RuntimeError(
+                        f"Execution cleanup failed and cannot be retried here ({existing.cleanup_error}); "
+                        "start a new conversation"
+                    )
                 if existing.state != AgentExecutionState.IDLE:
                     raise RuntimeError(f"Execution is {existing.state.value}; close or start a new conversation")
                 if existing.session_id and existing.connection_state in (
@@ -380,7 +387,7 @@ class AgentExecutionManager:
             if turn.status == AgentTurnStatus.RUNNING:
                 turn.status = AgentTurnStatus.UNKNOWN
             record.connection_state = AgentConnectionState.FAILED
-            turn.error = self._redact(str(error), live.secrets)
+            turn.error = self._redact(self._describe_error(error), live.secrets)
             await self.close_execution_async(execution_id=record.id, reason="operation_failed")
             raise
         finally:
@@ -472,10 +479,10 @@ class AgentExecutionManager:
         async with asyncio.timeout(profile.startup_timeout_seconds):
             credentials = resolve_credential_values(credential_env=profile.credential_env)
             live.secrets = tuple(credentials.values())
-            if live.model_binding is not None:
-                await self._bind_inference_async(live)
             live.environment.reserve()
             await self.store.save_async(live.record)
+            if live.model_binding is not None:
+                await self._bind_inference_async(live)
             restore = None
             if live.restoration is not None:
                 checkpoint, workspace, state = live.restoration
@@ -611,6 +618,15 @@ class AgentExecutionManager:
                 record.capture_error = f"Evidence capture failed: {type(error).__name__}"
                 logger.exception("Agent evidence capture failed for %s", record.id)
                 raise
+
+    @classmethod
+    def _describe_error(cls, error: Exception) -> str:
+        # JSON-RPC errors carry their specifics in `data`; keep them with the recorded failure, bounded,
+        # because the text is harness-controlled.
+        data = getattr(error, "data", None)
+        details = data.get("details") if isinstance(data, dict) else None
+        text = f"{error}: {details}" if isinstance(details, str) and details else str(error)
+        return text[: cls.MAX_ERROR_CHARS]
 
     @staticmethod
     def _redact(text: str, secrets: tuple[str, ...]) -> str:

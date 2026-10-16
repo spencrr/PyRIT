@@ -114,6 +114,12 @@ agents = [
     "filelock>=3.20.3",
     "psutil>=7.2.1",
 ]
+# Serves a Microsoft Agent Framework agent over ACP so PyRIT can test it like any other harness.
+agent_framework = [
+    "agent-client-protocol>=0.12.1,<0.13",
+    "agent-framework-core>=1.22.0,<2",
+    "agent-framework-openai>=1.17.0,<2",
+]
 huggingface = [
     "sentencepiece>=0.2.0",
     "torch>=2.7.0",
@@ -159,6 +165,8 @@ a2a = [
 all = [
     "a2a-sdk>=1.1.5,<2",
     "agent-client-protocol>=0.12.1,<0.13",
+    "agent-framework-core>=1.22.0,<2",
+    "agent-framework-openai>=1.17.0,<2",
     "filelock>=3.20.3",
     "psutil>=7.2.1",
     "accelerate>=1.7.0",

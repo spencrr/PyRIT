@@ -22,7 +22,7 @@ from pyrit.agent.environment import (
 from pyrit.agent.environments.docker import DockerSession
 from pyrit.agent.environments.local import LocalSession
 from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
-from pyrit.models.agent_execution import AgentProfile, EnvironmentTemplate
+from pyrit.models.agent_execution import AgentProfile, EnvironmentTemplate, HarnessProfile
 from tests.unit.agent.session_helpers import create_container_async, execution, session_directory, spec_for
 
 
@@ -220,6 +220,43 @@ def test_template_validation_follows_provider_capabilities() -> None:
         validate_environment_template(EnvironmentTemplate(environment="local"))
     with pytest.raises(ValueError, match="unavailable"):
         validate_environment_template(EnvironmentTemplate(environment="aca_sandbox", image="x"))
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        EnvironmentTemplate(image="test", environment_settings={"pool": "blue"}),
+        EnvironmentTemplate(environment="local", local_execution_acknowledged=True, environment_settings={"x": 1}),
+    ],
+)
+def test_first_party_providers_reject_settings_they_would_ignore(template: EnvironmentTemplate) -> None:
+    with pytest.raises(ValueError, match="environment_settings"):
+        validate_environment_template(template)
+
+
+async def test_local_close_is_effect_idempotent(tmp_path: Path) -> None:
+    profile = AgentProfile(
+        environment="local",
+        local_execution_acknowledged=True,
+        artifact_paths=("missing.txt",),
+        command=("python", "-c", "import sys; sys.stdin.read()"),
+    )
+    record = execution(profile)
+    session = LocalSession(execution=record, directory=session_directory(tmp_path))
+    await session.launch_async(spec_for(profile))
+    await session.close_async()
+    assert len(record.artifact_errors) == 1
+    snapshot = record.model_dump(mode="json")
+    await session.close_async()
+    assert record.model_dump(mode="json") == snapshot
+
+
+@pytest.mark.parametrize("model", [AgentProfile, HarnessProfile])
+def test_retired_profile_fields_still_decode(model: type[AgentProfile] | type[HarnessProfile]) -> None:
+    extra = {"image": "test"} if model is AgentProfile else {}
+    decoded = model.model_validate({**extra, "use_github_cli_login": True})
+    assert not hasattr(decoded, "use_github_cli_login")
+    assert decoded.harness_kind == "copilot"
 
 
 def test_sessions_are_created_through_the_record_provider(tmp_path: Path) -> None:

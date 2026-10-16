@@ -13,6 +13,9 @@ from pyrit.models.agent_execution import AgentExecutionEvent
 from pyrit.models.messages.tool_content import FunctionCallContent, FunctionOutputContent
 from pyrit.models.target.agent_tool_evidence import AgentToolEvidence
 
+# ACP `_meta` is an unstructured implementation slot; only PyRIT's namespaced key carries trusted tool identity.
+TOOL_NAME_META_KEY = "pyrit.tool_name"
+
 
 @dataclass
 class _Call:
@@ -109,6 +112,10 @@ def project_agent_tools(
             calls[call_id] = _Call(first=event, ambiguous=True)
             continue
         name, arguments = update.get("name"), update.get("rawInput")
+        meta = update.get("_meta")
+        if name is None and isinstance(meta, dict):
+            # PyRIT's own ACP hosts report the exact function that ran under a namespaced extension key.
+            name = meta.get(TOOL_NAME_META_KEY)
         if isinstance(name, str) and name.strip():
             if call.name and call.name != name:
                 call.ambiguous = True

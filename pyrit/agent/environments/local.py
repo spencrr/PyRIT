@@ -54,7 +54,9 @@ class LocalSession(SubprocessSession):
     async def close_async(self) -> None:
         """Stop the owned process tree, keep requested artifacts, and remove runtime directories."""
         await self._stop_owned_process_async(kill_group=True)
-        await self._collect_artifacts_async()
+        # Artifacts exist only while the workspace does; a repeated close must not invent errors.
+        if await asyncio.to_thread(self.workspace.exists):
+            await self._collect_artifacts_async()
         await asyncio.to_thread(self._remove_runtime_directories)
 
     async def _collect_artifacts_async(self) -> None:
@@ -89,13 +91,15 @@ class LocalProvider(ExecutionEnvironmentProvider):
 
     def validate_template(self, template: EnvironmentTemplate) -> None:
         """
-        Reject image-provided workspaces, which only a container image can supply.
+        Reject image-provided workspaces and settings this provider would silently ignore.
 
         Raises:
-            ValueError: The template requests an image workspace.
+            ValueError: The template requests an image workspace or carries provider settings.
         """
         if template.workspace_base == AgentWorkspaceBase.IMAGE:
             raise ValueError("An image-provided workspace requires a Docker environment")
+        if template.environment_settings:
+            raise ValueError("The local provider is configured through typed template fields, not environment_settings")
 
     def create_session(self, *, execution: AgentExecution, directory: Path) -> ExecutionSession:
         """

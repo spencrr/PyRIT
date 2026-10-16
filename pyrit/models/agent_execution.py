@@ -26,6 +26,7 @@ class AgentHarnessKind(str, Enum):
     """Launch configuration adapter, independent of the ACP transport."""
 
     COPILOT = "copilot"
+    AGENT_FRAMEWORK = "agent_framework"
     ACP = "acp"
 
 
@@ -48,11 +49,18 @@ def legacy_harness_kind(command: object) -> AgentHarnessKind:
     return AgentHarnessKind.COPILOT if executable in ("copilot", "copilot.exe", "copilot.cmd") else AgentHarnessKind.ACP
 
 
+# Fields removed from persisted recipes; historical records and startup files must still decode.
+_RETIRED_PROFILE_FIELDS = frozenset({"use_github_cli_login"})
+
+
 def _resolve_harness(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
-    values = dict(value)
-    defaults = {AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio")}
+    values = {key: item for key, item in value.items() if key not in _RETIRED_PROFILE_FIELDS}
+    defaults = {
+        AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio"),
+        AgentHarnessKind.AGENT_FRAMEWORK: ("python", "-m", "pyrit.agent.hosts.agent_framework_acp"),
+    }
     command = values.get("command", defaults[AgentHarnessKind.COPILOT])
     kind = values.get("harness_kind", legacy_harness_kind(command))
     if not isinstance(kind, str):
@@ -389,8 +397,13 @@ class AgentExecution(BaseModel):
     process_created_at: float | None = None
     image_id: str | None = None
     fixture_sha256: str | None = None
-    resource: dict[str, JsonValue] = Field(default_factory=dict)
-    provenance: dict[str, str] = Field(default_factory=dict)
+    resource: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Provider-owned durable handles needed to release the allocation after a restart.",
+    )
+    provenance: dict[str, str] = Field(
+        default_factory=dict, description="Provider-reported, display-safe origin facts such as image digests."
+    )
     agent_info: dict[str, JsonValue] = Field(default_factory=dict)
     turns: list[AgentTurn] = Field(default_factory=list)
     event_count: int = 0

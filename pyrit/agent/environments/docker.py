@@ -413,13 +413,17 @@ class DockerProvider(ExecutionEnvironmentProvider):
 
     def validate_template(self, template: EnvironmentTemplate) -> None:
         """
-        Require an image; the model already enforces this for the first-party name.
+        Require an image and reject settings this provider would silently ignore.
 
         Raises:
-            ValueError: No image is configured.
+            ValueError: No image is configured or the template carries provider settings.
         """
         if not template.image:
             raise ValueError("A Docker image is required")
+        if template.environment_settings:
+            raise ValueError(
+                "The Docker provider is configured through typed template fields, not environment_settings"
+            )
 
     def create_session(self, *, execution: AgentExecution, directory: Path) -> ExecutionSession:
         """

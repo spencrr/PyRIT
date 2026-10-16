@@ -95,17 +95,17 @@ class ExecutionSession(ABC):
     @property
     @abstractmethod
     def acp_reader(self) -> AcpByteReader:
-        """The harness's ACP output; available after a successful launch."""
+        """The harness's ACP output; raises ``RuntimeError`` before a successful launch."""
 
     @property
     @abstractmethod
     def acp_writer(self) -> AcpByteWriter:
-        """The harness's ACP input; available after a successful launch."""
+        """The harness's ACP input; raises ``RuntimeError`` before a successful launch."""
 
     @property
     @abstractmethod
     def stderr(self) -> AcpByteReader:
-        """The harness's diagnostic output; available after a successful launch."""
+        """The harness's diagnostic output; raises ``RuntimeError`` before a successful launch."""
 
     def reserve(self) -> None:
         """Record deterministic resource identifiers so a crash during allocation stays reconcilable."""
@@ -114,6 +114,9 @@ class ExecutionSession(ABC):
     async def inference_endpoint_async(self, *, relay_url: str) -> str:
         """
         Translate the backend relay URL into one the harness can reach.
+
+        This must not acquire resources: it runs before the record is persisted. A provider that
+        needs a forward or tunnel records the decision here and establishes it in ``launch_async``.
 
         Returns:
             str: The relay base URL inside the environment's network namespace.
@@ -264,20 +267,32 @@ class EnvironmentProviderRegistry:
             return [provider.info.model_copy(deep=True) for _, provider in sorted(self._providers.items())]
 
 
-def validate_environment_template(template: EnvironmentTemplate, *, require_consent: bool = True) -> None:
+def validate_template_with_provider(
+    provider: ExecutionEnvironmentProvider, template: EnvironmentTemplate, *, require_consent: bool = True
+) -> None:
     """
-    Validate a template against its installed provider; consent belongs to composition, not registration.
+    Validate a template against one provider instance; consent belongs to composition, not registration.
 
     Raises:
-        ValueError: The provider is unavailable, rejects the template, or lacks required consent.
+        ValueError: The provider rejects the template or required isolation consent is missing.
     """
-    provider = EnvironmentProviderRegistry.get_registry_singleton().get(template.environment)
     if require_consent and not provider.info.capabilities.isolated and not template.local_execution_acknowledged:
         raise ValueError(
             f"Environment provider '{template.environment}' is NOT sandboxed; "
             "set local_execution_acknowledged=True explicitly"
         )
     provider.validate_template(template)
+
+
+def validate_environment_template(template: EnvironmentTemplate, *, require_consent: bool = True) -> None:
+    """
+    Validate a template against its installed provider.
+
+    Raises:
+        ValueError: The provider is unavailable, rejects the template, or lacks required consent.
+    """
+    provider = EnvironmentProviderRegistry.get_registry_singleton().get(template.environment)
+    validate_template_with_provider(provider, template, require_consent=require_consent)
 
 
 def create_execution_session(*, execution: AgentExecution, directory: Path) -> ExecutionSession:

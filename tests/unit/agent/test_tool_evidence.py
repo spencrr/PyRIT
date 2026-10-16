@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from pyrit.agent.execution_manager import AgentExecutionManager
-from pyrit.agent.tool_evidence import project_agent_tools
+from pyrit.agent.tool_evidence import TOOL_NAME_META_KEY, project_agent_tools
 from pyrit.executor.attack import AttackScoringConfig, PromptSendingAttack
 from pyrit.memory import SQLiteMemory
 from pyrit.models import (
@@ -24,7 +24,7 @@ from pyrit.models import (
     ToolsCalled,
 )
 from pyrit.models.agent_execution import AgentExecution, AgentExecutionEvent, AgentProfile, AgentTurn, AgentTurnStatus
-from pyrit.models.messages.tool_content import validate_tool_conversation
+from pyrit.models.messages.tool_content import FunctionCallContent, validate_tool_conversation
 from pyrit.prompt_normalizer import PromptNormalizer
 from pyrit.prompt_target import AgentTarget
 from pyrit.score import MessageToolCallScorer
@@ -99,6 +99,36 @@ def test_projects_only_supported_evidence(
         piece = projection.messages[-1].get_piece()
         assert ToolExecutionMetadata.from_metadata(metadata=piece.prompt_metadata).invoked
         assert piece.prompt_metadata["agent_tool_evidence"]["event_sequence"] == 2
+
+
+def test_arguments_reported_on_the_final_update_are_accepted() -> None:
+    execution_id, turn_id = uuid4(), uuid4()
+    events = tool_events(execution_id=execution_id, turn_id=turn_id)
+    first, last = (event.payload["params"]["update"] for event in events)
+    del first["rawInput"]
+    last["rawInput"] = {"path": "receipt.json"}
+    projection = project_agent_tools(events=events, execution_id=execution_id, turn_id=turn_id, conversation_id="one")
+    assert not projection.omitted
+    call = FunctionCallContent.model_validate_json(projection.messages[0].get_piece().original_value)
+    assert json.loads(call.arguments) == {"path": "receipt.json"}
+
+
+def test_meta_name_identifies_tools_without_inferring_from_title() -> None:
+    execution_id, turn_id = uuid4(), uuid4()
+    events = tool_events(execution_id=execution_id, turn_id=turn_id, name=None)
+    first = events[0].payload["params"]["update"]
+    first["title"] = "Friendly title that must not be trusted"
+    first["_meta"] = {TOOL_NAME_META_KEY: "write_file"}
+    projection = project_agent_tools(events=events, execution_id=execution_id, turn_id=turn_id, conversation_id="one")
+    assert not projection.omitted
+    call = FunctionCallContent.model_validate_json(projection.messages[0].get_piece().original_value)
+    assert call.name == "write_file"
+    for untrusted in ({"name": "write_file"}, {TOOL_NAME_META_KEY: 7}):
+        first["_meta"] = untrusted
+        projection = project_agent_tools(
+            events=events, execution_id=execution_id, turn_id=turn_id, conversation_id="one"
+        )
+        assert projection.omitted == {"call-1": "name_not_reported"}
 
 
 @pytest.mark.parametrize("policy", ["operator_deny", "timeout_deny", "cancelled"])

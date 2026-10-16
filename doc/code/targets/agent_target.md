@@ -277,11 +277,58 @@ the harness from discovering configuration in ancestor directories. Use a
 results root outside source checkouts when inherited project configuration would
 affect the test; local execution is not a sandbox.
 
+### Testing a Microsoft Agent Framework agent
+
+Agent Framework does not speak ACP, so PyRIT ships a small host that serves any
+`SupportsAgentRun` over ACP stdio: `python -m pyrit.agent.hosts.agent_framework_acp`
+(install the `agent_framework` extra). The host process is the system under test:
+it owns the agent, its session, and its tools; PyRIT remains the ACP client. Select
+`harness_kind="agent_framework"`.
+
+```bash
+uv sync --extra agents --extra agent_framework
+```
+
+```python
+AgentTargetConfiguration(
+    model_binding=ModelBinding(model="gpt-4.1", target_registry_name="openai_chat"),
+    harness_profile=HarnessProfile(
+        harness_kind="agent_framework",
+        command=("python", "-m", "pyrit.agent.hosts.agent_framework_acp", "--agent", "my_package.agents:build"),
+        permission_policy="allow_once",
+    ),
+    environment_template=EnvironmentTemplate(image="my-agent-image:1"),
+)
+```
+
+`--agent module:function` names a factory `(cwd: str) -> SupportsAgentRun`; the module
+must be importable inside the execution environment. Without `--agent`, the host builds a
+default agent on an OpenAI-compatible client with `read_file`, `write_file`, and
+`list_directory` tools confined to the working directory, plus `run_command`, which starts
+a shell in the working directory but is **not** confined by it; the execution environment
+is the boundary, as for any harness. The default agent takes its model from a PyRIT model
+binding, so a profile without one is rejected at configuration time unless it names a
+custom `--agent`. Under BYOK the adapter supplies `OPENAI_BASE_URL`, `OPENAI_API_KEY` (the
+execution-scoped relay credential), `OPENAI_MODEL`, and `PYRIT_WIRE_API`; the default agent
+picks the Responses or Chat Completions client from the bound wire API. A custom factory
+should build its client from the same variables, or it will bypass the relay. Chat
+Completions is verified end to end with synthetic streamed inference, including fragmented
+tool-call arguments; the Responses client path is wired but not covered by tests.
+
+The host reports each executed function's exact name under the namespaced
+`_meta["pyrit.tool_name"]` key of its `tool_call` update, and the complete arguments as
+`rawInput` on the final `tool_call_update` once the model has finished streaming them, so
+the canonical tool projection names these calls precisely instead of inferring from titles.
+Agent failures surface as JSON-RPC errors, which PyRIT records as an operation failure and
+closes the execution; they are never presented as a reply. Session loading, modes, MCP
+attachment, and authentication methods are refused explicitly.
+
 ### Installing another harness adapter
 
 `HarnessAdapter` and `HarnessAdapterRegistry` in `pyrit.agent.harness` separate
-trusted implementation code from inert profiles. Copilot and generic ACP are the
-built-in registrations, not special branches in model binding or provisioning.
+trusted implementation code from inert profiles. Copilot, the Agent Framework host, and
+generic ACP are the built-in registrations, not special branches in model binding or
+provisioning.
 A trusted Python initializer can register an additional adapter before composing
 targets that select its name in `harness_kind`.
 

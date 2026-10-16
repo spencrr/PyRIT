@@ -51,6 +51,15 @@ class HarnessAdapter(ABC):
     def launch_environment(self, *, home: str) -> dict[str, str]:
         """Supply harness-specific settings for its private home."""
 
+    def validate_profile(self, *, harness: HarnessProfile, target_backed: bool) -> None:
+        """
+        Reject profiles this adapter cannot run, before any target or execution exists.
+
+        Raises:
+            ValueError: The profile is incompatible with this adapter.
+        """
+        return
+
     def inference_environment(
         self,
         *,
@@ -115,6 +124,48 @@ class _CopilotAdapter(HarnessAdapter):
         }
 
 
+class _AgentFrameworkAdapter(HarnessAdapter):
+    """PyRIT's ACP host for Microsoft Agent Framework agents; the host process owns the agent and its tools."""
+
+    @property
+    def info(self) -> HarnessAdapterInfo:
+        return HarnessAdapterInfo(
+            name="agent_framework",
+            display_name="Agent Framework (PyRIT ACP host)",
+            default_command=("python", "-m", "pyrit.agent.hosts.agent_framework_acp"),
+            wire_apis=(InferenceWireApi.CHAT_COMPLETIONS, InferenceWireApi.RESPONSES),
+            # OPENAI_API_KEY is the relay channel and therefore reserved; a custom agent using its own
+            # provider credentials references other names, which BYOK still refuses to forward.
+            native_model_credentials=("AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"),
+            reserved_environment=("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL", "PYRIT_WIRE_API"),
+        )
+
+    def launch_environment(self, *, home: str) -> dict[str, str]:
+        return {}
+
+    def validate_profile(self, *, harness: HarnessProfile, target_backed: bool) -> None:
+        if not target_backed and "--agent" not in harness.command:
+            raise ValueError(
+                "The default Agent Framework agent takes its model from a PyRIT model binding; "
+                "bind a model target or supply --agent module:function for an agent with its own model access"
+            )
+
+    def inference_environment(
+        self,
+        *,
+        model: str,
+        wire_api: InferenceWireApi,
+        base_url: str,
+        token: str,
+    ) -> dict[str, str]:
+        return {
+            "OPENAI_BASE_URL": base_url,
+            "OPENAI_API_KEY": token,
+            "OPENAI_MODEL": model,
+            "PYRIT_WIRE_API": wire_api.value,
+        }
+
+
 class _GenericAcpAdapter(HarnessAdapter):
     @property
     def info(self) -> HarnessAdapterInfo:
@@ -133,7 +184,7 @@ class HarnessAdapterRegistry:
     def __init__(self) -> None:
         """Create a registry with the built-in adapters."""
         self._lock = RLock()
-        adapters = (_CopilotAdapter(), _GenericAcpAdapter())
+        adapters = (_CopilotAdapter(), _AgentFrameworkAdapter(), _GenericAcpAdapter())
         self._adapters: dict[str, HarnessAdapter] = {adapter.info.name: adapter for adapter in adapters}
 
     @classmethod
@@ -205,6 +256,7 @@ def validate_harness_authentication(*, harness: HarnessProfile, target_backed: b
         ValueError: Settings override execution configuration or conflict with the adapter.
     """
     adapter = HarnessAdapterRegistry.get_registry_singleton().get(harness.harness_kind)
+    adapter.validate_profile(harness=harness, target_backed=target_backed)
     reserved = HarnessAdapter.EXECUTION_RESERVED_ENVIRONMENT | {
         name.upper() for name in adapter.info.reserved_environment
     }

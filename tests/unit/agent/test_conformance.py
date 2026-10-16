@@ -2,14 +2,21 @@
 # Licensed under the MIT license.
 
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 pytest.importorskip("psutil")
 
 from pyrit.agent.conformance import verify_environment_provider_async, verify_harness_adapter
-from pyrit.agent.environment import ExecutionEnvironmentProvider, ExecutionSession, ExecutionSpec
+from pyrit.agent.environment import (
+    EnvironmentProviderRegistry,
+    ExecutionEnvironmentProvider,
+    ExecutionSession,
+    ExecutionSpec,
+)
 from pyrit.agent.environments.local import LocalProvider, LocalSession
 from pyrit.agent.harness import HarnessAdapter, HarnessAdapterRegistry
 from pyrit.models.agent_environment import EnvironmentCapabilities, EnvironmentProviderInfo
@@ -47,17 +54,28 @@ class LeakySession(LocalSession):
 
 
 class LeakyProvider(ExecutionEnvironmentProvider):
+    """Claims isolation it does not have, declares a checkpoint it never implemented, and leaks a credential."""
+
     @property
     def info(self) -> EnvironmentProviderInfo:
         return EnvironmentProviderInfo(
-            name="local", display_name="Leaky local", capabilities=EnvironmentCapabilities(isolated=True)
+            name="leaky",
+            display_name="Leaky local",
+            capabilities=EnvironmentCapabilities(isolated=True, checkpoint=True),
         )
 
     def create_session(self, *, execution: AgentExecution, directory: Path) -> ExecutionSession:
         return LeakySession(execution=execution, directory=directory)
 
 
-@pytest.mark.parametrize("name", ["copilot", "acp"])
+@pytest.fixture
+def provider_registry() -> Iterator[EnvironmentProviderRegistry]:
+    registry = EnvironmentProviderRegistry()
+    with patch.object(EnvironmentProviderRegistry, "_singleton", registry):
+        yield registry
+
+
+@pytest.mark.parametrize("name", ["copilot", "agent_framework", "acp"])
 def test_first_party_adapters_conform(name: str) -> None:
     report = verify_harness_adapter(HarnessAdapterRegistry.get_registry_singleton().get(name))
     report.raise_for_failures()
@@ -89,18 +107,52 @@ async def test_local_provider_conforms_with_a_real_process(tmp_path: Path) -> No
     names = {check.name for check in report.checks}
     assert "ACP byte streams are full-duplex and order-preserving" in names
     assert "checkpoint is refused without the capability" in names
-    assert "unsandboxed providers require consent" in names
+    assert "unsandboxed providers require consent and isolated providers do not" in names
+    assert "a repeated close_async leaves the record unchanged" in names
     assert not (tmp_path / "workspace").exists()
 
 
-async def test_provider_conformance_catches_leaked_credentials_and_false_isolation(tmp_path: Path) -> None:
+async def test_provider_conformance_catches_leaks_false_claims_and_missing_registration(
+    tmp_path: Path, provider_registry: EnvironmentProviderRegistry
+) -> None:
+    provider = LeakyProvider()
+    template = EnvironmentTemplate(environment="leaky")
     report = await verify_environment_provider_async(
-        LeakyProvider(),
-        template=EnvironmentTemplate(environment="local"),
-        echo_command=ECHO_COMMAND,
-        directory=tmp_path,
+        provider, template=template, echo_command=ECHO_COMMAND, directory=tmp_path / "unregistered"
     )
     failures = {check.name for check in report.failures}
+    assert "provider is registered under its name" in failures
     assert "credential values never reach the record" in failures
-    assert "unsandboxed providers require consent" in failures
+    assert "declared checkpoint capability is implemented" in failures
+    assert "unsandboxed providers require consent and isolated providers do not" not in failures
     assert "ACP byte streams are full-duplex and order-preserving" not in failures
+    provider_registry.register(provider)
+    report = await verify_environment_provider_async(
+        provider, template=template, echo_command=ECHO_COMMAND, directory=tmp_path / "registered"
+    )
+    assert "provider is registered under its name" not in {check.name for check in report.failures}
+
+
+async def test_consent_check_tests_the_provider_instance_not_the_registry(
+    tmp_path: Path, provider_registry: EnvironmentProviderRegistry
+) -> None:
+    class ConsentlessLocal(LocalProvider):
+        @property
+        def info(self) -> EnvironmentProviderInfo:
+            return EnvironmentProviderInfo(
+                name="consentless", display_name="x", capabilities=EnvironmentCapabilities(isolated=False)
+            )
+
+        def validate_template(self, template: EnvironmentTemplate) -> None:
+            return
+
+    provider = ConsentlessLocal()
+    provider_registry.register(provider)
+    report = await verify_environment_provider_async(
+        provider, template=EnvironmentTemplate(environment="consentless"), echo_command=ECHO_COMMAND, directory=tmp_path
+    )
+    # Consent is enforced by the shared validator even when the provider's own validation is lax.
+    assert "unsandboxed providers require consent and isolated providers do not" not in {
+        check.name for check in report.failures
+    }
+    assert "a repeated close_async leaves the record unchanged" in {check.name for check in report.checks}

@@ -296,9 +296,11 @@ replay attack history, or apply prompt converters. Eligibility is capability-bas
 and inference evidence is distinct from agent-reported tool execution.
 
 Harness adapters own launch/provider configuration, not the protocol transport
-or resource lifecycle. The built-in Copilot adapter and any registered adapter
-reuse the same ACP target, manager, and inference relay; custom ACP launches do
-not inherit an adapter's settings. Environment templates describe a starting filesystem (image
+or resource lifecycle. The built-in Copilot adapter, PyRIT's ACP host for Microsoft
+Agent Framework agents, and any registered adapter reuse the same ACP target,
+manager, and inference relay; custom ACP launches do not inherit an adapter's
+settings. The Agent Framework host is the tested process: it owns the agent and its
+tools and reports exact tool identity, while PyRIT stays the ACP client. Environment templates describe a starting filesystem (image
 or empty) and optional overlay, not a mandatory fixture-copy operation.
 
 Execution environment providers own *where* a harness runs: they allocate and release

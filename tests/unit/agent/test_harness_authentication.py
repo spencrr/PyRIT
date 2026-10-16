@@ -63,6 +63,25 @@ def test_reserved_names_follow_the_selected_adapter() -> None:
         )
 
 
+def test_agent_framework_default_agent_requires_a_model_binding() -> None:
+    default = HarnessProfile(harness_kind="agent_framework")
+    with pytest.raises(ValueError, match="model binding"):
+        validate_harness_authentication(harness=default, target_backed=False)
+    validate_harness_authentication(harness=default, target_backed=True)
+    custom = HarnessProfile(
+        harness_kind="agent_framework",
+        command=("python", "-m", "pyrit.agent.hosts.agent_framework_acp", "--agent", "team.agents:build"),
+        credential_env=("AZURE_OPENAI_API_KEY",),
+    )
+    validate_harness_authentication(harness=custom, target_backed=False)
+    with pytest.raises(ValueError, match="native model credentials"):
+        validate_harness_authentication(harness=custom, target_backed=True)
+    with pytest.raises(ValueError, match="override execution"):
+        validate_harness_authentication(
+            harness=custom.model_copy(update={"credential_env": ("OPENAI_API_KEY",)}), target_backed=False
+        )
+
+
 def test_authentication_method_is_not_silently_dropped() -> None:
     harness = HarnessProfile(authentication_method="copilot-login")
     validate_harness_authentication(harness=harness, target_backed=False)

@@ -17,10 +17,11 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from pyrit.agent.environment import (
+    EnvironmentProviderRegistry,
     ExecutionEnvironmentProvider,
     ExecutionSession,
     ExecutionSpec,
-    validate_environment_template,
+    validate_template_with_provider,
 )
 from pyrit.agent.harness import HarnessAdapter
 from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
@@ -155,12 +156,8 @@ async def verify_environment_provider_async(
     recorder = _Recorder(f"environment provider '{provider.info.name}'")
     info = provider.info
     recorder.check("template names this provider", template.environment == info.name, "template/provider mismatch")
-    consent_required = not info.capabilities.isolated
-    try:
-        validate_environment_template(template.model_copy(update={"local_execution_acknowledged": False}))
-        recorder.check("unsandboxed providers require consent", not consent_required, "consent was not enforced")
-    except ValueError:
-        recorder.check("unsandboxed providers require consent", consent_required, "isolated provider demanded consent")
+    _verify_registration(recorder, provider)
+    _verify_consent(recorder, provider, template)
     profile = conformance_profile(template, command=echo_command)
     record = AgentExecution(
         owner_id="conformance", conversation_id="conformance", target_id="conformance", profile=profile
@@ -200,19 +197,68 @@ async def verify_environment_provider_async(
     finally:
         async with asyncio.timeout(timeout_seconds):
             await recorder.attempt_async("close_async releases resources", session.close_async)
-            await recorder.attempt_async("close_async is idempotent", session.close_async)
-    if not info.capabilities.checkpoint:
-        try:
-            await session.capture_checkpoint_async(layout=_conformance_layout(), secrets=())
-        except NotImplementedError:
-            recorder.check("checkpoint is refused without the capability", True)
-        except Exception as error:  # noqa: BLE001 - any other error means the refusal is not explicit
-            recorder.check("checkpoint is refused without the capability", False, f"{type(error).__name__}: {error}")
-        else:
-            recorder.check(
-                "checkpoint is refused without the capability", False, "capture returned without the capability"
-            )
+            before = record.model_dump(mode="json")
+            if await recorder.attempt_async("close_async is idempotent", session.close_async):
+                recorder.check(
+                    "a repeated close_async leaves the record unchanged",
+                    record.model_dump(mode="json") == before,
+                    "the second close altered the record (for example new artifact errors)",
+                )
+    await _verify_checkpoint_capability_async(recorder, session, declared=info.capabilities.checkpoint)
     return recorder.report
+
+
+def _verify_registration(recorder: _Recorder, provider: ExecutionEnvironmentProvider) -> None:
+    try:
+        registered = EnvironmentProviderRegistry.get_registry_singleton().get(provider.info.name)
+    except ValueError:
+        recorder.check("provider is registered under its name", False, "register it before creating targets")
+        return
+    recorder.check(
+        "provider is registered under its name",
+        type(registered) is type(provider),
+        f"a different provider type owns the name '{provider.info.name}'",
+    )
+
+
+def _verify_consent(recorder: _Recorder, provider: ExecutionEnvironmentProvider, template: EnvironmentTemplate) -> None:
+    unconsented = template.model_copy(update={"local_execution_acknowledged": False})
+    consent_required = not provider.info.capabilities.isolated
+    try:
+        validate_template_with_provider(provider, unconsented)
+    except ValueError as error:
+        recorder.check(
+            "unsandboxed providers require consent and isolated providers do not",
+            consent_required and "NOT sandboxed" in str(error),
+            f"validation failed for another reason or an isolated provider demanded consent: {error}",
+        )
+        return
+    recorder.check(
+        "unsandboxed providers require consent and isolated providers do not",
+        not consent_required,
+        "an unsandboxed provider accepted a template without consent",
+    )
+
+
+async def _verify_checkpoint_capability_async(
+    recorder: _Recorder, session: ExecutionSession, *, declared: bool
+) -> None:
+    implemented = type(session).capture_checkpoint_async is not ExecutionSession.capture_checkpoint_async
+    if declared:
+        recorder.check(
+            "declared checkpoint capability is implemented",
+            implemented,
+            "capabilities.checkpoint is True but capture_checkpoint_async is the refusing base implementation",
+        )
+        return
+    try:
+        await session.capture_checkpoint_async(layout=_conformance_layout(), secrets=())
+    except NotImplementedError:
+        recorder.check("checkpoint is refused without the capability", True)
+    except Exception as error:  # noqa: BLE001 - any other error means the refusal is not explicit
+        recorder.check("checkpoint is refused without the capability", False, f"{type(error).__name__}: {error}")
+    else:
+        recorder.check("checkpoint is refused without the capability", False, "capture returned without the capability")
 
 
 async def _verify_relay_translation_async(recorder: _Recorder, session: ExecutionSession) -> None:
@@ -223,16 +269,20 @@ async def _verify_relay_translation_async(recorder: _Recorder, session: Executio
             endpoint = await session.inference_endpoint_async(relay_url=relay_url)
         except ValueError:
             continue
-        if isinstance(endpoint, str) and endpoint.startswith("http"):
-            accepted.append(relay_url)
-        else:
+        # Third-party code may not honor the annotation; verify the runtime value.
+        if not _is_http_url(endpoint):
             recorder.check("inference_endpoint_async returns a URL", False, f"got {endpoint!r} for {relay_url}")
             return
+        accepted.append(relay_url)
     recorder.check(
         "inference_endpoint_async translates at least one relay address and rejects others with ValueError",
         bool(accepted),
         "neither a loopback nor a routable relay URL was accepted",
     )
+
+
+def _is_http_url(value: object) -> bool:
+    return isinstance(value, str) and value.startswith("http")
 
 
 async def _verify_streams_async(recorder: _Recorder, session: ExecutionSession) -> None:

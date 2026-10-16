@@ -3,6 +3,7 @@
 
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,9 +11,11 @@ import pytest
 pytest.importorskip("acp")
 
 from pyrit.agent.acp_connection import AcpConnection
-from pyrit.agent.environment import ExecutionSession
+from pyrit.agent.environment import EnvironmentProviderRegistry, ExecutionSession
+from pyrit.agent.environments.local import LocalProvider
 from pyrit.agent.execution_manager import AgentExecutionManager
-from pyrit.models.agent_execution import AgentExecutionState, AgentProfile, AgentTurnStatus
+from pyrit.models.agent_environment import EnvironmentProviderInfo
+from pyrit.models.agent_execution import AgentExecutionState, AgentProfile, AgentTurnStatus, EnvironmentTemplate
 
 
 @pytest.fixture
@@ -184,6 +187,61 @@ async def test_store_ownership_and_interrupted_reconciliation(
             assert manager.records[record.id].state == AgentExecutionState.CLOSED
             with pytest.raises(Timeout):
                 await AgentExecutionManager(root=tmp_path).start_async()
+
+
+async def test_missing_provider_is_reported_not_claimed_released(tmp_path: Path) -> None:
+    from pyrit.models.agent_execution import AgentExecution
+
+    record = AgentExecution(
+        owner_id=str(tmp_path),
+        conversation_id="one",
+        target_id="target",
+        profile=AgentProfile(environment="team_pool", image="x", environment_settings={"pool": "blue"}),
+        state=AgentExecutionState.IDLE,
+    )
+    manager = AgentExecutionManager(root=tmp_path)
+    await manager.store.save_async(record)
+    registry = EnvironmentProviderRegistry()
+    with patch.object(EnvironmentProviderRegistry, "_singleton", registry):
+        async with manager:
+            reloaded = manager.records[record.id]
+            assert reloaded.state == AgentExecutionState.CLEANUP_FAILED
+            assert reloaded.cleanup_error and "team_pool" in reloaded.cleanup_error
+            assert "resources may remain allocated" in reloaded.cleanup_error
+            assert not manager.has_live_executions
+            await manager.close_execution_async(execution_id=record.id)
+            send: dict[str, Any] = {
+                "profile": record.profile,
+                "target_id": "target",
+                "conversation_id": "one",
+                "request_id": "2",
+                "prompt": "again",
+            }
+            with pytest.raises(ValueError, match="unavailable"):
+                await manager.send_async(**send, has_history=True)
+
+            class TeamPool(LocalProvider):
+                @property
+                def info(self) -> EnvironmentProviderInfo:
+                    return EnvironmentProviderInfo(name="team_pool", display_name="Team pool")
+
+                def validate_template(self, template: EnvironmentTemplate) -> None:
+                    return
+
+            # Installing the provider later does not resurrect a record whose cleanup already failed.
+            registry.register(TeamPool())
+            with pytest.raises(RuntimeError, match="cleanup failed"):
+                await manager.send_async(**send, has_history=True)
+
+
+def test_recorded_errors_keep_json_rpc_details_within_a_bound() -> None:
+    class RpcError(Exception):
+        data = {"details": "x" * 10_000}
+
+    described = AgentExecutionManager._describe_error(RpcError("Internal error"))
+    assert described.startswith("Internal error: xxx")
+    assert len(described) == AgentExecutionManager.MAX_ERROR_CHARS
+    assert AgentExecutionManager._describe_error(ValueError("plain")) == "plain"
 
 
 async def test_cancel_during_provisioning_does_not_dispatch_and_next_turn_can_continue(
