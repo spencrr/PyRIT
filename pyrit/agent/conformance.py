@@ -177,10 +177,7 @@ async def verify_environment_provider_async(
                 f"{name} is unavailable before launch", False, "streams must raise RuntimeError before launch"
             )
     session.reserve()
-    await recorder.attempt_async(
-        "inference_endpoint_async accepts a reachable relay URL",
-        lambda: session.inference_endpoint_async(relay_url="http://relay.conformance.invalid:8021/v1"),
-    )
+    await _verify_relay_translation_async(recorder, session)
     secret = secrets.token_hex(24)
     spec = ExecutionSpec(
         command=echo_command,
@@ -216,6 +213,26 @@ async def verify_environment_provider_async(
                 "checkpoint is refused without the capability", False, "capture returned without the capability"
             )
     return recorder.report
+
+
+async def _verify_relay_translation_async(recorder: _Recorder, session: ExecutionSession) -> None:
+    # Providers legitimately differ: a container needs a routable host, a remote sandbox forwards loopback.
+    accepted: list[str] = []
+    for relay_url in ("http://127.0.0.1:8021/v1", "http://relay.conformance.invalid:8021/v1"):
+        try:
+            endpoint = await session.inference_endpoint_async(relay_url=relay_url)
+        except ValueError:
+            continue
+        if isinstance(endpoint, str) and endpoint.startswith("http"):
+            accepted.append(relay_url)
+        else:
+            recorder.check("inference_endpoint_async returns a URL", False, f"got {endpoint!r} for {relay_url}")
+            return
+    recorder.check(
+        "inference_endpoint_async translates at least one relay address and rejects others with ValueError",
+        bool(accepted),
+        "neither a loopback nor a routable relay URL was accepted",
+    )
 
 
 async def _verify_streams_async(recorder: _Recorder, session: ExecutionSession) -> None:
