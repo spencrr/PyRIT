@@ -425,6 +425,15 @@ only resources they can prove they own (labels, deterministic names). A record w
 provider is no longer installed at startup is marked `cleanup_failed` with the
 reason, rather than silently treated as released.
 
+Both seams have executable contracts in `pyrit.agent.conformance`.
+`verify_harness_adapter(adapter)` checks declarations against emitted settings
+without running anything. `verify_environment_provider_async(provider, template=...,
+echo_command=..., directory=...)` drives one real allocation with a byte-echo command
+(for example `("cat",)` in a POSIX image) and checks streams, secret handling,
+idempotent release, and capability honesty. Each returns a report naming every
+broken promise; call `raise_for_failures()` from a test. PyRIT runs them against the
+first-party implementations, with a real container in the integration suite.
+
 ### Authentication boundaries
 
 The native tools-off `GitHubCopilotTarget` retains its existing precedence:
