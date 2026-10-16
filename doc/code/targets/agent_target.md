@@ -210,7 +210,7 @@ assume the model selected by one harness is available in another.
 ## BYOK through an existing PyRIT target
 
 ```text
-PyRIT -- ACP --> Copilot / OpenCode
+PyRIT -- ACP --> Copilot / registered harness
                     |
                     | standard model API + execution-scoped credential
                     v
@@ -237,18 +237,19 @@ An adapter claiming compatibility is not proof that the selected model reliably
 uses tools: test the actual model/harness combination.
 
 Provider configuration uses an explicit harness adapter, not the executable's
-filename. Copilot supports the existing wire APIs; OpenCode currently supports
-Chat Completions. Custom ACP commands use harness-managed model access until a
-provider-configuration adapter exists. This is separate from source-target
-eligibility, which remains capability-driven.
+filename. The built-in Copilot adapter supports the existing wire APIs; a
+registered adapter declares its own. Custom ACP commands use harness-managed
+model access until a provider-configuration adapter exists. This is separate
+from source-target eligibility, which remains capability-driven.
 
 ### Harness and workspace selection
 
-`HarnessProfile(harness_kind="opencode")` defaults to `("opencode", "acp")`.
-`harness_kind="copilot"` defaults to the Copilot ACP command. Either allows an
+`harness_kind="copilot"` defaults to the Copilot ACP command and allows an
 explicit executable path. `harness_kind="acp"` requires a command and passes no
-Copilot/OpenCode configuration. Older custom commands stay generic ACP; they
-are not silently opted into a new adapter.
+Copilot configuration. A registered adapter's name also requires an explicit
+command in Python and YAML; Create Target pre-fills the adapter's declared
+default. Older custom commands stay generic ACP; they are not silently opted
+into a new adapter.
 
 The harness owns provider configuration and private-home settings. The
 environment owns process/container placement and filesystem preparation. For
@@ -265,14 +266,9 @@ are resolved from the stopped image's account files; images without those files
 should specify a numeric `USER uid:gid`. Image mode retains the existing workspace
 root's permissions, so the image must make that root writable where required.
 
-OpenCode's inline configuration sets permission handling to `ask`, disables
-automatic sharing/updates, and routes both main and small-model inference through
-the bound target. PyRIT answers the permission requests it receives with its
-configured policy. Workspace/agent configuration and plugins can change which
-requests OpenCode raises; this is not an enforcement boundary or tool allowlist.
-The current OpenCode adapter advertises a 128,000-token context and 8,192-token
-output limit rather than discovering model limits from the source target. Verify
-compatibility with smaller-limit models before evaluation.
+PyRIT answers the permission requests it receives with its configured policy.
+Workspace/agent configuration and plugins can change which requests a harness
+raises; this is not an enforcement boundary or tool allowlist.
 
 Harness-managed access forwards only explicitly selected credential references;
 no backend login is implicitly copied. Configure these under **Launch and
@@ -284,18 +280,56 @@ affect the test; local execution is not a sandbox.
 ### Installing another harness adapter
 
 `HarnessAdapter` and `HarnessAdapterRegistry` in `pyrit.agent.harness` separate
-trusted implementation code from inert profiles. Copilot, OpenCode, and generic
-ACP are built-in registrations, not special branches in model binding or
-provisioning. A trusted Python initializer can register an additional adapter
-before composing targets that select its name in `harness_kind`.
+trusted implementation code from inert profiles. Copilot and generic ACP are the
+built-in registrations, not special branches in model binding or provisioning.
+A trusted Python initializer can register an additional adapter before composing
+targets that select its name in `harness_kind`.
 
 An adapter supplies immutable `HarnessAdapterInfo` (name, label, command defaults,
-supported inference APIs, native-model credential names), private-home launch
+supported inference APIs, native-model credential names, and the environment
+variable names it reserves for its own configuration), private-home launch
 settings, and optionally the translation of an execution-scoped inference relay
 connection. It never receives the upstream provider key through this interface.
-Advertising no inference APIs means native-model use only. An adapter does not
-provision resources, implement ACP, persist messages, score responses, or decide
-which tools run.
+Advertising no inference APIs means native-model use only. Credential references
+may not claim a reserved name. An adapter does not provision resources, implement
+ACP, persist messages, score responses, or decide which tools run.
+
+```python
+import json
+
+from pyrit.agent.harness import HarnessAdapter, HarnessAdapterRegistry
+from pyrit.models.harness_adapter import HarnessAdapterInfo
+from pyrit.models.model_inference import InferenceWireApi
+
+
+class ExampleAdapter(HarnessAdapter):
+    @property
+    def info(self) -> HarnessAdapterInfo:
+        return HarnessAdapterInfo(
+            name="example",
+            display_name="Example agent",
+            default_command=("example-agent", "acp"),
+            wire_apis=(InferenceWireApi.CHAT_COMPLETIONS,),
+            native_model_credentials=("EXAMPLE_API_KEY",),
+            reserved_environment=("EXAMPLE_CONFIG",),
+        )
+
+    def launch_environment(self, *, home: str) -> dict[str, str]:
+        return {"EXAMPLE_CONFIG": json.dumps({"permission": "ask", "home": home})}
+
+    def inference_environment(
+        self, *, model: str, wire_api: InferenceWireApi, base_url: str, token: str
+    ) -> dict[str, str]:
+        provider = {"baseURL": base_url, "apiKey": "{env:PYRIT_RELAY_TOKEN}", "model": model}
+        return {"EXAMPLE_CONFIG": json.dumps({"provider": provider}), "PYRIT_RELAY_TOKEN": token}
+
+
+HarnessAdapterRegistry.get_registry_singleton().register(ExampleAdapter())
+```
+
+The test suite keeps a complete reference adapter of this shape for OpenCode
+(`tests/unit/agent/example_adapters.py`), which was validated against the same
+ACP core during development. PyRIT does not ship or support it.
 
 The admin preset catalog publishes installed adapter metadata. Create Target uses
 it for the harness picker, default command, and compatible model protocols; custom
@@ -324,38 +358,41 @@ hosted CoPyRIT instance, that is the **backend runtime's** login context, not th
 web operator's identity.
 
 Managed ACP profiles forward their explicit `credential_env` references into the
-tested process/container, or may explicitly use the developer login option below.
-These credentials are exposed to the agent and
-its tools, and indirectly to users who can prompt that target. Values are resolved
-at launch; they are not refreshed inside the environment. Docker environment
-values are inspectable by Docker administrators while the container exists.
+tested process/container. PyRIT never discovers, brokers, or refreshes harness
+credentials itself: a profile names environment variables, and the backend process
+must hold their values when an execution is allocated. These credentials are exposed
+to the agent and its tools, and indirectly to users who can prompt that target.
+Values are resolved at launch; they are not refreshed inside the environment. Docker
+environment values are inspectable by Docker administrators while the container
+exists. Values never appear in arguments, target identifiers, initializer files,
+or execution records, and they are included in execution-evidence redaction.
 
-For **local development**, a backend operator can enable
-`PYRIT_ALLOW_GITHUB_CLI_LOGIN=true` and sign into `gh auth login --hostname github.com`
-on the machine running the backend. Then select **Use backend GitHub CLI login
-(development only)** in Create Target. The equivalent initializer/Python harness
-field is `use_github_cli_login=True`. Both the backend flag and the per-target
-selection are required; neither merely installing `gh` nor setting a model ID
-enables delegation.
+A model ID alone does not authenticate a native Copilot harness. For **local
+development**, export the token from your own GitHub CLI login into the backend
+process and reference it from the profile:
 
-This uses the backend GitHub CLI account, **not the web operator's identity** and
-not necessarily the account signed into Copilot CLI. On allocation, PyRIT resolves
-the token through `gh auth token`, passes it as `COPILOT_GITHUB_TOKEN` only to the
-selected process/container, and includes it in execution-evidence redaction.
-The token is not an argument, target identifier, initializer value, or saved
-checkpoint. Each allocation retains a fresh private home; no login files, CLI
-configuration, or prior sessions are copied. Missing login/CLI and timeouts fail
-explicitly without printing token-command output or silently trying another
-credential source.
+```bash
+export COPILOT_GITHUB_TOKEN="$(gh auth token --hostname github.com)"
+uv run --extra agents pyrit_backend
+```
 
-The developer option is only for native Copilot models. It cannot be combined
-with BYOK, an ACP login method, or explicit native-model token references.
-Switching model source retains the selection and blocks creation until it is
-explicitly removed. Independent tool credential references are still supported.
-Do not enable this feature on a shared hosted backend as a substitute for a
-deployment authentication design. Hosted native Copilot should use deliberately
-configured credential references; organization-owned GitHub App authentication
-is a possible future integration, not implemented automatic token brokering.
+```powershell
+$env:COPILOT_GITHUB_TOKEN = gh auth token --hostname github.com
+uv run --extra agents pyrit_backend
+```
+
+Then add `COPILOT_GITHUB_TOKEN` under **Harness credential references** in Create
+Target, or set `credential_env=("COPILOT_GITHUB_TOKEN",)` on the `HarnessProfile`.
+This is the backend account, **not the web operator's identity**, and it is
+exposed to the tested agent and its tools. Each allocation still receives a fresh
+private home; no login files, CLI configuration, or prior sessions are copied.
+
+Do not treat an exported personal token on a shared hosted backend as a deployment
+authentication design. Hosted native Copilot should use deliberately provisioned
+credential references; organization-owned GitHub App authentication is a possible
+future integration, not implemented automatic token brokering. Under BYOK, native
+model credential references are rejected so the harness cannot bypass the scoped
+inference relay.
 
 A fresh Docker home without supplied credentials normally reports authentication
 required. Selecting `gpt-6-astra` or another native model does not authenticate it.
@@ -384,10 +421,9 @@ the model connection receives only an execution-scoped relay credential. This
 is a delivery contract, not a claim that local execution under the same OS user
 cannot access backend secrets or project files.
 
-OpenCode **1.18.35** is the validation version. Its documented
-[`opencode acp`](https://opencode.ai/docs/acp/) entry point and
-[configuration precedence](https://opencode.ai/docs/config/) are used directly.
-No claim is made that every ACP extension, model, or OpenCode version is supported.
+Copilot CLI **1.0.93** is the validation version. No claim is made that every
+ACP extension, model, or harness version is supported; a registered adapter
+carries its own validation claims.
 
 In Python, after registering a compatible source target:
 
@@ -439,7 +475,7 @@ harness's legacy `max_tokens` alias rather than sending conflicting limit fields
 Completion-count conflicts still fail. Overrides are logged by parameter name,
 without request/credential values; neither the target's configuration nor the
 caller's request object is mutated. This lets an existing model connection with
-configured temperature serve a Copilot/OpenCode harness without changing its
+configured temperature serve an agent harness without changing its
 direct-chat settings. Inference uses
 the existing target client and refreshable authentication. It shares target
 pacing, with a five-second admission budget, and performs no inference retries: the
@@ -498,15 +534,8 @@ uv run --extra agents python -m build_scripts.agent_byok_demo --results dbdata\b
 # Build the 1.0.93 image and configure Docker relay reachability as above first.
 uv run --extra agents python -m build_scripts.agent_byok_demo --docker --results dbdata\byok-docker
 
-# OpenCode installed locally, or supply --executable with its full path.
-uv run --extra agents python -m build_scripts.agent_byok_demo --harness opencode --results dbdata\opencode-local
-
-# Image-owned starting workspace; no runtime fixture import.
-docker build --tag pyrit-opencode-receipt:1.18.35 --file docker\agent_receipt\Dockerfile.opencode .
-uv run --extra agents python -m build_scripts.agent_byok_demo --harness opencode --docker --results dbdata\opencode-docker
-
 # Verify an explicit permission refusal, without requiring a fabricated text answer.
-uv run --extra agents python -m build_scripts.agent_byok_demo --harness opencode --permission-policy deny --results dbdata\opencode-denied
+uv run --extra agents python -m build_scripts.agent_byok_demo --permission-policy deny --results dbdata\byok-denied
 ```
 
 Chat Completions was verified end to end in both local and Docker modes.
@@ -753,8 +782,8 @@ The first runtime slice deliberately accepts only the tested combination:
 
 - Docker image workspace at `/workspace`, without overlays, relocated working
   directories, mounted filesystems, or a volume-declaring restore image;
-- Copilot **1.0.93** or OpenCode **1.18.35**, as advertised by the running harness
-  and supported by the installed adapter's versioned checkpoint layout;
+- Copilot **1.0.93**, as advertised by the running harness and supported by the
+  installed adapter's versioned checkpoint layout;
 - target-backed BYOK with no forwarded credential variables or ACP login;
 - an idle, connected execution with fully captured completed turns and no
   unresolved permission request. Held, cancelled, failed, or in-flight work is
@@ -849,7 +878,7 @@ Completed native session + workspace
 ```
 
 The proof uses an in-process synthetic inference target behind the existing
-execution relay; **no real model provider is called**. The actual Copilot/OpenCode
+execution relay; **no real model provider is called**. The actual Copilot
 binary runs its real tool loop in Docker. A seed turn writes a receipt and an
 append-only effects log, then receives a random assistant-only history token.
 After the original container is removed, a new process must supply that token
@@ -868,8 +897,8 @@ The same run checks four independent fresh containers:
 | Native session only | History returns, but the missing workspace prevents continuation |
 | Both | Native history and actual filesystem continuation both verify |
 
-These controls passed with **Copilot CLI 1.0.93** and **OpenCode 1.18.35**.
-OpenCode also passed in a derived image running as the non-root `node` user.
+These controls passed with **Copilot CLI 1.0.93**, including a derived image
+running as a non-root user.
 Restoration preserves file UID/GID and creates the native-state parent
 directories with the image user's ownership; otherwise newly created parent
 directories can prevent the harness from starting.
@@ -881,11 +910,6 @@ uv run --extra agents python -m build_scripts.agent_checkpoint_demo `
   --harness copilot --image pyrit-copilot-receipt:1.0.93 `
   --relay-host 0.0.0.0 --advertised-host host.docker.internal `
   --results dbdata\checkpoint-copilot
-
-uv run --extra agents python -m build_scripts.agent_checkpoint_demo `
-  --harness opencode --image pyrit-opencode-receipt:1.18.35 `
-  --relay-host 0.0.0.0 --advertised-host host.docker.internal `
-  --results dbdata\checkpoint-opencode
 ```
 
 The listener interface is explicit because Docker must reach the relay. Only the
@@ -909,10 +933,10 @@ Important boundaries:
   whose advertised capability is checked. It does not exercise `session/resume`.
   Load replays historical notifications from the harness to the client; these
   are not newly executed tools and must stay separate from new-turn evidence.
-- OpenCode's snapshot includes its SQLite database **and its WAL/SHM files** from
-  the same stopped filesystem. Copying only the database while the agent runs
-  is not the tested operation. Copilot's snapshot contains its native
-  `session-state` directory. These layouts are version-specific, not ACP fields.
+- Copilot's snapshot contains its native `session-state` directory, captured
+  from the stopped filesystem. A harness that keeps state in a database must
+  capture its journal/WAL files from the same stopped filesystem; copying a live
+  database is not the tested operation. Layouts are version-specific, not ACP fields.
 - Only `/workspace` and the selected native-state subtree are preserved, with
   the same absolute paths in the restored container. Unique/relocated workspace
   roots, arbitrary images, MCP state, plugins, and multi-session homes are not

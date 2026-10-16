@@ -46,7 +46,7 @@ async def run_async(args: argparse.Namespace) -> None:
         assert body["model"] == "test-deployment"
         assert body["temperature"] == 0.35
         has_result = any(message.get("role") == "tool" for message in body.get("messages", []))
-        tool_name = "read" if args.harness == "opencode" else "view"
+        tool_name = "view"
         view = next(
             (tool["function"] for tool in body.get("tools", []) if tool.get("function", {}).get("name") == tool_name),
             None,
@@ -70,11 +70,7 @@ async def run_async(args: argparse.Namespace) -> None:
                         "type": "function",
                         "function": {
                             "name": view["name"],
-                            "arguments": json.dumps(
-                                {
-                                    "filePath" if args.harness == "opencode" else "path": fixture,
-                                }
-                            ),
+                            "arguments": json.dumps({"path": fixture}),
                         },
                     }
                 ],
@@ -123,20 +119,11 @@ async def run_async(args: argparse.Namespace) -> None:
         )
         cleanup.push_async_callback(source.cleanup_target_async)
         configuration = AgentTargetConfiguration(
-            name=f"{args.harness}-byok",
+            name="copilot-byok",
             model_binding=ModelBinding(target_registry_name="receipt-model"),
             harness_profile=HarnessProfile(
-                harness_kind=args.harness,
                 permission_policy=args.permission_policy,
-                **(
-                    {
-                        "command": (args.executable, "acp")
-                        if args.harness == "opencode"
-                        else (args.executable, "--acp", "--stdio")
-                    }
-                    if args.executable
-                    else {}
-                ),
+                **({"command": (args.executable, "--acp", "--stdio")} if args.executable else {}),
             ),
             environment_template=EnvironmentTemplate(
                 environment="docker" if args.docker else "local",
@@ -196,7 +183,7 @@ async def run_async(args: argparse.Namespace) -> None:
             assert provider_secret not in content, "Provider credential leaked into execution evidence"
         print(
             f"PASS: {len(calls)} target-owned streaming requests, "
-            f"{args.harness} tool roundtrip ({args.permission_policy}), configured temperature retained, "
+            f"copilot tool roundtrip ({args.permission_policy}), configured temperature retained, "
             "no provider credential in evidence."
         )
         print(f"Evidence: {root}")
@@ -213,15 +200,11 @@ def main() -> None:
     """Run locally or in an explicitly configured Docker relay network."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", required=True)
-    parser.add_argument("--harness", choices=("copilot", "opencode"), default="copilot")
-    parser.add_argument("--executable", help="Harness executable path; defaults to the preset command")
+    parser.add_argument("--executable", help="Copilot executable path; defaults to the preset command")
     parser.add_argument("--permission-policy", choices=("allow_once", "deny"), default="allow_once")
     parser.add_argument("--docker", action="store_true")
-    parser.add_argument("--image")
-    args = parser.parse_args()
-    if args.image is None:
-        args.image = "pyrit-opencode-receipt:1.18.35" if args.harness == "opencode" else "pyrit-copilot-receipt:1.0.93"
-    asyncio.run(run_async(args))
+    parser.add_argument("--image", default="pyrit-copilot-receipt:1.0.93")
+    asyncio.run(run_async(parser.parse_args()))
 
 
 if __name__ == "__main__":

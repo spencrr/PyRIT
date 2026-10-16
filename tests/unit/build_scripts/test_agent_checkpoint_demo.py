@@ -28,7 +28,7 @@ pytestmark = pytest.mark.usefixtures("patch_central_database")
 def probe(tmp_path: Path) -> CheckpointProbe:
     return CheckpointProbe(
         root=tmp_path / "proof",
-        harness="opencode",
+        harness="copilot",
         image="fixture",
         relay_host="127.0.0.1",
         advertised_host="host.docker.internal",
@@ -57,33 +57,21 @@ def archive_bytes(
 
 def test_portable_archive_preserves_owned_state_without_host_extraction(probe: CheckpointProbe) -> None:
     data = probe._portable_archive(
-        raw=archive_bytes(name="opencode/db", pax_headers={"path": "opencode/db"}),
-        root=probe.STATE_ROOTS["opencode"],
+        raw=archive_bytes(name="session-state/db", pax_headers={"path": "session-state/db"}),
+        root=probe.STATE_ROOTS["copilot"],
     )
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:
         member = archive.getmembers()[0]
-        assert member.name == "home/agent/.local/share/opencode/db"
+        assert member.name == "home/agent/.copilot/session-state/db"
         assert (member.uid, member.gid, member.mode) == (1000, 1001, 0o600)
         stream = archive.extractfile(member)
         assert stream is not None and stream.read() == b'{"total":31}'
 
 
-@pytest.mark.parametrize(
-    ("harness", "parents"),
-    [
-        ("opencode", ["home/agent/.local", "home/agent/.local/share"]),
-        ("copilot", ["home/agent/.copilot"]),
-    ],
-)
-def test_fresh_native_state_parents_belong_to_the_image_user(
-    probe: CheckpointProbe,
-    harness: str,
-    parents: list[str],
-) -> None:
-    probe.harness = harness
+def test_fresh_native_state_parents_belong_to_the_image_user(probe: CheckpointProbe) -> None:
     data = probe._state_parent_archive(uid=1000, gid=1001)
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-        assert archive.getnames() == parents
+        assert archive.getnames() == ["home/agent/.copilot"]
         assert all(entry.isdir() and (entry.uid, entry.gid, entry.mode) == (1000, 1001, 0o700) for entry in archive)
 
 

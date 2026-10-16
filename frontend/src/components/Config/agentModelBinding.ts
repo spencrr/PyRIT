@@ -4,7 +4,6 @@ import { targetModelName, targetUnderlyingModelName } from '@/utils/targetIdenti
 // Compatibility with backends predating adapter metadata; an explicit empty catalog stays empty.
 export const BUILTIN_HARNESS_ADAPTERS: readonly HarnessAdapterInfo[] = [
   { name: 'copilot', display_name: 'GitHub Copilot', default_command: ['copilot', '--acp', '--stdio'], wire_apis: ['completions', 'responses'] },
-  { name: 'opencode', display_name: 'OpenCode', default_command: ['opencode', 'acp'], wire_apis: ['completions'] },
   { name: 'acp', display_name: 'Custom ACP', default_command: [], wire_apis: [] },
 ]
 

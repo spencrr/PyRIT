@@ -38,6 +38,8 @@ from pyrit.prompt_target import TextTarget
 
 pytestmark = pytest.mark.usefixtures("patch_central_database")
 
+STATE_ROOT = "home/agent/.copilot/session-state"
+
 
 def archive(*, root: str, data: bytes = b"checkpoint", kind: bytes = tarfile.REGTYPE) -> bytes:
     output = io.BytesIO()
@@ -67,9 +69,7 @@ async def prepared_async(
             owner_id="test",
             conversation_id=request.conversation_id,
             target_id="target",
-            profile=AgentProfile(
-                harness_kind="opencode", image="fixture", target_registry_name="source", model="model"
-            ),
+            profile=AgentProfile(image="fixture", target_registry_name="source", model="model"),
             image_id="sha256:pinned",
             session_id="native",
             inference_target_hash=binding.identifier_hash,
@@ -80,16 +80,14 @@ async def prepared_async(
                     request_id=str(request.id), prompt="one", status=AgentTurnStatus.COMPLETED, capture_complete=True
                 )
             ],
-            agent_info={
-                "initialize": {"agentInfo": {"version": "1.18.35"}, "agentCapabilities": {"loadSession": True}}
-            },
+            agent_info={"initialize": {"agentInfo": {"version": "1.0.93"}, "agentCapabilities": {"loadSession": True}}},
         )
         manager.records[record.id] = record
         manager._live[record.id] = manager._make_live(record)
         await manager.store.save_async(record)
         await manager._record_async(manager._live[record.id], direction="lifecycle", payload={"type": "turn_finished"})
         workspace = archive(root="workspace")
-        state = archive(root="home/agent/.local/share/opencode")
+        state = archive(root=STATE_ROOT)
         with (
             patch.object(
                 ExecutionEnvironment,
@@ -268,7 +266,7 @@ async def test_capture_cancellation_keeps_ownership_until_capture_and_cleanup_fi
     async def capture_async(**kwargs: Any) -> tuple[bytes, bytes]:
         started.set()
         await release.wait()
-        return archive(root="workspace"), archive(root="home/agent/.local/share/opencode")
+        return archive(root="workspace"), archive(root=STATE_ROOT)
 
     with patch.object(ExecutionEnvironment, "capture_checkpoint_async", side_effect=capture_async):
         task = asyncio.create_task(save_async(manager=manager, record=record, memory=sqlite_instance))
@@ -448,7 +446,7 @@ async def test_concurrent_saves_reserve_retention_before_either_execution_is_clo
     async def capture_async(**kwargs: Any) -> tuple[bytes, bytes]:
         entered.set()
         await release.wait()
-        return archive(root="workspace"), archive(root="home/agent/.local/share/opencode")
+        return archive(root="workspace"), archive(root=STATE_ROOT)
 
     with (
         patch.object(manager.checkpoints, "MAX_CHECKPOINTS", 1),

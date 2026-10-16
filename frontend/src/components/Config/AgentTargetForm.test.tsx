@@ -8,7 +8,7 @@ import { targetsApi } from '@/services/api'
 import { listRegisteredTargets } from '@/services/targetRegistry'
 import { useRuntime } from '@/hooks/useRuntime'
 import { makeTarget } from '@/test-utils/targetFixtures'
-import type { AgentPresetCatalog, AgentTargetConfiguration, TargetInstance } from '@/types'
+import type { AgentPresetCatalog, AgentTargetConfiguration, HarnessAdapterInfo, TargetInstance } from '@/types'
 
 import AgentTargetForm from './AgentTargetForm'
 
@@ -22,11 +22,19 @@ function TestWrapper({ children }: { children: ReactNode }) {
   return <FluentProvider theme={webLightTheme}>{children}</FluentProvider>
 }
 
+// A registered third-party adapter alongside the built-ins; OpenCode is not shipped by PyRIT.
+const CATALOG_ADAPTERS: HarnessAdapterInfo[] = [
+  { name: 'copilot', display_name: 'GitHub Copilot', default_command: ['copilot', '--acp', '--stdio'], wire_apis: ['completions', 'responses'] },
+  { name: 'opencode', display_name: 'OpenCode', default_command: ['opencode', 'acp'], wire_apis: ['completions'] },
+  { name: 'acp', display_name: 'Custom ACP', default_command: [], wire_apis: [] },
+]
+
 function presetCatalog(): AgentPresetCatalog {
   return {
+    harness_adapters: CATALOG_ADAPTERS,
     harness_profiles: [{
       name: 'team_harness', initializer: 'PrivateHarnessInitializer',
-      profile: { harness_kind: 'opencode', command: ['team-opencode', 'acp', '--custom'],
+      profile: { harness_kind: 'copilot', command: ['team-copilot', '--acp', '--stdio', '--custom'],
         credential_env: ['TEST_TOOL_TOKEN'], authentication_method: null, permission_policy: 'deny',
         inference_requirements: { wire_api: 'completions', streaming: true, tool_calls: true, input_modalities: ['text', 'image'] },
       },
@@ -65,37 +73,23 @@ function environmentCatalog(): AgentPresetCatalog {
 }
 
 describe('AgentTargetForm', () => {
-  it('submits developer login only after an explicit opt-in and retains it as an error under BYOK', async () => {
+  it('explains native Copilot authentication until a token reference or model source is chosen', async () => {
     const user = userEvent.setup()
-    jest.mocked(targetsApi.listAgentPresets).mockResolvedValue({ ...presetCatalog(), github_cli_login_enabled: true })
     jest.mocked(listRegisteredTargets).mockResolvedValue([modelSource('hash')])
     render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
-    const login = await screen.findByRole('checkbox', { name: 'Use backend GitHub CLI login (development only)' })
-    expect(login).not.toBeChecked()
-    await user.click(login)
+    expect(await screen.findByText(/A model ID does not authenticate Copilot/)).toBeVisible()
+    expect(screen.queryByRole('checkbox', { name: /GitHub CLI login/ })).not.toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: /Harness credential references/ }), 'COPILOT_GITHUB_TOKEN')
+    expect(screen.queryByText(/A model ID does not authenticate Copilot/)).not.toBeInTheDocument()
     await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'native')
     await user.type(screen.getByRole('textbox', { name: /Docker image/ }), 'copilot:test')
     await user.click(screen.getByRole('button', { name: 'Create Target', exact: true }))
     await waitFor(() => expect(targetsApi.createTarget).toHaveBeenCalledTimes(1))
-    expect(jest.mocked(targetsApi.createTarget).mock.calls[0][0].params).toMatchObject({
-      agent_configuration: { harness_profile: { use_github_cli_login: true } },
-    })
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Model', exact: true }), 'model_source')
-    expect(login).toBeChecked()
-    expect(screen.getByRole('button', { name: 'Create Target', exact: true })).toBeDisabled()
-    expect(screen.getByText(/Deselect it explicitly to use BYOK/)).toBeVisible()
-    await user.click(login)
-    expect(screen.getByRole('button', { name: 'Create Target', exact: true })).toBeEnabled()
-  })
-
-  it('does not enable developer login when the backend has not opted in', async () => {
-    const user = userEvent.setup()
-    render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
-    const login = await screen.findByRole('checkbox', { name: 'Use backend GitHub CLI login (development only)' })
-    expect(login).toBeDisabled()
-    await user.click(login)
-    expect(login).not.toBeChecked()
-    expect(screen.getByText(/PYRIT_ALLOW_GITHUB_CLI_LOGIN=true/)).toBeVisible()
+    const params = jest.mocked(targetsApi.createTarget).mock.calls[0][0].params as {
+      agent_configuration: { harness_profile: Record<string, unknown> }
+    }
+    expect(params.agent_configuration.harness_profile.credential_env).toEqual(['COPILOT_GITHUB_TOKEN'])
+    expect(params.agent_configuration.harness_profile).not.toHaveProperty('use_github_cli_login')
   })
 
   it('selects installed harness adapters and preserves their explicit command and supported API', async () => {
@@ -661,11 +655,12 @@ describe('AgentTargetForm', () => {
     expect(screen.queryByLabelText('Inference protocol')).not.toBeInTheDocument()
   })
 
-  it('swaps to OpenCode without prescribing an image or copying a directory', async () => {
+  it('swaps to a registered adapter without prescribing an image or copying a directory', async () => {
     const user = userEvent.setup()
     jest.mocked(targetsApi.createTarget).mockResolvedValue(makeTarget({ target_registry_name: 'open', target_type: 'AgentTarget' }))
     render(<TestWrapper><AgentTargetForm onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
     expect(screen.getByRole('textbox', { name: /Docker image/ })).toHaveValue('')
+    await screen.findByRole('option', { name: 'OpenCode' })
     await user.selectOptions(screen.getByRole('combobox', { name: 'Harness', exact: true }), 'opencode')
     await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'open')
     await user.type(screen.getByRole('textbox', { name: /Docker image/ }), 'operator-owned-image')
@@ -702,7 +697,7 @@ describe('AgentTargetForm', () => {
     jest.mocked(useRuntime).mockReturnValue({ ready: true, state: 'ready', generation: 'initial' })
     jest.mocked(targetsApi.listAgentPresets).mockReset()
     jest.mocked(targetsApi.listAgentPresets).mockResolvedValue({
-      harness_profiles: [], environment_templates: [], unavailable_targets: {},
+      harness_profiles: [], environment_templates: [], unavailable_targets: {}, harness_adapters: CATALOG_ADAPTERS,
     })
     jest.mocked(listRegisteredTargets).mockReset()
     jest.mocked(listRegisteredTargets).mockResolvedValue([])

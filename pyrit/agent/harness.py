@@ -3,12 +3,10 @@
 
 """Trusted launch adapters; protocol and resource lifecycle remain independently owned."""
 
-import json
 from abc import ABC, abstractmethod
 from threading import RLock
 from typing import ClassVar
 
-from pyrit.auth.github_cli import github_cli_login_enabled
 from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
 from pyrit.models.agent_execution import HarnessProfile
 from pyrit.models.harness_adapter import HarnessAdapterInfo
@@ -17,6 +15,26 @@ from pyrit.models.model_inference import InferenceWireApi
 
 class HarnessAdapter(ABC):
     """Translate model/launch settings only; do not execute tools or provision resources."""
+
+    # Process identity, lookup paths, and the relay token belong to the execution, never to credential references.
+    EXECUTION_RESERVED_ENVIRONMENT: ClassVar[frozenset[str]] = frozenset(
+        {
+            "HOME",
+            "USERPROFILE",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "PATH",
+            "PATHEXT",
+            "SYSTEMROOT",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "PYRIT_RELAY_TOKEN",
+        }
+    )
 
     @property
     @abstractmethod
@@ -66,6 +84,14 @@ class _CopilotAdapter(HarnessAdapter):
             default_command=("copilot", "--acp", "--stdio"),
             wire_apis=(InferenceWireApi.CHAT_COMPLETIONS, InferenceWireApi.RESPONSES),
             native_model_credentials=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+            reserved_environment=(
+                "COPILOT_HOME",
+                "COPILOT_PROVIDER_BASE_URL",
+                "COPILOT_PROVIDER_TYPE",
+                "COPILOT_PROVIDER_WIRE_API",
+                "COPILOT_PROVIDER_API_KEY",
+                "COPILOT_MODEL",
+            ),
         )
 
     def launch_environment(self, *, home: str) -> dict[str, str]:
@@ -88,60 +114,6 @@ class _CopilotAdapter(HarnessAdapter):
         }
 
 
-class _OpenCodeAdapter(HarnessAdapter):
-    @property
-    def checkpoint_layout(self) -> HarnessCheckpointLayout:
-        return HarnessCheckpointLayout(
-            version="opencode-sqlite-v1",
-            agent_versions=("1.18.35",),
-            state_root="/home/agent/.local/share/opencode",
-        )
-
-    @property
-    def info(self) -> HarnessAdapterInfo:
-        return HarnessAdapterInfo(
-            name="opencode",
-            display_name="OpenCode",
-            default_command=("opencode", "acp"),
-            wire_apis=(InferenceWireApi.CHAT_COMPLETIONS,),
-            native_model_credentials=(
-                "OPENCODE_API_KEY",
-                "OPENAI_API_KEY",
-                "ANTHROPIC_API_KEY",
-                "GOOGLE_GENERATIVE_AI_API_KEY",
-            ),
-        )
-
-    def launch_environment(self, *, home: str) -> dict[str, str]:
-        return {"OPENCODE_CONFIG_CONTENT": json.dumps({"permission": "ask", "autoupdate": False, "share": "disabled"})}
-
-    def inference_environment(
-        self,
-        *,
-        model: str,
-        wire_api: InferenceWireApi,
-        base_url: str,
-        token: str,
-    ) -> dict[str, str]:
-        config = {
-            "model": f"pyrit/{model}",
-            "small_model": f"pyrit/{model}",
-            "enabled_providers": ["pyrit"],
-            "permission": "ask",
-            "autoupdate": False,
-            "share": "disabled",
-            "provider": {
-                "pyrit": {
-                    "npm": "@ai-sdk/openai-compatible",
-                    "name": "PyRIT execution model",
-                    "options": {"baseURL": base_url.rstrip("/"), "apiKey": "{env:PYRIT_RELAY_TOKEN}"},
-                    "models": {model: {"name": model, "limit": {"context": 128000, "output": 8192}}},
-                }
-            },
-        }
-        return {"OPENCODE_CONFIG_CONTENT": json.dumps(config), "PYRIT_RELAY_TOKEN": token}
-
-
 class _GenericAcpAdapter(HarnessAdapter):
     @property
     def info(self) -> HarnessAdapterInfo:
@@ -160,7 +132,7 @@ class HarnessAdapterRegistry:
     def __init__(self) -> None:
         """Create a registry with the built-in adapters."""
         self._lock = RLock()
-        adapters = (_CopilotAdapter(), _OpenCodeAdapter(), _GenericAcpAdapter())
+        adapters = (_CopilotAdapter(), _GenericAcpAdapter())
         self._adapters: dict[str, HarnessAdapter] = {adapter.info.name: adapter for adapter in adapters}
 
     @classmethod
@@ -232,40 +204,8 @@ def validate_harness_authentication(*, harness: HarnessProfile, target_backed: b
         ValueError: Settings override execution configuration or conflict with the adapter.
     """
     adapter = HarnessAdapterRegistry.get_registry_singleton().get(harness.harness_kind)
-    if harness.use_github_cli_login:
-        if harness.harness_kind != "copilot" or target_backed or harness.authentication_method:
-            raise ValueError("Backend GitHub CLI login is only for native Copilot models without an ACP login method")
-        if {name.upper() for name in harness.credential_env} & {"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}:
-            raise ValueError("Choose backend GitHub CLI login or native token references, not both")
-        if not github_cli_login_enabled():
-            raise ValueError(
-                "Backend GitHub CLI login is disabled. For local development set "
-                "PYRIT_ALLOW_GITHUB_CLI_LOGIN=true on the backend, or use explicit credential references."
-            )
-    reserved = {
-        "HOME",
-        "USERPROFILE",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_CACHE_HOME",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "PATH",
-        "PATHEXT",
-        "SYSTEMROOT",
-        "WINDIR",
-        "TEMP",
-        "TMP",
-        "PYRIT_RELAY_TOKEN",
-        "OPENCODE_CONFIG_CONTENT",
-        "OPENCODE_CONFIG",
-        "OPENCODE_CONFIG_DIR",
-        "COPILOT_HOME",
-        "COPILOT_PROVIDER_BASE_URL",
-        "COPILOT_PROVIDER_TYPE",
-        "COPILOT_PROVIDER_WIRE_API",
-        "COPILOT_PROVIDER_API_KEY",
-        "COPILOT_MODEL",
+    reserved = HarnessAdapter.EXECUTION_RESERVED_ENVIRONMENT | {
+        name.upper() for name in adapter.info.reserved_environment
     }
     conflicts = {name for name in harness.credential_env if name.upper() in reserved}
     if conflicts:

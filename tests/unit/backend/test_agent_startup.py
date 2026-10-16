@@ -47,7 +47,8 @@ def source(tmp_path: Path) -> ConfigurationFileService:
         "# Team configuration\nmemory_db_type: in_memory\nenv_files: []\ninitialization_scripts: []\n"
         'operator: "original" # preserve this comment\ninitializers:\n'
         "  - name: harness_profile # original private preset\n"
-        "    args: {name: original, harness_kind: opencode}\nextensions: {note: unchanged}\n",
+        "    args: {name: original, harness_kind: acp, command: [team-agent, --stdio]}\n"
+        "extensions: {note: unchanged}\n",
         encoding="utf-8",
     )
     return ConfigurationFileService(config_file_value=str(file))
@@ -57,7 +58,8 @@ def configuration() -> AgentTargetConfiguration:
     return AgentTargetConfiguration(
         name="display-name",
         harness_profile=HarnessProfile(
-            harness_kind="opencode",
+            harness_kind="acp",
+            command=("team-agent", "--stdio"),
             credential_env=("TEST_REPO_KEY",),
             permission_policy="deny",
             inference_requirements=InferenceRequirements(input_modalities=frozenset({"text", "image"})),
@@ -106,29 +108,29 @@ async def test_save_preserves_comments_settings_and_recreates_exact_target_after
     assert restored.get_identifier().hash == expected == result.target_identifier_hash
     assert restored.agent_configuration == create.configuration
     assert peek_agent_execution_manager() is before
-    assert AgentConfigurationRegistry.get_registry_singleton().get_harness("original").harness_kind == "opencode"
+    assert AgentConfigurationRegistry.get_registry_singleton().get_harness("original").command == (
+        "team-agent",
+        "--stdio",
+    )
 
 
-async def test_startup_saves_developer_login_selection_without_resolving_or_storing_credentials_async(
+async def test_startup_saves_credential_references_without_resolving_values_async(
     source: ConfigurationFileService,
 ) -> None:
     snapshot = AgentTargetConfiguration(
-        harness_profile=HarnessProfile(use_github_cli_login=True),
+        harness_profile=HarnessProfile(credential_env=("COPILOT_GITHUB_TOKEN",)),
         environment_template=EnvironmentTemplate(image="copilot:test"),
     )
     _, version = await source.read_with_version_async()
-    with (
-        patch.dict(os.environ, {"PYRIT_ALLOW_GITHUB_CLI_LOGIN": "true"}),
-        patch("pyrit.agent.environment.github_cli_token_async", new_callable=AsyncMock) as login,
-    ):
+    with patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "gho_synthetic"}):
         result = await save_agent_startup_async(
             request=SaveAgentStartupRequest(name="dev_agent", configuration=snapshot, version=version),
             source=source,
         )
         content = await source.read_async()
-        assert safe_load_yaml(content)["initializers"][-3]["args"]["use_github_cli_login"] is True
-        assert result.target_identifier_hash == AgentTarget(agent_configuration=snapshot).get_identifier().hash
-        login.assert_not_awaited()
+    assert safe_load_yaml(content)["initializers"][-3]["args"]["credential_env"] == ["COPILOT_GITHUB_TOKEN"]
+    assert "gho_synthetic" not in content
+    assert result.target_identifier_hash == AgentTarget(agent_configuration=snapshot).get_identifier().hash
 
 
 @pytest.mark.parametrize("name", ["on", "yes", "off", "no"])

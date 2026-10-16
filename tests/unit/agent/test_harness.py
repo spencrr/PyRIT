@@ -23,18 +23,20 @@ from pyrit.models.agent_execution import (
 from pyrit.models.model_inference import InferenceWireApi
 from pyrit.prompt_target import AgentTarget
 from pyrit.registry import TargetRegistry
+from tests.unit.agent.example_adapters import OPENCODE_COMMAND, OpenCodeAdapter
 
 
 @pytest.mark.parametrize("model", [AgentProfile, HarnessProfile])
 def test_explicit_harness_and_legacy_decode(model: type[AgentProfile] | type[HarnessProfile]) -> None:
     extra = {"image": "test"} if model is AgentProfile else {}
-    assert model(**extra, command=("opencode", "acp")).harness_kind == AgentHarnessKind.ACP
-    explicit = model(**extra, harness_kind="opencode")
-    assert explicit.command == ("opencode", "acp")
-    assert explicit.harness_kind == AgentHarnessKind.OPENCODE
+    assert model(**extra, command=OPENCODE_COMMAND).harness_kind == AgentHarnessKind.ACP
+    explicit = model(**extra, harness_kind="opencode", command=OPENCODE_COMMAND)
+    assert explicit.command == OPENCODE_COMMAND
+    assert explicit.harness_kind == "opencode"
     assert model(**extra).harness_kind == AgentHarnessKind.COPILOT
-    with pytest.raises(ValueError, match="explicit command"):
-        model(**extra, harness_kind="acp")
+    for kind in ("acp", "opencode"):
+        with pytest.raises(ValueError, match="explicit command"):
+            model(**extra, harness_kind=kind)
 
 
 @pytest.mark.parametrize("directory", ["/host", "../escape", "C:\\host", "foo\\bar"])
@@ -45,7 +47,7 @@ def test_working_directory_is_workspace_relative(directory: str) -> None:
 
 def test_profile_roundtrip_keeps_new_fields_and_groups_disjoint() -> None:
     configuration = AgentTargetConfiguration(
-        harness_profile=HarnessProfile(harness_kind="opencode", command=("renamed-opencode", "acp")),
+        harness_profile=HarnessProfile(harness_kind="team_v1", command=("renamed-agent", "acp")),
         environment_template=EnvironmentTemplate(image="test", workspace_base="empty", working_directory="repo"),
     )
     assert AgentTargetConfiguration.from_profile(configuration.to_profile()) == configuration
@@ -95,9 +97,10 @@ async def test_pinned_byok_identity_is_stable_async() -> None:
         await source.cleanup_target_async()
 
 
-def test_opencode_provider_configuration_has_no_provider_key_or_workspace_file() -> None:
+@pytest.mark.usefixtures("opencode_adapter")
+def test_registered_adapter_configuration_has_no_provider_key_or_workspace_file() -> None:
     environment = inference_environment(
-        kind=AgentHarnessKind.OPENCODE,
+        kind="opencode",
         model="test-model",
         wire_api=InferenceWireApi.CHAT_COMPLETIONS,
         base_url="http://127.0.0.1:3456/v1",
@@ -116,10 +119,23 @@ def test_opencode_provider_configuration_has_no_provider_key_or_workspace_file()
     assert not any(name.startswith("COPILOT") for name in environment)
 
 
-@pytest.mark.parametrize("kind", [AgentHarnessKind.ACP, AgentHarnessKind.OPENCODE])
-def test_unsupported_provider_adapters_fail_before_provisioning(kind: AgentHarnessKind) -> None:
+@pytest.mark.usefixtures("opencode_adapter")
+@pytest.mark.parametrize("kind", [AgentHarnessKind.ACP, "opencode"])
+def test_unsupported_provider_adapters_fail_before_provisioning(kind: str) -> None:
     with pytest.raises(ValueError, match="adapter|Chat Completions"):
         validate_inference_adapter(kind=kind, wire_api=InferenceWireApi.RESPONSES)
+
+
+def test_adapter_reserved_names_are_declared_not_hardcoded() -> None:
+    adapter = OpenCodeAdapter()
+    emitted = set(adapter.launch_environment(home="/private")) | set(
+        adapter.inference_environment(
+            model="m", wire_api=InferenceWireApi.CHAT_COMPLETIONS, base_url="http://relay/v1", token="t"
+        )
+    )
+    reserved = set(adapter.info.reserved_environment) | adapter.EXECUTION_RESERVED_ENVIRONMENT
+    assert emitted <= reserved
+    assert not any("OPENCODE" in name for name in adapter.EXECUTION_RESERVED_ENVIRONMENT)
 
 
 def test_generic_launch_does_not_receive_copilot_settings() -> None:
@@ -127,13 +143,14 @@ def test_generic_launch_does_not_receive_copilot_settings() -> None:
     assert launch_environment(kind=AgentHarnessKind.COPILOT, home="private") == {"COPILOT_HOME": "private/.copilot"}
 
 
+@pytest.mark.usefixtures("opencode_adapter")
 @pytest.mark.parametrize("base", ["empty", "image"])
 async def test_docker_workspace_is_not_implicitly_overlaid_async(tmp_path: Path, base: str) -> None:
     record = AgentExecution(
         owner_id="test",
         conversation_id="one",
         target_id="target",
-        profile=AgentProfile(image="test", harness_kind="opencode", workspace_base=base),
+        profile=AgentProfile(image="test", harness_kind="opencode", command=OPENCODE_COMMAND, workspace_base=base),
     )
     environment = ExecutionEnvironment(execution=record, directory=tmp_path)
     with patch.object(

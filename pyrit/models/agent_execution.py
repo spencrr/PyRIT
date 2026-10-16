@@ -26,7 +26,6 @@ class AgentHarnessKind(str, Enum):
     """Launch configuration adapter, independent of the ACP transport."""
 
     COPILOT = "copilot"
-    OPENCODE = "opencode"
     ACP = "acp"
 
 
@@ -53,10 +52,7 @@ def _resolve_harness(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
     values = dict(value)
-    defaults = {
-        AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio"),
-        AgentHarnessKind.OPENCODE: ("opencode", "acp"),
-    }
+    defaults = {AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio")}
     command = values.get("command", defaults[AgentHarnessKind.COPILOT])
     kind = values.get("harness_kind", legacy_harness_kind(command))
     if not isinstance(kind, str):
@@ -65,7 +61,7 @@ def _resolve_harness(value: Any) -> Any:
     values["harness_kind"] = kind
     if "command" not in values:
         if kind not in defaults:
-            raise ValueError("A generic or custom ACP harness requires an explicit command")
+            raise ValueError("A generic or registered custom ACP harness requires an explicit command")
         values["command"] = defaults[kind]
     return values
 
@@ -152,7 +148,6 @@ class AgentProfile(BaseModel):
     workspace_base: AgentWorkspaceBase | None = None
     working_directory: str = "."
     credential_env: tuple[str, ...] = ()
-    use_github_cli_login: bool = False
     authentication_method: str | None = None
     permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY
     model: str = ""
@@ -216,7 +211,6 @@ class HarnessProfile(BaseModel):
     command: tuple[str, ...] = ("copilot", "--acp", "--stdio")
     harness_kind: str = AgentHarnessKind.COPILOT
     credential_env: tuple[str, ...] = ()
-    use_github_cli_login: bool = False
     authentication_method: str | None = None
     permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY
     inference_requirements: InferenceRequirements = Field(default_factory=InferenceRequirements)

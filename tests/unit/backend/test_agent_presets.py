@@ -29,7 +29,12 @@ def isolated_registries() -> Iterator[None]:
 
 def config(*, local: bool = False) -> AgentTargetConfiguration:
     presets = AgentConfigurationRegistry.get_registry_singleton()
-    harness = HarnessProfile(harness_kind="opencode", permission_policy="ask", credential_env=("TEST_TOOL_TOKEN",))
+    harness = HarnessProfile(
+        harness_kind="acp",
+        command=("team-agent", "--stdio"),
+        permission_policy="ask",
+        credential_env=("TEST_TOOL_TOKEN",),
+    )
     template = EnvironmentTemplate(
         environment="local" if local else "docker",
         image=None if local else "team:1",
@@ -146,7 +151,7 @@ async def test_ordinary_target_cannot_claim_agent_preset_provenance_async() -> N
 async def test_initializer_targets_are_distinguished_from_session_copies_async() -> None:
     registry = InitializerRegistry.get_registry_singleton()
     for name, params in [
-        ("harness_profile", {"name": "team", "harness_kind": "opencode"}),
+        ("harness_profile", {"name": "team", "harness_kind": "acp", "command": ["team-agent", "--stdio"]}),
         ("environment_template", {"name": "workspace", "image": "team:1"}),
     ]:
         await registry.create_and_configure(name, initializer_params=params).initialize_async()

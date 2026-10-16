@@ -160,10 +160,7 @@ class CheckpointProbe:
 
     MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
     MAX_ARCHIVE_FILES = 2000
-    STATE_ROOTS = {
-        "opencode": "/home/agent/.local/share/opencode",
-        "copilot": "/home/agent/.copilot/session-state",
-    }
+    STATE_ROOTS = {"copilot": "/home/agent/.copilot/session-state"}
 
     def __init__(self, *, root: Path, harness: str, image: str, relay_host: str, advertised_host: str) -> None:
         """Bind explicit Docker/relay settings without launching or reading operator credentials."""
@@ -544,7 +541,7 @@ async def run_async(args: argparse.Namespace) -> None:
 def main() -> None:
     """Parse the explicitly selected Docker fixture and reachable relay interface."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--harness", choices=("copilot", "opencode"), required=True)
+    parser.add_argument("--harness", choices=("copilot",), default="copilot")
     parser.add_argument("--image", required=True, help="Disposable receipt fixture image; never an existing container")
     parser.add_argument(
         "--results", required=True, help="New output directory for sensitive fixture state and evidence"

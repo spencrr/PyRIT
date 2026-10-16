@@ -20,7 +20,6 @@ import psutil
 
 from pyrit.agent.checkpoint_archive import CheckpointArchive
 from pyrit.agent.harness import launch_environment
-from pyrit.auth.github_cli import github_cli_token_async
 from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
 from pyrit.models.agent_execution import AgentEnvironment, AgentExecution, AgentWorkspaceBase
 
@@ -44,7 +43,6 @@ class ExecutionEnvironment:
         self.home = directory / "home"
         self.process: asyncio.subprocess.Process | None = None
         self.runtime_environment: dict[str, str] = {}
-        self._runtime_credentials: dict[str, str] = {}
 
     @property
     def container_workspace(self) -> str:
@@ -111,18 +109,13 @@ class ExecutionEnvironment:
         Raises:
             ValueError: A configured credential is missing.
         """
-        values = dict(self._runtime_credentials)
+        values: dict[str, str] = {}
         for name in self.execution.profile.credential_env:
             value = os.environ.get(name)
             if not value:
                 raise ValueError(f"Required credential environment variable is missing: {name}")
             values[name] = value
         return values
-
-    async def resolve_credentials_async(self) -> None:
-        """Resolve an explicitly selected developer login once per allocation, before provisioning."""
-        if self.execution.profile.use_github_cli_login:
-            self._runtime_credentials = {"COPILOT_GITHUB_TOKEN": await github_cli_token_async()}
 
     async def _prepare_docker_async(self) -> None:
         profile = self.execution.profile
@@ -347,7 +340,6 @@ class ExecutionEnvironment:
         if self.execution.profile.environment == AgentEnvironment.LOCAL:
             await self._collect_artifacts_async()
         await asyncio.to_thread(self._remove_runtime_directories)
-        self._runtime_credentials.clear()
 
     async def capture_checkpoint_async(
         self,

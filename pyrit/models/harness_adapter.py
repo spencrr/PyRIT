@@ -18,6 +18,7 @@ class HarnessAdapterInfo(BaseModel):
     default_command: tuple[str, ...] = ()
     wire_apis: tuple[InferenceWireApi, ...] = ()
     native_model_credentials: tuple[str, ...] = ()
+    reserved_environment: tuple[str, ...] = ()
 
     @field_validator("name")
     @classmethod

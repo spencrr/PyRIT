@@ -157,18 +157,18 @@ initializers:
   - target
   - name: harness_profile
     args:
-      name: opencode_automation
-      harness_kind: opencode
+      name: copilot_automation
+      harness_kind: copilot
       permission_policy: deny
   - name: environment_template
     args:
       name: receipt_image
-      image: pyrit-opencode-receipt:1.18.35
+      image: pyrit-copilot-receipt:1.0.93
       workspace_base: image
   - name: agent_target
     args:
       name: receipt_agent
-      harness_profile: opencode_automation
+      harness_profile: copilot_automation
       environment_template: receipt_image
       model_target: openai_chat
       required: false

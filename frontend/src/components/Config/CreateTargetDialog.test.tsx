@@ -492,8 +492,8 @@ describe("CreateTargetDialog", () => {
     await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
     expect(await screen.findByRole("region", { name: "Harness" })).toBeVisible();
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
-    await user.selectOptions(screen.getByRole("combobox", { name: "Harness", exact: true }), "opencode");
-    expect(screen.getByRole("combobox", { name: "Harness", exact: true })).toHaveValue("opencode");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Harness", exact: true }), "acp");
+    expect(screen.getByRole("combobox", { name: "Harness", exact: true })).toHaveValue("acp");
     await user.type(screen.getByRole("textbox", { name: /Target name/ }), "agent-draft");
     await openTargetTypePicker();
     await user.click(screen.getByRole("option", { name: /Implementation: OpenAIChatTarget/ }));
@@ -501,7 +501,7 @@ describe("CreateTargetDialog", () => {
     expect(screen.queryByRole("region", { name: "Harness" })).not.toBeInTheDocument();
     await openTargetTypePicker();
     await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
-    expect(screen.getByRole("combobox", { name: "Harness", exact: true })).toHaveValue("opencode");
+    expect(screen.getByRole("combobox", { name: "Harness", exact: true })).toHaveValue("acp");
     expect(screen.getByRole("textbox", { name: /Target name/ })).toHaveValue("agent-draft");
     expect(mockedTargetsApi.createTarget).not.toHaveBeenCalled();
   });

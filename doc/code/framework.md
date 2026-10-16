@@ -296,9 +296,9 @@ replay attack history, or apply prompt converters. Eligibility is capability-bas
 and inference evidence is distinct from agent-reported tool execution.
 
 Harness adapters own launch/provider configuration, not the protocol transport
-or resource lifecycle. Explicit Copilot and OpenCode profiles reuse the same ACP
-target, manager, and inference relay; custom ACP launches do not inherit either
-adapter's settings. Environment templates describe a starting filesystem (image
+or resource lifecycle. The built-in Copilot adapter and any registered adapter
+reuse the same ACP target, manager, and inference relay; custom ACP launches do
+not inherit an adapter's settings. Environment templates describe a starting filesystem (image
 or empty) and optional overlay, not a mandatory fixture-copy operation.
 The registry and chat share target creation; the specialized harness form is
 an authoring view, not a separate target registry or conversation model.

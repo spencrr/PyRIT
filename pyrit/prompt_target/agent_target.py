@@ -94,8 +94,6 @@ class AgentTarget(PromptTarget):
 
     def _build_identifier(self) -> ComponentIdentifier:
         values = self.profile.model_dump(mode="json")
-        if not self.profile.use_github_cli_login:
-            values.pop("use_github_cli_login")
         if self.profile.harness_kind == legacy_harness_kind(self.profile.command):
             values.pop("harness_kind")
         original_base = AgentWorkspaceBase.IMAGE if self.profile.environment == "docker" else AgentWorkspaceBase.EMPTY

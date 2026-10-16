@@ -76,7 +76,6 @@ class AgentPresetCatalog(BaseModel):
     unavailable_targets: dict[str, str] = Field(default_factory=dict)
     environment_parameters: dict[AgentEnvironment, list[Parameter]] = Field(default_factory=dict)
     harness_adapters: list[HarnessAdapterInfo] = Field(default_factory=list)
-    github_cli_login_enabled: bool = False
 
 
 class AgentPresetSelection(BaseModel):

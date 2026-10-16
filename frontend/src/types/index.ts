@@ -30,7 +30,6 @@ export interface HarnessProfile {
   readonly harness_kind?: string
   readonly command: string[]
   readonly credential_env: string[]
-  readonly use_github_cli_login?: boolean
   readonly authentication_method: string | null
   readonly permission_policy: 'deny' | 'allow_once' | 'ask'
   readonly inference_requirements?: InferenceRequirements
@@ -67,7 +66,6 @@ export interface AgentPresetCatalog {
   readonly unavailable_targets: Record<string, string>
   readonly environment_parameters?: Partial<Record<EnvironmentTemplate['environment'], Parameter[]>>
   readonly harness_adapters?: HarnessAdapterInfo[]
-  readonly github_cli_login_enabled?: boolean
 }
 
 export interface HarnessAdapterInfo {

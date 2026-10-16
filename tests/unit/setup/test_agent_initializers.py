@@ -197,7 +197,7 @@ def test_definition_subclasses_do_not_change_composed_target_identity(
 @pytest.mark.parametrize("named_first", [True, False])
 def test_base_and_named_preset_registration_is_idempotent_in_either_order(named_first: bool) -> None:
     presets = AgentConfigurationRegistry()
-    harness = HarnessProfile(harness_kind="opencode", permission_policy="allow_once")
+    harness = HarnessProfile(harness_kind="acp", command=("team-agent", "--stdio"), permission_policy="allow_once")
     environment = EnvironmentTemplate(image="team-image", working_directory="repo", docker_cpus=2)
     named_harness = HarnessProfileDefinition(name="first_alias", **harness.model_dump())
     named_environment = EnvironmentTemplateDefinition(name="first_alias", **environment.model_dump())
@@ -247,7 +247,7 @@ async def test_model_target_composition_is_pinned_and_names_are_not_identity_asy
 
 def test_presets_copy_values_and_conflicting_names_fail() -> None:
     presets = AgentConfigurationRegistry()
-    profile = HarnessProfile(harness_kind="opencode")
+    profile = HarnessProfile(harness_kind="acp", command=("team-agent", "--stdio"))
     presets.register_harness(name="open", profile=profile)
     presets.register_harness(name="open", profile=profile.model_copy())
     snapshot = presets.list_harnesses()
@@ -388,7 +388,7 @@ def test_preflight_is_isolated_and_rejects_invalid_plans() -> None:
         preflight_agent_initializers(
             initializers=[
                 *local_plan(),
-                configured("harness_profile", name="custom", harness_kind="opencode"),
+                configured("harness_profile", name="custom", harness_kind="acp", command=["team-agent", "--stdio"]),
             ],
             environment={},
         )
@@ -519,7 +519,7 @@ from pyrit.setup.agent_initialization import register_agent_target
 class PrivateAgentInitializer(PyRITInitializer):
     async def initialize_async(self):
         registry = AgentConfigurationRegistry.get_registry_singleton()
-        registry.register_harness(name="private", profile=HarnessProfile(harness_kind="opencode"))
+        registry.register_harness(name="private", profile=HarnessProfile(harness_kind="acp", command=("team-agent",)))
         registry.register_environment(name="team_image", template=EnvironmentTemplate(image="private.example/agent:1"))
         register_agent_target(AgentTargetComposition(name="team_agent", harness_profile="private",
                                                      environment_template="team_image"))
