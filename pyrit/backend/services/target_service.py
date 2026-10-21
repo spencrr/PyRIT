@@ -31,10 +31,11 @@ from pyrit.backend.services.component_lifecycle import release_component_async
 from pyrit.common import REQUIRED_VALUE, default_values
 from pyrit.common.auth_mode import AUTH_MODES, AuthMode
 from pyrit.models import TargetIdentifier
+from pyrit.models.agent_setup import AgentPresetSelection, AgentTargetOrigin, AgentTargetProvenance
 from pyrit.models.catalog.target import TargetInstance
 from pyrit.models.component_spec import SourceInstanceSpec, TargetBinding
 from pyrit.models.parameter import Parameter
-from pyrit.prompt_target import GitHubCopilotTarget, PromptTarget
+from pyrit.prompt_target import AgentTarget, GitHubCopilotTarget, PromptTarget
 from pyrit.registry import TargetRegistry
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,12 @@ class TargetService:
         Returns:
             TargetInstance with metadata derived from the object.
         """
-        return target_object_to_instance(target_registry_name, target_obj)
+        entry = self._registry.instances.get_entry(target_registry_name)
+        return target_object_to_instance(
+            target_registry_name,
+            target_obj,
+            registry_metadata=entry.metadata if entry else None,
+        )
 
     async def list_targets_async(
         self,
@@ -451,8 +457,19 @@ class TargetService:
             finally:
                 await release_component_async(target_obj)
         try:
-            target = self._build_instance_from_object(target_registry_name=target_registry_name, target_obj=target_obj)
-            self._registry.instances.register(target_obj, name=target_registry_name)
+            registration_metadata = (
+                {
+                    "agent_configuration_provenance": AgentTargetProvenance(
+                        origin=AgentTargetOrigin.RUNTIME, presets=AgentPresetSelection()
+                    ).model_dump(mode="json")
+                }
+                if issubclass(target_cls, AgentTarget)
+                else {}
+            )
+            target = target_object_to_instance(
+                target_registry_name, target_obj, registry_metadata=registration_metadata
+            )
+            self._registry.instances.register(target_obj, name=target_registry_name, metadata=registration_metadata)
             return target
         except Exception:
             await release_component_async(target_obj)

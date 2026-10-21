@@ -68,6 +68,7 @@ def reset_setup_registries() -> None:
     from pyrit.agent.environment import EnvironmentProviderRegistry
     from pyrit.agent.harness import HarnessAdapterRegistry
     from pyrit.registry import (
+        AgentConfigurationRegistry,
         AttackRegistry,
         AttackTechniqueRegistry,
         ConverterRegistry,
@@ -83,6 +84,7 @@ def reset_setup_registries() -> None:
     EnvironmentProviderRegistry.reset_registry_singleton()
 
     for registry in (
+        AgentConfigurationRegistry,
         AttackRegistry,
         AttackTechniqueRegistry,
         ConverterRegistry,

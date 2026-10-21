@@ -98,6 +98,16 @@ A turn ends with a `TargetResponse` whose `TargetOutcome` is `completed`, `cance
 A completed turn without assistant text, such as an agent that finished by writing files,
 is recorded as such rather than fabricated into a reply.
 
+Harness profiles and environment templates are reusable by name. The `harness_profile`,
+`environment_template`, and `agent_target` initializers register them from `.pyrit_conf`
+and compose targets into the ordinary `TargetRegistry`; see
+[reusable agent profiles](../../getting_started/pyrit_conf.md#reusable-agent-profiles-and-environment-templates).
+From Python, `AgentConfigurationRegistry` holds the same named values and
+`pyrit.setup.agent_initialization.register_agent_target` composes an
+`AgentTargetComposition` without starting anything. Registered agent targets expose their
+resolved `agent_configuration` and a provenance (initializer-defined or runtime-created)
+through the target catalog; provenance is registry metadata, never part of identity.
+
 Without a running manager of your own, `AgentTarget` uses the runtime-owned manager
 (`pyrit.agent.runtime`), rooted in the memory results directory or, when results live in
 remote storage, the local database data directory. The Co-PyRIT backend reconciles it at

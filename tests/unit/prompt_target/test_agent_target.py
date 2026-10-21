@@ -39,20 +39,16 @@ class TestAgentTarget:
         )
         assert new.get_identifier().hash == old.get_identifier().hash
         view = target_object_to_instance("composed", new)
-        assert view.identifier.hash == old.get_identifier().hash
-        assert view.capabilities.supports_multi_turn
+        assert view.agent_configuration == configuration
+        assert view.model_dump()["agent_configuration"]["model_binding"]["model"] == "test-model"
 
     def test_registry_builds_configuration_without_launch(self) -> None:
         target = TargetRegistry.get_registry_singleton().create_instance_from_external_input(
             "AgentTarget",
-            params={
-                "agent_configuration": {
-                    "environment_template": {"environment": "local", "local_execution_acknowledged": True}
-                }
-            },
+            params={"agent_configuration": {"environment_template": {"environment": "docker", "image": "test"}}},
         )
         assert isinstance(target, AgentTarget)
-        assert target.profile.environment == "local"
+        assert target.profile.environment == "docker"
         assert not target.capabilities.supports_editable_history
 
     async def test_tool_only_result_is_not_write_only_success(self) -> None:

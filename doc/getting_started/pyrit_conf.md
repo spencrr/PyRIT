@@ -138,6 +138,94 @@ initializers:
   - name: technique
 ```
 
+#### Reusable agent profiles and environment templates
+
+Three independent initializers reuse the normal setup lifecycle to describe
+[agent targets](../code/targets/agent_target.md). They register configuration only; no
+harness process or Docker container starts during setup.
+
+| Initializer | Responsibility |
+| --- | --- |
+| `harness_profile` | Define one named executable/adapter, permission policy, and credential references |
+| `environment_template` | Define one named image/local workspace and resource policy, without local-execution consent |
+| `agent_target` | Resolve named dependencies and register the composed target in the existing `TargetRegistry` |
+
+Names use lowercase letters, digits, and underscores and start with a letter.
+Repeat the entries to define multiple independent profiles or compositions:
+
+```yaml
+initializers:
+  - target
+  - name: harness_profile
+    args:
+      name: copilot_automation
+      harness_kind: copilot
+      permission_policy: deny
+  - name: environment_template
+    args:
+      name: receipt_image
+      environment: docker
+      image: pyrit-copilot-receipt:1.0.93
+      workspace_base: image
+  - name: agent_target
+    args:
+      name: receipt_agent
+      harness_profile: copilot_automation
+      environment_template: receipt_image
+      model_target: openai_chat
+      required: false
+```
+
+The `target` initializer supplies model targets from the configured environment
+sources. `agent_target.model_target` refers to one of those registered targets
+with an inference capability, not to another initializer. Omit `model_target`
+for harness-managed access and optionally supply `model` for model selection.
+Supply `wire_api` only with a model target.
+
+`required` defaults to `true`. With `required: false`, an unavailable model target
+or credential reference leaves that composition unregistered, logs a warning,
+and records a reason in
+`AgentConfigurationRegistry.get_registry_singleton().unavailable_targets()`.
+Invalid profiles, unknown preset names, incompatible authentication, and name
+conflicts still fail. Register dependencies before compositions.
+
+For a local template, use `environment: local`; explicitly set
+`local_execution_acknowledged: true` on each **agent_target** entry that uses it.
+A reusable template cannot grant consent. Image-provided or empty Docker
+workspaces and optional directory overlays follow the
+[agent environment contract](../code/targets/agent_target.md).
+
+The entries accept flat scalar/list parameters, matching other initializers.
+Use `command: [custom-agent, --stdio]` with `harness_kind: acp` for a custom
+harness. Inference requirements can be set with `inference_wire_api`,
+`inference_streaming`, `inference_tool_calls`, and `inference_input_modalities`
+on the harness initializer; the Python API also accepts the nested model.
+
+Equal registrations are idempotent. Conflicting values do not replace a running
+target. Preset names are resolved into copied settings before target construction;
+their names are retained as registry-entry provenance, not target identity.
+Registration projects definition subclasses onto the canonical harness/environment
+fields before comparison and storage, so private definition names cannot change
+runtime identity or cause conflicts between otherwise equal presets.
+Already-composed targets are unaffected when setup registries are reset.
+
+**Live apply:** declarative preset references, consent, and conflicts are checked
+in an isolated registry before replacing the runtime. Target-backed or pinned
+compositions currently require a backend restart because arbitrary model initializers
+cannot be safely executed during preflight; compositions depending on presets supplied
+by private Python initializers likewise require restart. These declarative checks fail
+before existing registries or services are replaced.
+
+**Private presets:** a custom initializer can call
+`AgentConfigurationRegistry.register_harness`, `register_environment`, and
+`pyrit.setup.agent_initialization.register_agent_target` using the same models.
+Existing custom-initializer code storage and environment/Key Vault sources remain the
+source of truth; no new catalog file or generated Python is required. Custom
+initializers may pass `initializer=type(self).__name__` to registration to identify
+their source. Registered targets expose their resolved `agent_configuration` and an
+`agent_configuration_provenance` (initializer-defined or runtime-created) through the
+target catalog API; provenance is registry metadata, not target identity.
+
 #### Optional Full Dataset Preload
 
 `load_default_datasets` is not required for `pyrit_scan`. Scenario `DatasetAttackConfiguration` objects fetch only their requested datasets from registered providers on demand, then add them to memory.
