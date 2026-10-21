@@ -10,7 +10,7 @@ from pathlib import Path
 from pyrit.agent.environment import ExecutionEnvironmentProvider, ExecutionSession, ExecutionSpec
 from pyrit.agent.environments.subprocess_session import SubprocessSession
 from pyrit.models.agent_environment import EnvironmentCapabilities, EnvironmentProviderInfo
-from pyrit.models.agent_execution import AgentEnvironment, AgentExecution, EnvironmentTemplate
+from pyrit.models.agent_execution import AgentEnvironment, AgentExecution, AgentWorkspaceBase, EnvironmentTemplate
 
 
 class LocalSession(SubprocessSession):
@@ -87,8 +87,18 @@ class LocalProvider(ExecutionEnvironmentProvider):
         Reject settings this provider would silently ignore.
 
         Raises:
-            ValueError: The template carries provider settings.
+            ValueError: The template carries Docker or provider settings.
         """
+        defaults = EnvironmentTemplate(environment=AgentEnvironment.LOCAL.value)
+        if (
+            template.image is not None
+            or template.workspace_base == AgentWorkspaceBase.IMAGE
+            or any(
+                getattr(template, name) != getattr(defaults, name)
+                for name in ("docker_network", "docker_memory", "docker_cpus")
+            )
+        ):
+            raise ValueError("Image and docker_* settings require the Docker environment")
         if template.environment_settings:
             raise ValueError("The local provider is configured through typed template fields, not environment_settings")
 

@@ -19,6 +19,7 @@ class AgentEnvironment(str, Enum):
     """The first-party execution environment providers; registered providers use their own names."""
 
     LOCAL = "local"
+    DOCKER = "docker"
 
 
 class AgentHarnessKind(str, Enum):
@@ -26,6 +27,13 @@ class AgentHarnessKind(str, Enum):
 
     COPILOT = "copilot"
     ACP = "acp"
+
+
+class AgentWorkspaceBase(str, Enum):
+    """Starting filesystem beneath the execution workspace."""
+
+    IMAGE = "image"
+    EMPTY = "empty"
 
 
 _HARNESS_DEFAULT_COMMANDS: dict[str, tuple[str, ...]] = {AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio")}
@@ -117,8 +125,10 @@ class AgentProfile(BaseModel):
     harness_kind: str = AgentHarnessKind.COPILOT
     environment: str
     environment_settings: dict[str, JsonValue] = Field(default_factory=dict)
+    image: str | None = None
     fixture_directory: str | None = None
     expected_fixture_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    workspace_base: AgentWorkspaceBase | None = None
     working_directory: str = "."
     credential_env: tuple[str, ...] = ()
     authentication_method: str | None = None
@@ -133,6 +143,9 @@ class AgentProfile(BaseModel):
     max_evidence_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=256 * 1024 * 1024)
     artifact_paths: tuple[str, ...] = ()
     max_artifact_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
+    docker_network: str = "bridge"
+    docker_memory: str = "1g"
+    docker_cpus: float = Field(default=1, gt=0, le=32)
 
     _command_validator = field_validator("command")(_validate_command)
     _harness_validator = model_validator(mode="before")(_resolve_harness)
@@ -173,17 +186,23 @@ class EnvironmentTemplate(BaseModel):
     """
     Reusable starting filesystem and access policy; never a running environment.
 
-    ``environment`` names an installed provider. First-party providers read the typed fields they
-    declare; a registered provider reads its own validated ``environment_settings``.
+    ``environment`` names an installed provider. The first-party ``docker`` provider reads the typed
+    ``image``, ``workspace_base``, and ``docker_*`` fields; a registered provider reads its own
+    validated ``environment_settings``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     environment: str
     environment_settings: dict[str, JsonValue] = Field(default_factory=dict)
+    image: str | None = None
     fixture_directory: str | None = None
     expected_fixture_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    workspace_base: AgentWorkspaceBase | None = None
     working_directory: str = "."
     local_execution_acknowledged: bool = False
+    docker_network: str = "bridge"
+    docker_memory: str = "1g"
+    docker_cpus: float = Field(default=1, gt=0, le=32)
 
     _environment_validator = field_validator("environment")(_validate_environment_name)
     _working_directory_validator = field_validator("working_directory")(_validate_working_directory)
@@ -281,6 +300,7 @@ class AgentExecution(BaseModel):
     provider_id: str | None = None
     process_id: int | None = None
     process_created_at: float | None = None
+    image_id: str | None = Field(default=None, description="Resolved image digest for image-based environments.")
     fixture_sha256: str | None = None
     resource: dict[str, JsonValue] = Field(
         default_factory=dict,

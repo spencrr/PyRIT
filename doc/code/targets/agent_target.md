@@ -77,6 +77,10 @@ async with AgentExecutionManager(root=Path("dbdata") / "agent-executions") as ma
     )
 ```
 
+For an isolated run, replace the template with
+`EnvironmentTemplate(environment="docker", image="pyrit-copilot-receipt:1.0.93", fixture_directory="assets/agent_receipt")`;
+see [Docker](#docker) for building that image.
+
 The target can be any attack's `objective_target`, including `PromptSendingAttack` and
 `AtomicAttack` runs with concurrency: each conversation gets its own execution. The target
 accepts user text and supports multi-turn, but not system prompts or editable/replayed
@@ -189,11 +193,12 @@ owns resources**: it allocates and releases exactly what it created, seeds the w
 passes the `ExecutionSpec` (command, environment, credentials) to the harness, and exposes the
 harness's ACP byte streams and stderr through an `ExecutionSession`.
 
-`local` is the first-party provider in this release. It runs the harness as a child process
-of the PyRIT host with a private home and a fresh workspace. It is explicitly **not a
-sandbox**: a process running as the same OS user can reach what that user can reach. Its
-template therefore requires `local_execution_acknowledged=True`. An isolated Docker provider
-follows in the next release of this series.
+`docker` and `local` are the first-party providers. `docker` is the isolated reference
+provider and declares the typed template fields it reads (`image`, `workspace_base`,
+`docker_network`, `docker_memory`, `docker_cpus`). `local` runs the harness as a child process
+of the PyRIT host with a private home and a fresh workspace; it is explicitly **not a
+sandbox**, because a process running as the same OS user can reach what that user can reach,
+so its template requires `local_execution_acknowledged=True`.
 
 `EnvironmentTemplate.environment` always names the provider explicitly; there is no default
 place to run an agent. A registered provider reads its own validated `environment_settings`;
@@ -201,6 +206,52 @@ first-party providers refuse settings they would ignore. `EnvironmentProviderInf
 `capabilities` and an optional flat JSON `settings_schema` for authoring tools. `isolated`
 defaults to `False`: a provider must claim isolation explicitly, and one that does not requires
 the same `local_execution_acknowledged` consent as local execution.
+
+### Docker
+
+The Docker provider runs the harness in a fresh container per execution. The container is
+created from the template's `image` with no host home, repository, or Docker socket mounted,
+all capabilities dropped, no new privileges, and the template's `docker_network` (default
+`bridge`; `none` disconnects it), `docker_memory`, and `docker_cpus` limits. The image tag is
+resolved to an image ID before the container is created and retained as
+`AgentExecution.image_id`, so a record names exactly the bytes that ran. The container runs as
+the image's configured user; named users and groups are resolved from the stopped image's
+account files, so images without those files should specify a numeric `USER uid:gid`.
+
+`workspace_base="image"` uses the image's `/workspace` and keeps that root's permissions, so the
+image must make it writable where required; `workspace_base="empty"` uses a unique private path
+instead. `fixture_directory` overlays a private copy of host files into the workspace, prepared
+with the image user's ownership. Each container is labelled with its execution ID; release
+removes only containers carrying that label, including after a runtime restart.
+
+Credentials are passed as container environment values, which Docker administrators can
+inspect while the container exists, and are never written to the record or journal. Docker must
+be able to reach the harness's model endpoints through its own network and trust store: an ACP
+handshake alone does not prove authentication or model access.
+
+### Benign receipt demonstration
+
+`build_scripts/agent_receipt_demo.py` exercises the full path with a benign task: the agent
+reads `orders.json`, writes `receipt.json` with total 31, updates it to 36 in a second turn, and
+a fresh execution is verified to start from 31 again. The verifier reads retained artifacts, not
+the agent's claims. The scripted mode drives a real subprocess over the real ACP SDK but **does
+not call a model**:
+
+```powershell
+uv sync --extra agents
+uv run --extra agents python -m build_scripts.agent_receipt_demo --scripted --results dbdata\agent-demo
+```
+
+To run real Copilot CLI in Docker, build the example image and reference a credential held by
+your shell. `docker/agent_receipt/Dockerfile` pins the CLI version and base image digest and
+includes the CA trust store the CLI needs:
+
+```powershell
+docker build --tag pyrit-copilot-receipt:1.0.93 --file docker\agent_receipt\Dockerfile .
+uv run --extra agents python -m build_scripts.agent_receipt_demo --credential-env COPILOT_GITHUB_TOKEN --results dbdata\agent-demo-docker
+```
+
+`--local` runs the same demonstration under the local provider; it is not sandboxed.
 
 ```python
 from pathlib import Path
@@ -286,10 +337,12 @@ $env:COPILOT_GITHUB_TOKEN = gh auth token --hostname github.com
 ```
 
 Then set `credential_env=("COPILOT_GITHUB_TOKEN",)` on the `HarnessProfile`. Each execution
-receives a fresh private home; no login files or prior sessions are copied. A process under
-the local provider may still discover keychain or other login state belonging to the same OS
-user (observed with Copilot CLI 1.0.95): a private directory is not credential isolation.
-Do not treat an exported personal token on a shared backend as a deployment design.
+receives a fresh private home; no login files or prior sessions are copied. A fresh Docker home
+without supplied credentials reports that authentication is required: selecting a model does
+not authenticate it. A process under the local provider may still discover keychain or other
+login state belonging to the same OS user (observed with Copilot CLI 1.0.95): a private
+directory is not credential isolation. Do not treat an exported personal token on a shared
+backend as a deployment design.
 
 The target catalog shows an agent target's full `agent_configuration` to every authenticated
 user, like the endpoints of other targets: credential environment variable *names* (never

@@ -155,12 +155,13 @@ class EnvironmentProviderRegistry:
             ImportError: The optional agents dependencies are missing.
         """
         try:
+            from pyrit.agent.environments.docker import DockerProvider
             from pyrit.agent.environments.local import LocalProvider
         except ImportError as error:
             raise ImportError("Agent execution requires installation of pyrit[agents]") from error
 
         self._lock = RLock()
-        providers: tuple[ExecutionEnvironmentProvider, ...] = (LocalProvider(),)
+        providers: tuple[ExecutionEnvironmentProvider, ...] = (DockerProvider(), LocalProvider())
         self._providers: dict[str, ExecutionEnvironmentProvider] = {
             provider.info.name: provider for provider in providers
         }
