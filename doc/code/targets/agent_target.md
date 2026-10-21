@@ -841,7 +841,11 @@ The API is under `/api/executions`:
 - `POST /{id}/cancel` cancels the active turn, not the entire session.
 - `POST /{id}/close` releases resources, including retrying failed cleanup.
 
-These are administrator routes, reusing PyRIT's existing authorization. For an
+These are administrator routes, reusing PyRIT's existing authorization. Creating
+an `AgentTarget` through `POST /api/targets` is also administrator-only: the class
+declares `requires_admin_creation = True` because every execution launches a
+process or container with credentials the server holds, regardless of the
+parameters supplied. Direct Python and initializer use are unaffected. For an
 explicitly trusted local deployment without authentication, the existing
 `PYRIT_ALLOW_UNAUTHENTICATED_ADMIN=true` setting enables administration. Do not
 expose such a deployment to an untrusted network.

@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from ruamel.yaml import YAML
 
 from pyrit.agent.runtime import peek_agent_execution_manager
+from pyrit.backend.authentication_policy import AuthenticationPolicy
 from pyrit.backend.middleware.auth import require_admin
 from pyrit.backend.models.configuration import SaveAgentStartupRequest
 from pyrit.backend.routes.configuration import router
@@ -424,9 +425,10 @@ async def test_storage_failure_leaves_runtime_unchanged_async(source: Configurat
 
 def test_startup_api_is_admin_only_and_saves_without_returning_raw_config(source: ConfigurationFileService) -> None:
     app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
     app.state.configuration_file_service = source
     app.include_router(router)
-    with TestClient(app) as client, patch.dict(os.environ, {"PYRIT_ALLOW_UNAUTHENTICATED_ADMIN": "false"}):
+    with TestClient(app) as client:
         assert client.get("/config/agent-startup").status_code == 403
         assert client.post("/config/agent-startup", json={}).status_code == 403
         app.dependency_overrides[require_admin] = lambda: None

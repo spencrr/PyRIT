@@ -6,6 +6,7 @@
 import asyncio
 
 from pyrit.agent.runtime import close_agent_execution_manager_async
+from pyrit.backend.services.analytics_service import close_analytics_service_async, get_analytics_service
 from pyrit.backend.services.attack_service import get_attack_service
 from pyrit.backend.services.converter_service import get_converter_service
 from pyrit.backend.services.dataset_service import get_dataset_service
@@ -16,6 +17,7 @@ from pyrit.backend.services.scenario_run_service import reset_scenario_run_servi
 from pyrit.backend.services.scenario_service import get_scenario_service
 from pyrit.backend.services.scorer_service import get_scorer_service
 from pyrit.backend.services.target_service import get_target_service
+from pyrit.backend.services.technique_service import get_technique_service
 from pyrit.registry import TargetRegistry
 
 
@@ -29,9 +31,32 @@ def has_active_manual_sends() -> bool:
     return bool(get_manual_send_scheduler.cache_info().currsize and get_manual_send_scheduler().has_active_work())
 
 
+def has_active_analytics_work() -> bool:
+    """Return whether analytics still owns work, including cleanup after an HTTP timeout."""
+    return bool(get_analytics_service.cache_info().currsize and get_analytics_service().has_active_work)
+
+
 async def close_services_async() -> None:
+    """Close existing resources, then invalidate cached registry and memory references."""
+    errors: list[BaseException] = []
+    for operation_name, close in (
+        ("cached backend services", _close_cached_services_async),
+        ("analytics service", close_analytics_service_async),
+    ):
+        try:
+            await close()
+        except (Exception, asyncio.CancelledError) as error:
+            error.add_note(f"Failed to close {operation_name}.")
+            errors.append(error)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("Backend service closure failed.", errors)
+
+
+async def _close_cached_services_async() -> None:
     """
-    Close existing resources, then invalidate cached registry and memory references.
+    Close cached services and release every registered target transport.
 
     Raises:
         ExceptionGroup: One or more target transports could not be closed.
@@ -76,5 +101,6 @@ async def close_services_async() -> None:
                 get_scenario_service,
                 get_scorer_service,
                 get_target_service,
+                get_technique_service,
             ):
                 factory.cache_clear()

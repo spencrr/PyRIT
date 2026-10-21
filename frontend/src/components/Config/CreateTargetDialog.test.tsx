@@ -76,6 +76,56 @@ const AZURE_ML_COMMON_PARAMETERS: Parameter[] = [
 const TARGET_TYPES: TargetTypeListResponse = {
   items: [
     {
+      target_type: "GitHubCopilotTarget",
+      parameters: [
+        {
+          name: "model_name",
+          type_name: "str",
+          required: true,
+          default: null,
+          description: "Explicit Copilot model ID.",
+        },
+        {
+          name: "github_token",
+          type_name: "str",
+          required: false,
+          default: null,
+          sensitive: true,
+          description: "Required unless GITHUB_TOKEN is configured for this CoPyRIT instance through its environment or loaded .env/.env.local files.",
+        },
+        {
+          name: "working_directory",
+          type_name: "str | Path",
+          required: false,
+          default: null,
+          description: "Existing local directory on the server.",
+        },
+        {
+          name: "retain_session",
+          type_name: "bool",
+          required: false,
+          default: "False",
+          description: "Keep Copilot sessions on disk.",
+        },
+        {
+          name: "response_timeout_seconds",
+          type_name: "float",
+          required: false,
+          default: "60.0",
+          description: "Response time budget in seconds.",
+        },
+        {
+          name: "max_requests_per_minute",
+          type_name: "int",
+          required: false,
+          default: null,
+          description: "Per-send pacing.",
+        },
+      ],
+      supported_auth_modes: ["api_key"],
+      description: "Send text requests through the GitHub Copilot SDK.",
+    },
+    {
       target_type: "AzureMLChatTarget",
       parameters: [
         ...AZURE_ML_COMMON_PARAMETERS,
@@ -288,6 +338,7 @@ const TARGET_TYPES: TargetTypeListResponse = {
 
 const TARGET_DISPLAY_NAMES: Record<string, string> = {
   AzureMLChatTarget: "Azure Machine Learning chat",
+  GitHubCopilotTarget: "GitHub Copilot",
   OpenAIChatTarget: "OpenAI chat",
   OpenAICompletionTarget: "OpenAI text completion",
   OpenAIImageTarget: "OpenAI image",
@@ -480,7 +531,7 @@ describe("CreateTargetDialog", () => {
     );
     await flushTargetTypesFetch();
 
-    expect(screen.getByRole("heading", { name: "Create Target", exact: true })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Create New Target", exact: true })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create Target", exact: true })).toBeInTheDocument();
     expect(screen.getByText("Cancel")).toBeInTheDocument();
   });
@@ -497,7 +548,7 @@ describe("CreateTargetDialog", () => {
     await user.type(screen.getByRole("textbox", { name: /Target name/ }), "agent-draft");
     await openTargetTypePicker();
     await user.click(screen.getByRole("option", { name: /Implementation: OpenAIChatTarget/ }));
-    expect(await screen.findByRole("heading", { name: "Create Target", exact: true })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Create New Target", exact: true })).toBeVisible();
     expect(screen.queryByRole("region", { name: "Harness" })).not.toBeInTheDocument();
     await openTargetTypePicker();
     await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
@@ -615,7 +666,7 @@ describe("CreateTargetDialog", () => {
     await openTargetTypePicker();
 
     const options = screen.getAllByRole("option");
-    expect(options).toHaveLength(10);
+    expect(options).toHaveLength(11);
     for (const entry of TARGET_TYPES.items.filter((item) => item.target_type !== "PlaywrightTarget")) {
       const option = screen.getByRole("option", {
         name: new RegExp(`Implementation: ${entry.target_type}`),
@@ -691,7 +742,7 @@ describe("CreateTargetDialog", () => {
 
     expect(screen.getByText("Loading target details...")).toBeInTheDocument();
     await openTargetTypePicker();
-    expect(screen.getAllByRole("option")).toHaveLength(8);
+    expect(screen.getAllByRole("option")).toHaveLength(9);
   });
 
   it("should preserve a fallback selection when type metadata arrives", async () => {
@@ -735,7 +786,7 @@ describe("CreateTargetDialog", () => {
 
     expect(await screen.findByText(/Target details could not be loaded/)).toBeInTheDocument();
     await openTargetTypePicker();
-    expect(screen.getAllByRole("option")).toHaveLength(8);
+    expect(screen.getAllByRole("option")).toHaveLength(9);
     expect(screen.getByRole("option", {
       name: /Azure Machine Learning chat.*Implementation: AzureMLChatTarget/,
     })).toBeInTheDocument();
@@ -748,7 +799,7 @@ describe("CreateTargetDialog", () => {
       </TestWrapper>
     );
 
-    expect(screen.queryByRole("heading", { name: "Create Target", exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Create New Target", exact: true })).not.toBeInTheDocument();
   });
 
   it("should have Create button disabled until type and endpoint filled", async () => {
@@ -1047,7 +1098,7 @@ describe("CreateTargetDialog", () => {
     await user.click(screen.getByRole("radio", { name: /Identity-based/ }));
 
     // Submit via form (bypass disabled button by submitting the form directly)
-    const form = screen.getByRole("heading", { name: "Create Target", exact: true }).closest("form") ??
+    const form = screen.getByRole("heading", { name: "Create New Target", exact: true }).closest("form") ??
       document.querySelector("form");
     if (form) {
       fireEvent.submit(form);
@@ -1259,6 +1310,66 @@ describe("CreateTargetDialog", () => {
           endpoint: "https://api.openai.com",
           temperature: 0,
           seed: 42,
+        },
+      });
+    });
+  });
+
+  it("should submit the catalog video duration as a number", async () => {
+    const user = userEvent.setup();
+    const videoParameters: Parameter[] = [
+      {
+        name: "resolution_dimensions",
+        type_name: "str",
+        is_list: false,
+        choices: ["720x1280", "1280x720", "1024x1792", "1792x1024"],
+        default: "1280x720",
+        required: false,
+      },
+      { name: "n_seconds", type_name: "int", is_list: false, choices: null, default: "4", required: false },
+      { name: "model_name", type_name: "str", is_list: false, choices: null, default: null, required: true },
+      { name: "endpoint", type_name: "str", is_list: false, choices: null, default: null, required: true },
+      { name: "api_key", type_name: "str", is_list: false, choices: null, default: null, required: false },
+      { name: "underlying_model", type_name: "str", is_list: false, choices: null, default: null, required: false },
+    ];
+    mockedTargetsApi.listTargetTypes.mockResolvedValue({
+      items: TARGET_TYPES.items.map((item) => (
+        item.target_type === "OpenAIVideoTarget" ? { ...item, parameters: videoParameters } : item
+      )),
+    });
+    mockedTargetsApi.createTarget.mockResolvedValue(makeTarget({
+      target_registry_name: "openai_video_custom",
+      target_type: "OpenAIVideoTarget",
+    }));
+
+    render(
+      <TestWrapper>
+        <CreateTargetDialog {...defaultProps} />
+      </TestWrapper>
+    );
+
+    await selectTargetType("OpenAIVideoTarget");
+    await user.click(screen.getByText("Advanced settings"));
+
+    fireEvent.change(screen.getByPlaceholderText("https://your-resource.openai.azure.com/"), {
+      target: { value: "https://api.openai.com" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("e.g. gpt-4o, my-deployment"), {
+      target: { value: "sora-2" },
+    });
+    fireEvent.change(screen.getByLabelText("N Seconds"), {
+      target: { value: "8" },
+    });
+
+    await user.click(screen.getByText("Create Target"));
+
+    await waitFor(() => {
+      expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
+        type: "OpenAIVideoTarget",
+        params: {
+          endpoint: "https://api.openai.com",
+          model_name: "sora-2",
+          n_seconds: 8,
         },
       });
     });
@@ -1509,6 +1620,206 @@ describe("CreateTargetDialog", () => {
         },
       });
     });
+  });
+
+  it("should allow a blank GitHub token when the instance has GITHUB_TOKEN configured", async () => {
+    const user = userEvent.setup();
+    mockedTargetsApi.createTarget.mockResolvedValue(makeTarget({
+      target_registry_name: "copilot",
+      target_type: "GitHubCopilotTarget",
+    }));
+
+    render(
+      <TestWrapper>
+        <CreateTargetDialog {...defaultProps} />
+      </TestWrapper>
+    );
+
+    await selectTargetType("GitHubCopilotTarget");
+
+    expect(screen.getByRole("region", { name: /selected target details/i }))
+      .toHaveTextContent("Supported authentication: GitHub token");
+    expect(screen.getByText(/CoPyRIT does not use browser or saved Copilot logins/)).toBeVisible();
+    expect(screen.getByText(/Tokens and created targets can be used by anyone with access to this CoPyRIT instance/))
+      .toBeVisible();
+    expect(screen.getByText(/Required unless GITHUB_TOKEN is configured for this CoPyRIT instance/)).toBeVisible();
+    expect(screen.getByText(/Model IDs are not validated when creating a target/)).toBeVisible();
+    expect(screen.getByRole("textbox", { name: /Model \/ Deployment Name/ })).toHaveAccessibleDescription(
+      /Model IDs are not validated.*An unrecognized ID may cause Copilot to use a different model.*Verify the exact model ID is available to the GitHub account associated with this target's token/,
+    );
+    expect(screen.queryByText(/SDK login discovery/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Endpoint URL/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Underlying model differs/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /Identity-based/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("GitHub Token")).toBeVisible();
+    expect(screen.getByLabelText("GitHub Token")).toHaveAttribute("type", "password");
+    expect(screen.getByRole("button", { name: "Create Target" })).toBeDisabled();
+
+    await user.type(screen.getByRole("textbox", { name: /Model \/ Deployment Name/ }), "gpt-4.1");
+    await user.click(screen.getByRole("button", { name: "Create Target" }));
+
+    await waitFor(() => {
+      expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
+        type: "GitHubCopilotTarget",
+        params: { model_name: "gpt-4.1" },
+      });
+    });
+    expect(defaultProps.onCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it("should show missing instance token guidance and allow retrying with an entered token", async () => {
+    const user = userEvent.setup();
+    const detail = "GitHub Copilot requires a GitHub token in CoPyRIT. Enter GitHub Token or configure "
+      + "GITHUB_TOKEN for this CoPyRIT instance through its environment or loaded .env/.env.local files.";
+    mockedTargetsApi.createTarget.mockRejectedValueOnce(Object.assign(new Error("Bad Request"), {
+      isAxiosError: true,
+      response: { status: 400, data: { detail } },
+    }));
+    mockedTargetsApi.createTarget.mockResolvedValueOnce(makeTarget({
+      target_registry_name: "copilot",
+      target_type: "GitHubCopilotTarget",
+    }));
+
+    render(
+      <TestWrapper>
+        <CreateTargetDialog {...defaultProps} />
+      </TestWrapper>
+    );
+
+    await selectTargetType("GitHubCopilotTarget");
+    await user.type(screen.getByRole("textbox", { name: /Model \/ Deployment Name/ }), "gpt-4.1");
+    await user.click(screen.getByRole("button", { name: "Create Target" }));
+
+    expect(await screen.findByText(detail)).toBeVisible();
+    expect(defaultProps.onCreated).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: /Model \/ Deployment Name/ })).toHaveValue("gpt-4.1");
+
+    await user.type(screen.getByLabelText("GitHub Token"), "test-github-token");
+    await user.click(screen.getByRole("button", { name: "Create Target" }));
+
+    await waitFor(() => expect(defaultProps.onCreated).toHaveBeenCalledTimes(1));
+    expect(mockedTargetsApi.createTarget).toHaveBeenLastCalledWith({
+      type: "GitHubCopilotTarget",
+      params: { model_name: "gpt-4.1", github_token: "test-github-token" },
+    });
+  });
+
+  it("should submit the GitHub token and typed Copilot advanced settings", async () => {
+    const user = userEvent.setup();
+    mockedTargetsApi.createTarget.mockResolvedValue(makeTarget({
+      target_registry_name: "copilot",
+      target_type: "GitHubCopilotTarget",
+    }));
+
+    render(
+      <TestWrapper>
+        <CreateTargetDialog {...defaultProps} />
+      </TestWrapper>
+    );
+
+    await selectTargetType("GitHubCopilotTarget");
+    await user.type(screen.getByRole("textbox", { name: /Model \/ Deployment Name/ }), "gpt-4.1");
+    await user.type(screen.getByLabelText("GitHub Token"), "test-github-token");
+    await user.click(screen.getByText("Advanced settings"));
+    await user.type(screen.getByRole("textbox", { name: "Working Directory" }), "C:\\copilot-workspace");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Retain Session" }), "false");
+    await user.type(screen.getByRole("spinbutton", { name: "Response Timeout Seconds" }), "120");
+    await user.type(screen.getByRole("spinbutton", { name: "Max Requests Per Minute" }), "10");
+    await user.click(screen.getByRole("button", { name: "Create Target" }));
+
+    await waitFor(() => {
+      expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
+        type: "GitHubCopilotTarget",
+        params: {
+          model_name: "gpt-4.1",
+          github_token: "test-github-token",
+          working_directory: "C:\\copilot-workspace",
+          retain_session: false,
+          response_timeout_seconds: 120,
+          max_requests_per_minute: 10,
+        },
+      });
+    });
+
+    await selectTargetType("GitHubCopilotTarget");
+    expect(screen.getByLabelText("GitHub Token")).toHaveValue("");
+  });
+
+  it.each(["loading", "failed", "empty"] as const)(
+    "should create GitHub Copilot without an endpoint when metadata is %s",
+    async (metadataStatus) => {
+      const user = userEvent.setup();
+      if (metadataStatus === "loading") {
+        mockedTargetsApi.listTargetTypes.mockReturnValue(new Promise<TargetTypeListResponse>(() => {}));
+      } else if (metadataStatus === "failed") {
+        mockedTargetsApi.listTargetTypes.mockRejectedValueOnce(new Error("registry unavailable"));
+      } else {
+        mockedTargetsApi.listTargetTypes.mockResolvedValueOnce({ items: [] });
+      }
+      mockedTargetsApi.createTarget.mockResolvedValue(makeTarget({
+        target_registry_name: "copilot",
+        target_type: "GitHubCopilotTarget",
+      }));
+
+      render(
+        <TestWrapper>
+          <CreateTargetDialog {...defaultProps} />
+        </TestWrapper>
+      );
+
+      await selectTargetType("GitHubCopilotTarget");
+      expect(screen.getByRole("textbox", { name: /Model \/ Deployment Name/ })).toHaveAccessibleDescription(
+        /Model IDs are not validated.*An unrecognized ID may cause Copilot to use a different model/,
+      );
+      expect(screen.queryByLabelText(/Endpoint URL/)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+      expect(screen.queryByRole("radio", { name: /Identity-based/ })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Create Target" })).toBeDisabled();
+      expect(screen.getByLabelText("GitHub Token")).toHaveAttribute("type", "password");
+
+      await user.type(screen.getByRole("textbox", { name: /Model \/ Deployment Name/ }), "gpt-4.1");
+      await user.type(screen.getByLabelText("GitHub Token"), "test-github-token");
+      await user.click(screen.getByRole("button", { name: "Create Target" }));
+
+      await waitFor(() => {
+        expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
+          type: "GitHubCopilotTarget",
+          params: { model_name: "gpt-4.1", github_token: "test-github-token" },
+        });
+      });
+    },
+  );
+
+  it("should clear the GitHub token when switching to another target type", async () => {
+    const user = userEvent.setup();
+    mockedTargetsApi.createTarget.mockResolvedValue(makeTarget({
+      target_registry_name: "openai",
+      target_type: "OpenAIChatTarget",
+    }));
+
+    render(
+      <TestWrapper>
+        <CreateTargetDialog {...defaultProps} />
+      </TestWrapper>
+    );
+
+    await selectTargetType("GitHubCopilotTarget");
+    await user.type(screen.getByLabelText("GitHub Token"), "test-github-token");
+    await selectTargetType("OpenAIChatTarget");
+    expect(screen.queryByText(/Model IDs are not validated when creating a target/)).not.toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: /Endpoint URL/ }), "https://api.openai.com");
+    await user.click(screen.getByRole("button", { name: "Create Target" }));
+
+    await waitFor(() => {
+      expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
+        type: "OpenAIChatTarget",
+        params: { endpoint: "https://api.openai.com" },
+      });
+    });
+
+    await selectTargetType("GitHubCopilotTarget");
+    expect(screen.getByLabelText("GitHub Token")).toHaveValue("");
   });
 
   it("should support identity auth for targets without an endpoint or api_key parameter", async () => {

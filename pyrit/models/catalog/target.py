@@ -47,6 +47,9 @@ class TargetInstance(BaseModel):
     """
 
     target_registry_name: str = Field(..., description="Target registry key (e.g., 'azure_openai_chat')")
+    reconstructable: bool = False
+    reconstruction_error: str | None = None
+    supports_temperature_override: bool = False
     identifier: TargetIdentifier = Field(
         ...,
         description=(
@@ -66,6 +69,10 @@ class TargetInstance(BaseModel):
         default=None,
         exclude_if=lambda value: value is None,
         description="Initializer/runtime origin and verified preset references; not part of target identity.",
+    )
+    supports_history_replay: bool = Field(
+        False,
+        description="Effective history replay support, including configured adapters and provider restoration",
     )
     target_specific_params: dict[str, JSONValue] | None = Field(
         None,

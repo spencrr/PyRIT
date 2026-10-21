@@ -4,7 +4,7 @@
 """A real ACP harness as a PyRIT target, without replacing its internal tool loop."""
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pyrit.models import ComponentIdentifier, Message, construct_response_from_request
 from pyrit.models.agent_execution import AgentProfile, AgentTargetConfiguration, AgentWorkspaceBase, legacy_harness_kind
@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 class AgentTarget(PromptTarget):
     """Send each new user turn to a fresh-per-conversation ACP execution."""
+
+    requires_admin_creation: ClassVar[bool] = True
 
     _DEFAULT_CONFIGURATION = TargetConfiguration(
         capabilities=TargetCapabilities(

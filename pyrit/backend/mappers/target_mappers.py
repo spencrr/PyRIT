@@ -22,6 +22,9 @@ from pyrit.models.catalog.target import TargetInstance
 from pyrit.models.model_inference import InferenceCapabilities
 from pyrit.prompt_target import PromptTarget
 from pyrit.prompt_target.common.target_capabilities import CapabilityName
+from pyrit.registry import TargetRegistry
+from pyrit.registry.registry import Reconstructable
+from pyrit.registry.resolution import derive_parameters
 
 # Capability flag names that should never be surfaced as identifier-level params:
 # they are sourced from `target_obj.capabilities` instead.
@@ -82,9 +85,30 @@ def target_object_to_instance(
     agent_configuration = getattr(target_obj, "agent_configuration", None)
     inference = target_obj.inference_capabilities
     provenance = registry_metadata.get("agent_configuration_provenance") if registry_metadata else None
+    reconstructable = isinstance(target_obj, Reconstructable)
+    reconstruction_error = None
+    if reconstructable:
+        try:
+            TargetRegistry.get_registry_singleton().get_reconstruction_parameters(target_obj)
+        except ValueError as exc:
+            reconstructable = False
+            reconstruction_error = str(exc)
+    try:
+        target_obj.validate_history_replay()
+    except ValueError:
+        supports_history_replay = False
+    else:
+        supports_history_replay = True
 
     return TargetInstance(
         target_registry_name=target_registry_name,
+        reconstructable=reconstructable,
+        reconstruction_error=reconstruction_error,
+        supports_temperature_override=reconstructable
+        and any(
+            parameter.name == "temperature"
+            for parameter in derive_parameters(cls=type(target_obj), identifier_type=TargetIdentifier)
+        ),
         identifier=target_identifier,
         capabilities=target_obj.capabilities,
         inference_capabilities=inference if isinstance(inference, InferenceCapabilities) else None,
@@ -92,6 +116,7 @@ def target_object_to_instance(
         agent_configuration_provenance=AgentTargetProvenance.model_validate(provenance)
         if provenance is not None
         else None,
+        supports_history_replay=supports_history_replay,
         target_specific_params=_target_specific_params(target_identifier),
         inner_targets=_build_inner_targets(target_obj),
     )

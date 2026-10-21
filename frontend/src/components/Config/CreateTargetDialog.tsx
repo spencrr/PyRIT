@@ -52,6 +52,7 @@ import {
 import { MAX_WEIGHT, parseWeight } from './weightValidation'
 
 const FALLBACK_TARGET_TYPES = [
+  'GitHubCopilotTarget',
   'OpenAIChatTarget',
   'OpenAICompletionTarget',
   'OpenAIImageTarget',
@@ -75,6 +76,7 @@ const FALLBACK_IDENTITY_TARGET_TYPES = new Set([
 const TARGET_DISPLAY_NAMES: Record<string, string> = {
   AgentTarget: 'Agent (ACP)',
   AzureMLChatTarget: 'Azure Machine Learning chat',
+  GitHubCopilotTarget: 'GitHub Copilot',
   OpenAIChatTarget: 'OpenAI chat',
   OpenAICompletionTarget: 'OpenAI text completion',
   OpenAIImageTarget: 'OpenAI image',
@@ -84,12 +86,45 @@ const TARGET_DISPLAY_NAMES: Record<string, string> = {
   RoundRobinTarget: 'Weighted round robin',
 }
 
-const FALLBACK_TARGET_TYPE_ENTRIES: TargetTypeEntry[] = FALLBACK_TARGET_TYPES.map((targetType) => ({
-  target_type: targetType,
-  parameters: [],
-  supported_auth_modes: [],
-  description: null,
-}))
+const GITHUB_COPILOT_TOKEN_HINT =
+  'Required unless GITHUB_TOKEN is configured for this CoPyRIT instance through its environment or loaded .env/.env.local files.'
+
+const GITHUB_COPILOT_MODEL_HINT =
+  'Model IDs are not validated when creating a target. An unrecognized ID may cause Copilot to use a different model. '
+  + 'Verify the exact model ID is available to the GitHub account associated with this target\'s token.'
+
+// Copilot has no endpoint or API-key parameter, even when registry metadata is unavailable.
+const GITHUB_COPILOT_FALLBACK_ENTRY: TargetTypeEntry = {
+  target_type: 'GitHubCopilotTarget',
+  parameters: [
+    {
+      name: 'model_name',
+      type_name: 'str',
+      required: true,
+      default: null,
+      description: GITHUB_COPILOT_MODEL_HINT,
+    },
+    {
+      name: 'github_token',
+      type_name: 'str',
+      required: false,
+      default: null,
+      sensitive: true,
+      description: GITHUB_COPILOT_TOKEN_HINT,
+    },
+  ],
+  supported_auth_modes: ['api_key'],
+  description: 'Send text requests through the GitHub Copilot SDK.',
+}
+
+const FALLBACK_TARGET_TYPE_ENTRIES: TargetTypeEntry[] = FALLBACK_TARGET_TYPES.map((targetType) => (
+  targetType === 'GitHubCopilotTarget' ? GITHUB_COPILOT_FALLBACK_ENTRY : {
+    target_type: targetType,
+    parameters: [],
+    supported_auth_modes: [],
+    description: null,
+  }
+))
 
 type AuthMode = 'api_key' | 'identity'
 type TypeMetadataStatus = 'loading' | 'loaded' | 'error'
@@ -98,7 +133,11 @@ function getTargetDisplayName(targetType: string): string {
   return TARGET_DISPLAY_NAMES[targetType] ?? targetType
 }
 
-function getAuthDescription(authModes: TargetTypeEntry['supported_auth_modes']): string | null {
+function getAuthDescription(entry: TargetTypeEntry): string | null {
+  if (entry.target_type === 'GitHubCopilotTarget') {
+return 'Supported authentication: GitHub token'
+  }
+  const authModes = entry.supported_auth_modes
   if (authModes.length === 0) return null
 
   const labels = authModes.map((mode) => (
@@ -321,8 +360,10 @@ export default function CreateTargetDialog({
 
   const isRoundRobin = targetType === 'RoundRobinTarget'
   const isAzureML = targetType === 'AzureMLChatTarget'
+  const isGitHubCopilot = targetType === 'GitHubCopilotTarget'
   const isOpenAi = targetType.startsWith('OpenAI') || targetType === 'RealtimeTarget'
   const targetTypeEntry = targetTypeByName.get(targetType)
+    ?? (isGitHubCopilot ? GITHUB_COPILOT_FALLBACK_ENTRY : undefined)
   const metadataDrivenParameters = useMemo(
     () => targetTypeEntry?.parameters.filter(
       (parameter) => isMetadataDrivenTargetParameter(targetType, parameter),
@@ -330,7 +371,12 @@ export default function CreateTargetDialog({
     [targetType, targetTypeEntry],
   )
   const requiredMetadataParameters = metadataDrivenParameters.filter((parameter) => parameter.required)
-  const optionalMetadataParameters = metadataDrivenParameters.filter((parameter) => !parameter.required)
+  const githubTokenParameter = isGitHubCopilot
+    ? metadataDrivenParameters.find((parameter) => parameter.name === 'github_token' && !parameter.required)
+    : undefined
+  const optionalMetadataParameters = metadataDrivenParameters.filter(
+    (parameter) => !parameter.required && parameter !== githubTokenParameter,
+  )
   const requiredMetadataParameterMissing = requiredMetadataParameters.some(
     (parameter) => !isParameterValueSet(parameterValues[parameter.name]),
   )
@@ -356,7 +402,7 @@ export default function CreateTargetDialog({
   const hasApiKeyField = hasField('api_key')
   const selectedTargetDisplayName = getTargetDisplayName(targetType)
   const selectedTargetAuthDescription = targetTypeEntry
-    ? getAuthDescription(targetTypeEntry.supported_auth_modes)
+    ? getAuthDescription(targetTypeEntry)
     : null
   const supportsIdentity = targetTypeEntry
     ? targetTypeEntry.supported_auth_modes.includes('identity')
@@ -592,7 +638,7 @@ export default function CreateTargetDialog({
     <Dialog open={open} onOpenChange={(_, data) => { if (!data.open) handleClose() }}>
       <DialogSurface className={mergeClasses(styles.dialogSurface, isAgent && styles.agentSurface)}>
         <DialogBody>
-          <DialogTitle>Create Target</DialogTitle>
+          <DialogTitle>Create New Target</DialogTitle>
           <DialogContent className={styles.dialogContent}>
               {!isAgent && error && (
                 <MessageBar intent="error">
@@ -651,7 +697,7 @@ export default function CreateTargetDialog({
                 >
                   {targetTypeOptions.map((entry) => {
                     const displayName = getTargetDisplayName(entry.target_type)
-                    const authDescription = getAuthDescription(entry.supported_auth_modes)
+                    const authDescription = getAuthDescription(entry)
                     const accessibleDescription = [
                       displayName,
                       entry.description,
@@ -729,6 +775,23 @@ export default function CreateTargetDialog({
                     </Text>
                   )}
                 </section>
+              )}
+
+              {isGitHubCopilot && (
+                <>
+                  <MessageBar intent="info">
+                    <MessageBarBody>
+                      Enter a GitHub token, or leave blank to use <code>GITHUB_TOKEN</code> from
+                      this instance&apos;s environment or loaded <code>.env</code>/<code>.env.local</code> files.
+                      CoPyRIT does not use browser or saved Copilot logins.
+                    </MessageBarBody>
+                  </MessageBar>
+                  <MessageBar intent="warning">
+                    <MessageBarBody>
+                      Tokens and created targets can be used by anyone with access to this CoPyRIT instance.
+                    </MessageBarBody>
+                  </MessageBar>
+                </>
               )}
 
               {/* === RoundRobinTarget form: select existing targets === */}
@@ -863,7 +926,7 @@ export default function CreateTargetDialog({
                   {hasModelNameField && (
                     <Field
                       label="Model / Deployment Name"
-                      hint={modelNameParameter?.description || undefined}
+                      hint={isGitHubCopilot ? GITHUB_COPILOT_MODEL_HINT : modelNameParameter?.description || undefined}
                       required={modelNameRequired}
                       validationMessage={fieldErrors.modelName}
                       validationState={fieldErrors.modelName ? 'error' : 'none'}
@@ -871,7 +934,7 @@ export default function CreateTargetDialog({
                       <Input
                         placeholder={isAzureML
                           ? 'e.g. Llama-3.2-3B-Instruct'
-                          : 'e.g. gpt-4o, my-deployment'}
+                          : isGitHubCopilot ? 'Copilot model ID' : 'e.g. gpt-4o, my-deployment'}
                         value={modelName}
                         onChange={(_, data) => setModelName(data.value)}
                       />
@@ -939,6 +1002,20 @@ export default function CreateTargetDialog({
                       />
                     )
                   })}
+
+                  {githubTokenParameter && (
+                    <ParameterField
+                      parameter={{ ...githubTokenParameter, description: GITHUB_COPILOT_TOKEN_HINT }}
+                      value={parameterValues.github_token ?? ''}
+                      disabled={submitting}
+                      label="GitHub Token"
+                      testIdPrefix="target-param"
+                      onChange={(name, value) => setParameterValues((current) => ({
+                        ...current,
+                        [name]: value,
+                      }))}
+                    />
+                  )}
 
                   {showAuthField && (
                     <Field label="Authentication">

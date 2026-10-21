@@ -63,7 +63,7 @@ describe('Executions', () => {
     renderPage()
     await user.click(await screen.findByRole('button', { name: '12345678' }))
     await user.click(screen.getByRole('button', { name: 'Copy configuration to new target' }))
-    expect(await screen.findByRole('heading', { name: 'Create Target', exact: true })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Create New Target', exact: true })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'Target Type' })).toHaveTextContent('Agent (ACP)')
     expect(screen.getByRole('textbox', { name: /Docker image/ })).toHaveValue('test')
     expect(screen.getAllByRole('dialog')).toHaveLength(1)

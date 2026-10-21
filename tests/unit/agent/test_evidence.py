@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from pyrit.agent.evidence import AgentEvidenceExporter, EvidenceBudgetError, EvidenceNotSettledError
 from pyrit.agent.execution_manager import AgentExecutionManager
+from pyrit.backend.authentication_policy import AuthenticationPolicy
 from pyrit.backend.middleware.auth import require_admin
 from pyrit.backend.routes import executions
 from pyrit.memory import SQLiteMemory
@@ -375,8 +376,9 @@ async def test_cancelled_snapshot_requests_hold_capacity_until_journal_workers_f
 
 def test_evidence_routes_require_admin() -> None:
     app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
     app.include_router(executions.router)
-    with TestClient(app) as client, patch.dict("os.environ", {"PYRIT_ALLOW_UNAUTHENTICATED_ADMIN": "false"}):
+    with TestClient(app) as client:
         for ending in ("evidence", "evidence.zip"):
             assert client.get(f"/executions/{uuid4()}/{ending}").status_code == 403
 

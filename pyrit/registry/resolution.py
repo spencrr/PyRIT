@@ -21,6 +21,8 @@ responsibilities:
   constructor-ready keyword arguments — coercing simple string values via
   ``Parameter.coerce_value`` and resolving registry-reference parameters by name
   from the owning domain's registry. Defaults are left to the constructor.
+  Callers building from external input (REST, CLI) select the external path,
+  which accepts only parameters with ``Parameter.is_external_input``.
 - **Resolve from a declared list** (``resolve_declared_params``): the sibling for
   a component that declares an explicit ``list[Parameter]`` (e.g. a scenario's
   ``supported_parameters()``). It has no references, coerces every supplied
@@ -41,14 +43,14 @@ import inspect
 import logging
 import re
 import types
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, Union, get_args, get_origin, get_type_hints
 
 from pydantic import TypeAdapter, ValidationError
 
 from pyrit.common.apply_defaults import REQUIRED_VALUE, _RequiredValueSentinel
-from pyrit.common.brick_contract import init_parameters_are_forwarded
+from pyrit.common.brick_contract import get_constructor_owners
 from pyrit.models import StructuredParameterValue
 from pyrit.models.parameter import ComponentType, Parameter, RegistryReference
 
@@ -227,9 +229,8 @@ def _constructor_sources(cls: type) -> list[tuple[type, inspect.Signature]]:
     Raises:
         ValueError: If a constructor signature cannot be inspected.
     """
-    owners = [owner for owner in cls.__mro__ if "__init__" in owner.__dict__]
     sources: list[tuple[type, inspect.Signature]] = []
-    for index, owner in enumerate(owners):
+    for owner in get_constructor_owners(cls):
         init = owner.__dict__["__init__"]
         try:
             signature = inspect.signature(init)
@@ -251,8 +252,6 @@ def _constructor_sources(cls: type) -> list[tuple[type, inspect.Signature]]:
             parameters.append(param.replace(annotation=annotation))
         sources.append((owner, signature.replace(parameters=parameters)))
 
-        if not init_parameters_are_forwarded(init) or index + 1 == len(owners):
-            break
     return sources
 
 
@@ -559,13 +558,14 @@ def resolve_constructor_args(
     cls: type,
     raw_args: dict[str, Any],
     identifier_type: type[ComponentIdentifier] | None = None,
+    external_input: bool = False,
 ) -> dict[str, Any]:
     """
     Resolve a flat argument dict into constructor-ready keyword arguments.
 
     Derives the ``Parameter`` contract for ``cls`` and applies it to
     ``raw_args``. For each raw argument: validate it is a declared parameter;
-    resolve registry-reference parameters by name; coerce simple string values
+    resolve registry-reference parameters by name; coerce constrained values and simple string values
     via ``Parameter.coerce_value``; pass everything else through unchanged.
 
     Args:
@@ -574,15 +574,22 @@ def resolve_constructor_args(
         identifier_type (type[ComponentIdentifier] | None): The domain identifier
             whose ``Param.*`` markers declare which parameters are registry
             references. When None, no parameter is treated as a reference.
+        external_input (bool): Whether ``raw_args`` come from an external caller (REST, CLI).
+            External callers may set only parameters with ``Parameter.is_external_input``
+            and must name registry references. Defaults to False (in-process callers, which
+            may pass any Python object).
 
     Returns:
         dict[str, Any]: Arguments ready to pass to ``cls(**resolved)``.
 
     Raises:
         ValueError: If an argument is not a declared parameter, a registry
-            reference cannot be resolved, or a simple value cannot be coerced.
+            reference cannot be resolved, a simple value cannot be coerced, or
+            external input sets a parameter that is not an external input.
     """
     by_name = {param.name: param for param in derive_parameters(cls=cls, identifier_type=identifier_type)}
+    if external_input:
+        reject_non_external_params(params=raw_args, declared=list(by_name.values()), owner=cls.__name__)
 
     resolved: dict[str, Any] = {}
     for name, value in raw_args.items():
@@ -609,8 +616,11 @@ def resolve_constructor_args(
             )
         elif param.variants is not None:
             resolved[name] = _resolve_structured_input(parameter=param, value=value)
-        elif (isinstance(value, str) and param.is_string_coercible) or (
-            isinstance(value_type, type) and issubclass(value_type, Enum)
+        elif (
+            param.choices
+            or (isinstance(value, str) and param.is_string_coercible)
+            or (isinstance(value_type, type) and issubclass(value_type, Enum))
+            or (external_input and isinstance(value, Mapping) and param.is_external_input)
         ):
             try:
                 resolved[name] = param.coerce_value(value)
@@ -620,6 +630,50 @@ def resolve_constructor_args(
             resolved[name] = value
 
     return resolved
+
+
+def reject_non_external_params(*, params: Mapping[str, Any], declared: Sequence[Parameter], owner: str) -> None:
+    """
+    Reject external input that is not an explicitly supported external input.
+
+    Every name must be declared and have ``Parameter.is_external_input``, and registry
+    references must be given by name. Values are otherwise left to the component.
+
+    Args:
+        params (Mapping[str, Any]): The parameter values supplied by an external caller.
+        declared (Sequence[Parameter]): The parameters the component declares.
+        owner (str): The owning class or scenario name, for error messages.
+
+    Raises:
+        ValueError: If ``params`` sets an undeclared parameter or one that is not an external
+            input, or gives a registry reference as anything but a name.
+    """
+    declared_by_name = {parameter.name: parameter for parameter in declared}
+    for name, value in params.items():
+        parameter = declared_by_name.get(name)
+        if parameter is None:
+            external_names = sorted(
+                known for known, candidate in declared_by_name.items() if candidate.is_external_input
+            )
+            raise ValueError(f"Unknown parameter '{name}' for '{owner}'. Valid parameters: {external_names}")
+        if not parameter.is_external_input:
+            raise ValueError(
+                f"Parameter '{name}' of '{owner}' cannot be set through the API; pass it from Python instead."
+            )
+        if parameter.reference is not None:
+            _require_reference_names(value=value, owner=owner, name=name)
+
+
+def _require_reference_names(*, value: Any, owner: str, name: str) -> None:
+    """
+    Require external input for a registry reference to be a registry name or a list of names.
+
+    Raises:
+        ValueError: If the value is neither null, a name, nor a list of names.
+    """
+    names = value if isinstance(value, list) else [value]
+    if value is not None and not all(isinstance(item, str) for item in names):
+        raise ValueError(f"{owner}.{name}: expected a registry name, but got {type(value).__name__}.")
 
 
 def _resolve_structured_input(*, parameter: Parameter, value: Any) -> Any:

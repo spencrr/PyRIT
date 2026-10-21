@@ -372,7 +372,7 @@ describe("conversationExport", () => {
       expect(exportedMessage.displayPieces[0].scores[0].id).toBe("score-blocked");
     });
 
-    it("exports persisted processing-error scores without diagnostic values", () => {
+    it("exports persisted processing-error details and scores without editable diagnostic content", () => {
       const backendMessage: BackendMessage = {
         turn_number: 1,
         role: "assistant",
@@ -414,7 +414,13 @@ describe("conversationExport", () => {
           ],
         }),
       ]);
-      expect(json).not.toMatch(/Internal original diagnostic|Traceback/);
+      expect(exportedMessage.content).toBe("");
+      expect(exportedMessage).not.toHaveProperty("originalContent");
+      expect(exportedMessage.error).toEqual({
+        type: "processing",
+        description: backendMessage.message_pieces[0].converted_value,
+      });
+      expect(json).not.toContain("Internal original diagnostic");
     });
 
     it("defaults the export timestamp to a valid ISO string when omitted", () => {

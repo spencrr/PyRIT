@@ -542,13 +542,14 @@ async def test_admin_checkpoint_routes_require_consent_and_share_conversation_ad
 
 
 async def test_all_checkpoint_routes_are_admin_only_async() -> None:
+    from pyrit.backend.authentication_policy import AuthenticationPolicy
     from pyrit.backend.routes import executions
 
     app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
     app.include_router(executions.router)
     route = f"/executions/{uuid4()}/checkpoint"
-    with patch.dict("os.environ", {"PYRIT_ALLOW_UNAUTHENTICATED_ADMIN": "false"}):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
-            for method, suffix in (("GET", ""), ("POST", ""), ("POST", "/restore"), ("DELETE", "")):
-                response = await client.request(method, route + suffix, json={"acknowledge_sensitive_state": True})
-                assert response.status_code == 403
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+        for method, suffix in (("GET", ""), ("POST", ""), ("POST", "/restore"), ("DELETE", "")):
+            response = await client.request(method, route + suffix, json={"acknowledge_sensitive_state": True})
+            assert response.status_code == 403

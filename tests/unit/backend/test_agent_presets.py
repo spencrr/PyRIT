@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from pyrit.agent.runtime import peek_agent_execution_manager
+from pyrit.backend.authentication_policy import AuthenticationPolicy
 from pyrit.backend.middleware.auth import require_admin
 from pyrit.backend.models.targets import CreateTargetRequest
 from pyrit.backend.routes.configuration import router
@@ -62,17 +63,9 @@ def test_catalog_is_admin_only_and_returns_detached_canonical_models() -> None:
     configuration = config()
     before = peek_agent_execution_manager()
     app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
     app.include_router(router)
-    with (
-        TestClient(app) as client,
-        patch.dict(
-            "os.environ",
-            {
-                "PYRIT_ALLOW_UNAUTHENTICATED_ADMIN": "false",
-                "TEST_TOOL_TOKEN": "not-for-export",
-            },
-        ),
-    ):
+    with TestClient(app) as client, patch.dict("os.environ", {"TEST_TOOL_TOKEN": "not-for-export"}):
         assert client.get("/config/agent-presets").status_code == 403
         app.dependency_overrides[require_admin] = lambda: None
         response = client.get("/config/agent-presets")
@@ -103,7 +96,7 @@ async def test_create_validates_snapshot_and_returns_provenance_without_affectin
     configuration = config(local=local)
     service = TargetService()
     before = peek_agent_execution_manager()
-    created = await service.create_target_async(request=request(configuration))
+    created = await service.create_target_async(request=request(configuration), is_admin=True)
     assert created.agent_configuration_provenance.origin is AgentTargetOrigin.RUNTIME
     assert created.agent_configuration_provenance.presets.harness_profile == "team"
     assert (await service.get_target_async(target_registry_name="agent")) == created
@@ -113,7 +106,8 @@ async def test_create_validates_snapshot_and_returns_provenance_without_affectin
             name="custom",
             type="AgentTarget",
             params={"agent_configuration": configuration.model_dump(mode="json")},
-        )
+        ),
+        is_admin=True,
     )
     assert custom.identifier.hash == created.identifier.hash
     assert custom.agent_configuration_provenance.presets == AgentPresetSelection()
@@ -134,7 +128,7 @@ async def test_changed_or_removed_preset_is_rejected_without_registration_async(
         )
         create = request(updated)
     with pytest.raises(ValueError, match="Unknown|changed"):
-        await TargetService().create_target_async(request=create)
+        await TargetService().create_target_async(request=create, is_admin=True)
     assert TargetRegistry.get_registry_singleton().instances.get("agent") is None
 
 

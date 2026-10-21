@@ -119,8 +119,7 @@ async def test_actual_save_close_restart_restore_and_continue_async(tmp_path: Pa
                     "if(require('fs').existsSync('/workspace/orders.json'))process.exit(2)"
                     if workspace_change == "deleted"
                     else (
-                        "if(require('fs').readFileSync('/workspace/orders.json/child','utf8')!=='saved')"
-                        "process.exit(2)"
+                        "if(require('fs').readFileSync('/workspace/orders.json/child','utf8')!=='saved')process.exit(2)"
                     )
                 )
                 await restarted._live[restored.id].environment._docker_async(

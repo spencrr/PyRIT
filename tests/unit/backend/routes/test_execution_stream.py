@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from pyrit.agent.execution_manager import AgentExecutionManager
+from pyrit.backend.authentication_policy import AuthenticationPolicy
 from pyrit.backend.middleware.auth import AuthenticationError, EntraAuthMiddleware
 from pyrit.backend.routes import executions
 from pyrit.models.agent_execution import AgentExecution, AgentExecutionEvent, AgentExecutionState, AgentProfile
@@ -61,23 +62,18 @@ async def test_stream_replays_once_then_ends_closed_execution(tmp_path: Path) ->
 
 
 def test_stream_uses_existing_http_authentication() -> None:
-    with patch.dict(
-        "os.environ",
-        {
-            "ENTRA_TENANT_ID": "tenant",
-            "ENTRA_CLIENT_ID": "client",
-            "ENTRA_ALLOWED_GROUP_IDS": "group",
-        },
+    app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(
+        mode="entra", tenant_id="tenant", client_id="client", allowed_group_ids=("group",)
+    )
+    app.include_router(executions.conversation_router, prefix="/api")
+    app.add_middleware(EntraAuthMiddleware)
+    with patch.object(
+        EntraAuthMiddleware,
+        "_authenticate_request_async",
+        AsyncMock(side_effect=AuthenticationError(status_code=401, detail="Missing authentication")),
     ):
-        app = FastAPI()
-        app.include_router(executions.conversation_router, prefix="/api")
-        app.add_middleware(EntraAuthMiddleware)
-        with patch.object(
-            EntraAuthMiddleware,
-            "_authenticate_request_async",
-            AsyncMock(side_effect=AuthenticationError(status_code=401, detail="Missing authentication")),
-        ):
-            response = TestClient(app).get(f"/api/attacks/{uuid4()}/conversations/one/execution/stream")
+        response = TestClient(app).get(f"/api/attacks/{uuid4()}/conversations/one/execution/stream")
     assert response.status_code == 401
 
 

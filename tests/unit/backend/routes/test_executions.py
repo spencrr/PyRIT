@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from pyrit.backend.authentication_policy import AuthenticationPolicy
 from pyrit.backend.middleware.auth import require_admin
 from pyrit.backend.routes import executions
 from pyrit.models.agent_execution import AgentEventPage, AgentExecution, AgentProfile
@@ -16,9 +17,9 @@ from pyrit.models.agent_execution import AgentEventPage, AgentExecution, AgentPr
 
 def test_execution_admin_access_is_required() -> None:
     app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
     app.include_router(executions.router)
-    with patch.dict("os.environ", {"PYRIT_ALLOW_UNAUTHENTICATED_ADMIN": "false"}):
-        assert TestClient(app).get("/executions").status_code == 403
+    assert TestClient(app).get("/executions").status_code == 403
 
 
 @pytest.mark.usefixtures("patch_central_database")
@@ -89,6 +90,7 @@ def test_conversation_access_is_scoped_without_admin_privileges() -> None:
         )
     )
     app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
     app.include_router(executions.router)
     app.include_router(executions.conversation_router)
     client = TestClient(app)
@@ -96,7 +98,6 @@ def test_conversation_access_is_scoped_without_admin_privileges() -> None:
     with (
         patch.object(agent_execution_service, "get_agent_execution_manager", return_value=manager),
         patch.object(executions, "get_agent_execution_manager", return_value=manager),
-        patch.dict("os.environ", {"PYRIT_ALLOW_UNAUTHENTICATED_ADMIN": "false"}),
     ):
         assert client.get("/executions").status_code == 403
         response = client.get(path)

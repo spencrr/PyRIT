@@ -11,6 +11,7 @@ import re
 import threading
 import uuid
 import weakref
+from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, MutableSequence, Sequence
 from contextlib import closing
 from contextvars import ContextVar
@@ -21,11 +22,14 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, ParamSpec,
 from urllib.parse import urlparse
 
 from sqlalchemy import (
+    Column,
     MetaData,
     String,
     Unicode,
     and_,
     case,
+    column,
+    delete,
     exists,
     false,
     func,
@@ -34,19 +38,25 @@ from sqlalchemy import (
     or_,
     select,
     type_coerce,
+    union_all,
     update,
 )
 from sqlalchemy import cast as sql_cast
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.engine.base import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm.attributes import InstrumentedAttribute, flag_modified
+from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.orm.session import Session
+from sqlalchemy.sql import visitors
+from sqlalchemy.sql.elements import ClauseElement
 
 from pyrit.common.async_compatibility import legacy_sync_override, run_legacy_sync_async
 from pyrit.common.deprecation import print_deprecation_message
 from pyrit.common.pagination import DecodedKeysetCursor
+from pyrit.memory.analytics_sql import JsonArrayItems, JsonArrayJoin, JsonContainer, JsonScalar
 
 if TYPE_CHECKING:
     from pyrit.memory.memory_embedding import MemoryEmbedding
@@ -61,8 +71,11 @@ from pyrit.memory.memory_models import (
     ConversationEntry,
     ConverterIdentifierEntry,
     EmbeddingDataEntry,
+    FindingEntry,
+    FindingEvidenceEntry,
     ObservationEntry,
     ObservationMessagePieceEntry,
+    OperationEntry,
     PromptConverterIdentifierEntry,
     PromptMemoryEntry,
     ScenarioIdentifierEntry,
@@ -89,6 +102,7 @@ from pyrit.models import (
     AttackIdentifier,
     AttackOutcome,
     AttackResult,
+    AttackResultRole,
     AttackResultSelection,
     AttackTechniqueIdentifier,
     ComponentIdentifier,
@@ -99,12 +113,18 @@ from pyrit.models import (
     ConversationRetryReason,
     ConversationStats,
     ConverterIdentifier,
+    Finding,
+    FindingCreate,
+    FindingEvidence,
+    FindingSeverity,
     IdentifierFilter,
     IdentifierType,
     Message,
     MessagePiece,
     MessageScorable,
     Observation,
+    Operation,
+    OperationUsage,
     PromptDataType,
     RetryEvent,
     ScenarioAttackResultDelta,
@@ -129,6 +149,7 @@ from pyrit.models import (
     group_conversation_message_pieces_by_sequence,
     sort_message_pieces,
 )
+from pyrit.models.operation import operation_name_key
 from pyrit.models.results.attack_result import ATTRIBUTION_FIELDS, ATTRIBUTION_VALUE_MAX_LENGTH
 
 if TYPE_CHECKING:
@@ -138,8 +159,48 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class PreparedSeedBatch:
+    """A storage-ready seed snapshot created by memory, before database writes."""
+
+    _seeds: tuple[Seed[Any], ...]
+
+    @property
+    def seeds(self) -> list[Seed[Any]]:
+        """Independent copies of the prepared seeds for candidate validation."""
+        return [seed.model_copy(deep=True) for seed in self._seeds]
+
+
+def _deprecate_message_labels(*, method: str) -> None:
+    """
+    Warn that message-level label filtering is going away.
+
+    Labels live on attack results, so callers should pick conversations from those results.
+
+    Args:
+        method (str): The memory method that received ``labels``.
+    """
+    print_deprecation_message(
+        old_item=f"MemoryInterface.{method}(labels=...)",
+        new_item=(
+            "MemoryInterface.get_attack_results_async(labels=...), then fetch messages for each result's "
+            "conversation_id, get_active_conversation_ids() or get_all_conversation_ids()"
+        ),
+        removed_in="1.4.0",
+    )
+
+
 class AttackStateConflictError(ValueError):
     """An atomic attack write no longer matches the state read by its caller."""
+
+
+class OperationInUseError(ValueError):
+    """An Operation still has findings or activity attributed to it by ID, so it cannot be deleted."""
+
+    def __init__(self, *, operation_id: uuid.UUID, usage: OperationUsage) -> None:
+        """Keep the usage so callers can say what still refers to the Operation."""
+        super().__init__(f"Operation '{operation_id}' is in use and cannot be deleted.")
+        self.usage = usage
 
 
 #: Canonical criteria key of a seed that carries no conditions.
@@ -171,6 +232,53 @@ def _normalize_attribution_filter_values(*, field: str, raw: str | Sequence[obje
     if any(len(value) > ATTRIBUTION_VALUE_MAX_LENGTH for value in validated):
         raise ValueError(f"{field} values must be at most {ATTRIBUTION_VALUE_MAX_LENGTH} characters")
     return tuple(validated)
+
+
+def _activity_operation_name(entry: AttackResultEntry | ScenarioResultEntry) -> str | None:
+    """
+    Read the deprecated Operation name stored on activity.
+
+    TODO(PyRIT 1.4): Remove this helper with Operation name attribution.
+
+    Returns:
+        str | None: The attack's dedicated name, else the ``operation`` label, else None.
+    """
+    name = (entry.labels or {}).get("operation")
+    if isinstance(entry, AttackResultEntry):
+        name = entry.operation or name
+    return name
+
+
+def _check_operation_name_change(*, existing: AttackResultEntry | ScenarioResultEntry, incoming: str | None) -> None:
+    """
+    Allow changing the Operation name only on activity without an Operation ID, as before IDs existed.
+
+    TODO(PyRIT 1.4): Remove this helper with Operation name attribution.
+
+    Raises:
+        ValueError: If the name of activity attributed by Operation ID changes.
+    """
+    if incoming == _activity_operation_name(existing):
+        return
+    if existing.operation_id is not None:
+        raise ValueError("Operation attribution is immutable")
+    print_deprecation_message(
+        old_item="Changing the Operation name of saved activity", new_item="operation_id", removed_in="1.4.0"
+    )
+
+
+def _operation_ids(items: Sequence[object]) -> set[uuid.UUID]:
+    """
+    Collect the Operation IDs that attacks or scenario runs refer to, ignoring anything else.
+
+    Returns:
+        set[uuid.UUID]: The referenced Operation IDs.
+    """
+    return {
+        item.operation_id
+        for item in items
+        if isinstance(item, (AttackResult, AttackResultEntry, ScenarioResultEntry)) and item.operation_id is not None
+    }
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -238,6 +346,7 @@ class ScenarioHistoryRunRecord:
     plan_atomic_groups: str | list[dict[str, Any]] | None
     plan_seed_id_map: str | list[dict[str, str]] | None
     started_at: datetime | None = None
+    operation_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -263,6 +372,18 @@ class ScenarioHistoryAggregate:
     # group from those, so callers should count the run with pyrit.analytics.compute_scenario_statistics instead.
     needs_sdk_statistics: bool = False
 
+    target_facing_attempts: int
+    target_facing_error_attempts: int
+    target_facing_retries: int
+
+    orchestration_attempts: int
+    orchestration_error_attempts: int
+    orchestration_retries: int
+
+    unknown_role_attempts: int
+    unknown_role_error_attempts: int
+    unknown_role_retries: int
+
     @classmethod
     def empty(cls, *, scenario_result_id: str) -> "ScenarioHistoryAggregate":
         """
@@ -280,6 +401,15 @@ class ScenarioHistoryAggregate:
             total_retries=0,
             latest_attempt_timestamp=None,
             atomic_attack_names=(),
+            target_facing_attempts=0,
+            target_facing_error_attempts=0,
+            target_facing_retries=0,
+            orchestration_attempts=0,
+            orchestration_error_attempts=0,
+            orchestration_retries=0,
+            unknown_role_attempts=0,
+            unknown_role_error_attempts=0,
+            unknown_role_retries=0,
         )
 
 
@@ -308,6 +438,7 @@ class _AttackResultQuery:
         "converter_classes",
         "targeted_harm_categories",
         "identifier_filters",
+        "operation_ids",
     )
 
     attack_result_ids: Sequence[str] | None = None
@@ -324,6 +455,7 @@ class _AttackResultQuery:
     labels: Mapping[str, str | Sequence[str]] | None = None
     operator: str | Sequence[str] | None = None
     operation: str | Sequence[str] | None = None
+    operation_ids: Sequence[uuid.UUID] | None = None
     targeted_harm_categories: Sequence[str] | None = None
     identifier_filters: Sequence[IdentifierFilter] | None = None
     scenario_result_id: str | None = None
@@ -551,6 +683,450 @@ class MemoryInterface(abc.ABC):
             raise
         finally:
             self._initialization_lock.release()
+
+    async def add_operation_async(self, operation: Operation) -> Operation:
+        """
+        Save an operation. Names are unique, ignoring case and surrounding whitespace.
+
+        Returns:
+            Operation: The saved operation, or the existing one when the name is taken.
+
+        Raises:
+            IntegrityError: If the insert fails for a reason other than a taken name.
+        """
+        entry = OperationEntry(operation)
+        try:
+            async with await self.get_session_async() as session, session.begin():
+                session.add(entry)
+                await session.flush()
+                return entry.get_operation()
+        except IntegrityError:
+            existing = await self.get_operations_async(name=operation.name)
+            if not existing:
+                raise
+            return existing[0]
+
+    async def get_operations_async(
+        self,
+        *,
+        operation_ids: Sequence[uuid.UUID] | None = None,
+        name: str | None = None,
+    ) -> list[Operation]:
+        """
+        Read operations ordered by name, optionally matching IDs or a name regardless of case and spacing.
+
+        Returns:
+            list[Operation]: The matching operations.
+        """
+        statement = select(OperationEntry).order_by(OperationEntry.name_key)
+        if operation_ids is not None:
+            statement = statement.where(OperationEntry.id.in_(operation_ids))
+        if name is not None:
+            statement = statement.where(OperationEntry.name_key == operation_name_key(name))
+        async with await self.get_session_async() as session:
+            return [entry.get_operation() for entry in (await session.scalars(statement)).all()]
+
+    async def require_operation_async(self, *, operation_id: uuid.UUID) -> Operation:
+        """
+        Read a saved Operation by ID without creating or resolving a name.
+
+        Returns:
+            Operation: The saved record.
+
+        Raises:
+            LookupError: If the Operation does not exist.
+        """
+        operations = await self.get_operations_async(operation_ids=[operation_id])
+        if not operations:
+            raise LookupError(f"Operation {operation_id} not found")
+        return operations[0]
+
+    async def update_operation_async(
+        self, *, operation_id: uuid.UUID, name: str | None = None, description: str | None = None
+    ) -> Operation:
+        """
+        Rename an operation or replace its description. Omitted fields are unchanged and the last save wins.
+
+        Names stay unique, ignoring case and surrounding whitespace, so a rename that only changes case is allowed.
+
+        Returns:
+            Operation: The updated operation, or the other operation that already has the name, unchanged.
+
+        Raises:
+            LookupError: If the Operation does not exist.
+            IntegrityError: If the update fails for a reason other than a taken name.
+        """
+        changes = {key: value for key, value in {"name": name, "description": description}.items() if value is not None}
+        try:
+            async with await self.get_session_async() as session, session.begin():
+                entry = await session.get(OperationEntry, operation_id)
+                if entry is None:
+                    raise LookupError(f"Operation {operation_id} not found")
+                updated = Operation.model_validate(entry.get_operation().model_dump() | changes)
+                entry.name, entry.name_key = updated.name, operation_name_key(updated.name)
+                entry.description = updated.description
+                await session.flush()
+                return entry.get_operation()
+        except StaleDataError as exc:
+            # A concurrent delete landed between the read and the update.
+            raise LookupError(f"Operation {operation_id} not found") from exc
+        except IntegrityError:
+            existing = await self.get_operations_async(name=name) if name is not None else []
+            if not existing:
+                raise
+            return existing[0]
+
+    async def get_operation_usage_async(self, *, operation_id: uuid.UUID) -> OperationUsage:
+        """
+        Count the findings, attacks, and scenario runs that refer to an Operation by ID, in one indexed query.
+
+        Returns:
+            OperationUsage: The counts, which are all zero for an unknown ID.
+        """
+        counts = [
+            select(func.count())
+            .select_from(table)
+            .where(table.operation_id == operation_id)
+            .scalar_subquery()
+            .label(field)
+            for field, table in (
+                ("findings", FindingEntry),
+                ("attacks", AttackResultEntry),
+                ("scenario_runs", ScenarioResultEntry),
+            )
+        ]
+        async with await self.get_session_async() as session:
+            return OperationUsage.model_validate(dict((await session.execute(select(*counts))).one()._mapping))
+
+    async def delete_operation_async(self, *, operation_id: uuid.UUID) -> None:
+        """
+        Permanently remove an Operation that no findings, attacks, or scenario runs refer to by ID.
+
+        Activity attributed only by a deprecated Operation name does not prevent deletion and is unchanged.
+
+        Raises:
+            LookupError: If the Operation does not exist.
+            OperationInUseError: If findings, attacks, or scenario runs refer to the Operation by ID.
+            RuntimeError: If the database does not return a cursor result.
+        """
+        # SQLite does not enforce foreign keys, so the delete statement itself checks for references.
+        unreferenced = [
+            ~select(table.operation_id).where(table.operation_id == operation_id).exists()
+            for table in (FindingEntry, AttackResultEntry, ScenarioResultEntry)
+        ]
+        try:
+            async with await self.get_session_async() as session, session.begin():
+                result = await session.execute(
+                    delete(OperationEntry)
+                    .where(OperationEntry.id == operation_id, *unreferenced)
+                    .execution_options(synchronize_session=False)
+                )
+                if not isinstance(result, CursorResult):
+                    raise RuntimeError("Operation deletion did not return a database cursor result.")
+                if result.rowcount > 0:
+                    return
+                if await session.get(OperationEntry, operation_id) is None:
+                    raise LookupError(f"Operation {operation_id} not found")
+        except IntegrityError as exc:
+            # SQL Server's foreign keys reject the delete when a reference commits while it runs.
+            usage = await self.get_operation_usage_async(operation_id=operation_id)
+            raise OperationInUseError(operation_id=operation_id, usage=usage) from exc
+        usage = await self.get_operation_usage_async(operation_id=operation_id)
+        raise OperationInUseError(operation_id=operation_id, usage=usage)
+
+    async def resolve_operation_id_async(
+        self, *, operation_id: uuid.UUID | str | None, operation_name: str | None = None
+    ) -> uuid.UUID | None:
+        """
+        Return the saved Operation for an ID or a deprecated Operation name, without creating one.
+
+        An ID takes precedence over a name. Names match regardless of case and surrounding whitespace.
+        Until 1.4.0, a name that matches no saved Operation is kept as a plain name rather than rejected.
+
+        TODO(PyRIT 1.4): Remove ``operation_name`` with Operation name attribution.
+
+        Returns:
+            uuid.UUID | None: The saved Operation's ID, or None when no ID is given and no saved Operation
+                has the name.
+
+        Raises:
+            ValueError: If the ID is malformed.
+            LookupError: If the ID does not belong to a saved Operation.
+        """
+        if operation_name is not None:
+            print_deprecation_message(
+                old_item="Attributing activity by Operation name", new_item="operation_id", removed_in="1.4.0"
+            )
+        if operation_id is not None:
+            normalized = operation_id if isinstance(operation_id, uuid.UUID) else uuid.UUID(str(operation_id))
+            return (await self.require_operation_async(operation_id=normalized)).id
+        if operation_name is None:
+            return None
+        operations = await self.get_operations_async(name=operation_name)
+        return operations[0].id if operations else None
+
+    async def add_finding_async(self, *, finding: Finding, evidence: FindingEvidence | None = None) -> Finding:
+        """
+        Save a finding, and optionally its evidence, in one transaction.
+
+        Returns:
+            Finding: The saved finding, or the finding already saved with this ID.
+
+        Raises:
+            LookupError: If the finding's Operation does not exist.
+            IntegrityError: If the insert fails for a reason other than a taken ID.
+        """
+        entry = FindingEntry(finding)
+        try:
+            async with await self.get_session_async() as session, session.begin():
+                session.add(entry)
+                await session.flush()
+                # Checked after the insert so the write lock is held; SQLite does not enforce the foreign key.
+                if await session.get(OperationEntry, finding.operation_id) is None:
+                    raise LookupError(f"Operation {finding.operation_id} not found")
+                if evidence is not None:
+                    session.add(FindingEvidenceEntry(evidence))
+                    await session.flush()
+                return entry.get_finding()
+        except IntegrityError as exc:
+            async with await self.get_session_async() as session:
+                existing = await session.get(FindingEntry, finding.id)
+                if existing is not None:
+                    return existing.get_finding()
+                # SQL Server's foreign key rejects the insert when the Operation was deleted meanwhile.
+                if await session.get(OperationEntry, finding.operation_id) is None:
+                    raise LookupError(f"Operation {finding.operation_id} not found") from exc
+            raise
+
+    async def update_finding_async(
+        self, *, operation_id: uuid.UUID, finding_id: uuid.UUID, request: FindingCreate
+    ) -> Finding:
+        """
+        Replace a finding's editable fields without changing identity or creation time.
+
+        Returns:
+            Finding: The updated finding.
+
+        Raises:
+            LookupError: If the finding does not belong to the operation.
+            RuntimeError: If the database does not return a cursor result.
+        """
+        validated = FindingCreate.model_validate(request.model_dump())
+        async with await self.get_session_async() as session, session.begin():
+            result = await session.execute(
+                update(FindingEntry)
+                .where(FindingEntry.id == finding_id, FindingEntry.operation_id == operation_id)
+                .values(**validated.model_dump(mode="json"))
+            )
+            if not isinstance(result, CursorResult):
+                raise RuntimeError("Finding update did not return a database cursor result.")
+            if result.rowcount == 0:
+                raise LookupError(f"Finding '{finding_id}' not found in operation '{operation_id}'.")
+            entry = await session.get(FindingEntry, finding_id)
+            if entry is None:
+                raise LookupError(f"Finding '{finding_id}' not found in operation '{operation_id}'.")
+            return entry.get_finding()
+
+    async def delete_finding_async(self, *, operation_id: uuid.UUID, finding_id: uuid.UUID) -> None:
+        """
+        Permanently remove a finding within its operation.
+
+        Raises:
+            LookupError: If the finding does not belong to the operation.
+            RuntimeError: If the database does not return a cursor result.
+        """
+        async with await self.get_session_async() as session, session.begin():
+            owner = await session.scalar(
+                select(FindingEntry.id).where(FindingEntry.id == finding_id, FindingEntry.operation_id == operation_id)
+            )
+            if owner is None:
+                raise LookupError(f"Finding '{finding_id}' not found in operation '{operation_id}'.")
+            await session.execute(delete(FindingEvidenceEntry).where(FindingEvidenceEntry.finding_id == finding_id))
+            result = await session.execute(
+                delete(FindingEntry).where(FindingEntry.id == finding_id, FindingEntry.operation_id == operation_id)
+            )
+            if not isinstance(result, CursorResult):
+                raise RuntimeError("Finding deletion did not return a database cursor result.")
+            if result.rowcount == 0:
+                raise LookupError(f"Finding '{finding_id}' not found in operation '{operation_id}'.")
+
+    async def get_findings_async(
+        self,
+        *,
+        operation_id: uuid.UUID | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        title_query: str | None = None,
+    ) -> list[Finding]:
+        """
+        Read one page of findings, highest severity first, then newest first.
+
+        Returns:
+            list[Finding]: The findings on the page.
+
+        Raises:
+            ValueError: If the page bounds are invalid.
+        """
+        if limit < 1 or offset < 0:
+            raise ValueError("Finding limit must be positive and offset must be nonnegative.")
+        severity_order = case(
+            {severity.value: position for position, severity in enumerate(FindingSeverity)},
+            value=FindingEntry.severity,
+        )
+        statement = select(FindingEntry)
+        if operation_id is not None:
+            statement = statement.where(FindingEntry.operation_id == operation_id)
+        if title_query:
+            # SQL Server also treats "[" as a LIKE wildcard.
+            escaped_title = title_query.replace("/", "//").replace("%", "/%").replace("_", "/_").replace("[", "/[")
+            statement = statement.where(FindingEntry.title.ilike(f"%{escaped_title}%", escape="/"))
+        statement = (
+            statement.order_by(severity_order, FindingEntry.created_at.desc(), FindingEntry.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        async with await self.get_session_async() as session:
+            return [entry.get_finding() for entry in (await session.scalars(statement)).all()]
+
+    async def get_finding_async(self, *, operation_id: uuid.UUID, finding_id: uuid.UUID) -> Finding | None:
+        """
+        Read a finding only within its owning operation.
+
+        Returns:
+            Finding | None: The matching finding, if present.
+        """
+        async with await self.get_session_async() as session:
+            entry = await session.scalar(
+                select(FindingEntry).where(FindingEntry.id == finding_id, FindingEntry.operation_id == operation_id)
+            )
+            return entry.get_finding() if entry else None
+
+    async def add_finding_evidence_async(self, *, evidence: FindingEvidence) -> FindingEvidence:
+        """
+        Link a saved attack result to a finding, if the finding still exists.
+
+        The insert runs before the existence check so the write lock is held
+        when the finding is checked, and a concurrent delete can't leave an orphan.
+
+        Returns:
+            FindingEvidence: The saved evidence, or the existing link for the same finding and attack result.
+
+        Raises:
+            LookupError: If the finding does not exist.
+            IntegrityError: If the insert fails for a reason other than a duplicate link.
+        """
+        entry = FindingEvidenceEntry(evidence)
+        try:
+            async with await self.get_session_async() as session, session.begin():
+                session.add(entry)
+                await session.flush()
+                if await session.scalar(select(FindingEntry.id).where(FindingEntry.id == evidence.finding_id)) is None:
+                    raise LookupError(f"Finding '{evidence.finding_id}' not found.")
+                return entry.get_evidence()
+        except IntegrityError as exc:
+            async with await self.get_session_async() as session:
+                if await session.scalar(select(FindingEntry.id).where(FindingEntry.id == evidence.finding_id)) is None:
+                    raise LookupError(f"Finding '{evidence.finding_id}' not found.") from exc
+            existing = await self.get_finding_evidence_by_source_async(
+                finding_id=evidence.finding_id, attack_result_id=evidence.attack_result_id
+            )
+            if existing is None:
+                raise
+            return existing
+
+    async def get_finding_evidence_async(
+        self, *, finding_id: uuid.UUID, limit: int, offset: int
+    ) -> list[FindingEvidence]:
+        """
+        Read one page of a finding's evidence, most recently linked first.
+
+        Returns:
+            list[FindingEvidence]: The evidence on the page.
+
+        Raises:
+            ValueError: If the page bounds are invalid.
+        """
+        if limit < 1 or offset < 0:
+            raise ValueError("Evidence limit must be positive and offset must be nonnegative.")
+        statement = (
+            select(FindingEvidenceEntry)
+            .where(FindingEvidenceEntry.finding_id == finding_id)
+            .order_by(FindingEvidenceEntry.attached_at.desc(), FindingEvidenceEntry.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        async with await self.get_session_async() as session:
+            return [entry.get_evidence() for entry in (await session.scalars(statement)).all()]
+
+    async def get_finding_evidence_by_source_async(
+        self, *, finding_id: uuid.UUID, attack_result_id: uuid.UUID
+    ) -> FindingEvidence | None:
+        """
+        Read the evidence linking a finding to a saved attack result.
+
+        Returns:
+            FindingEvidence | None: The evidence, if linked.
+        """
+        async with await self.get_session_async() as session:
+            entry = await session.scalar(
+                select(FindingEvidenceEntry).where(
+                    FindingEvidenceEntry.finding_id == finding_id,
+                    FindingEvidenceEntry.attack_result_id == attack_result_id,
+                )
+            )
+            return entry.get_evidence() if entry else None
+
+    async def delete_finding_evidence_async(self, *, finding_id: uuid.UUID, evidence_id: uuid.UUID) -> None:
+        """
+        Unlink evidence from a finding. The attack result is kept.
+
+        Raises:
+            LookupError: If the evidence does not belong to the finding.
+            RuntimeError: If the database does not return a cursor result.
+        """
+        async with await self.get_session_async() as session, session.begin():
+            result = await session.execute(
+                delete(FindingEvidenceEntry).where(
+                    FindingEvidenceEntry.finding_id == finding_id, FindingEvidenceEntry.id == evidence_id
+                )
+            )
+            if not isinstance(result, CursorResult):
+                raise RuntimeError("Evidence deletion did not return a database cursor result.")
+            if result.rowcount == 0:
+                raise LookupError(f"Evidence '{evidence_id}' not found in finding '{finding_id}'.")
+
+    async def get_finding_evidence_counts_async(self, *, finding_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """
+        Count evidence for several findings in one query.
+
+        Returns:
+            dict[uuid.UUID, int]: Counts for findings that have evidence.
+        """
+        if not finding_ids:
+            return {}
+        statement = (
+            select(FindingEvidenceEntry.finding_id, func.count())
+            .where(FindingEvidenceEntry.finding_id.in_(finding_ids))
+            .group_by(FindingEvidenceEntry.finding_id)
+        )
+        async with await self.get_session_async() as session:
+            return dict((await session.execute(statement)).all())
+
+    async def get_finding_severity_counts_async(self) -> dict[uuid.UUID, dict[FindingSeverity, int]]:
+        """
+        Count every operation's findings by severity in one query.
+
+        Returns:
+            dict[uuid.UUID, dict[FindingSeverity, int]]: Counts for operations with findings.
+        """
+        statement = select(FindingEntry.operation_id, FindingEntry.severity, func.count()).group_by(
+            FindingEntry.operation_id, FindingEntry.severity
+        )
+        counts: dict[uuid.UUID, dict[FindingSeverity, int]] = {}
+        async with await self.get_session_async() as session:
+            for operation_id, severity, count in (await session.execute(statement)).all():
+                counts.setdefault(operation_id, {})[FindingSeverity(severity)] = count
+        return counts
 
     def _uses_legacy_memory_override(self) -> bool:
         return any(
@@ -1898,10 +2474,18 @@ class MemoryInterface(abc.ABC):
         """
         with closing(self._get_session()) as session:
             try:
+                existing = None
+                if isinstance(entry, (AttackResultEntry, ScenarioResultEntry)):
+                    existing = session.get(type(entry), entry.id)
+                    self._validate_activity_operation(session=session, entry=entry, existing=existing)
                 session.merge(entry)
+                if existing is None:
+                    self._recheck_activity_operations(session=session, entries=[entry])
                 session.commit()
             except SQLAlchemyError as e:
                 session.rollback()
+                if isinstance(e, IntegrityError):
+                    self._raise_if_operations_missing(session=session, operation_ids=_operation_ids([entry]), error=e)
                 logger.exception(f"Error updating entry in the table: {e}")
                 raise
 
@@ -1949,6 +2533,20 @@ class MemoryInterface(abc.ABC):
                     raise ValueError("Prompt entries used by scorer observations are immutable.")
                 for entry in entries:
                     entry_in_session = session.get(type(entry), entry.id)  # type: ignore[ty:unresolved-attribute]
+                    if isinstance(entry, (AttackResultEntry, ScenarioResultEntry)):
+                        assert entry_in_session is None or isinstance(
+                            entry_in_session, (AttackResultEntry, ScenarioResultEntry)
+                        )
+                        current = entry_in_session if entry_in_session is not None else entry
+                        if "operation_id" in update_fields and update_fields["operation_id"] != current.operation_id:
+                            raise ValueError("Operation attribution is immutable")
+                        if "operation" in update_fields:
+                            _check_operation_name_change(existing=current, incoming=update_fields["operation"])
+                        if "operation" in (update_fields.get("labels") or {}):
+                            _check_operation_name_change(
+                                existing=current, incoming=update_fields["labels"]["operation"]
+                            )
+                        self._validate_activity_operation(session=session, entry=entry, existing=entry_in_session)
                     if entry_in_session is None:
                         entry_in_session = session.merge(entry)
                     if isinstance(entry_in_session, AttackResultEntry):
@@ -2023,6 +2621,25 @@ class MemoryInterface(abc.ABC):
         Returns:
             Database-specific SQLAlchemy condition.
         """
+
+    def _get_attack_result_literal_label_condition(self, *, labels: dict[str, str | Sequence[str]]) -> Any:
+        """
+        Return a condition matching AttackResult label names literally.
+
+        Same semantics as ``_get_attack_result_label_condition``, but each key is compared to the
+        stored label names as a bound value instead of being turned into a JSON path, so any key
+        string is safe. Backends that don't override it can still filter by allowlisted keys.
+
+        Args:
+            labels: Label-name-to-value(s) map.
+
+        Raises:
+            NotImplementedError: If the memory backend does not support literal label keys.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement _get_attack_result_literal_label_condition "
+            "to filter attack results by label keys outside [A-Za-z0-9_.-]+."
+        )
 
     def _execute_get_unique_attack_class_names(self) -> list[str]:
         """
@@ -2147,6 +2764,21 @@ class MemoryInterface(abc.ABC):
     ) -> "SQLColumnExpression[uuid.UUID] | SQLColumnExpression[str]":
         """Return the scenario attempt ID's canonical string ordering."""
         return attempt_id
+
+    def _get_scenario_role_match_condition(self, *, role_expression: Any, role: AttackResultRole) -> Any:
+        """
+        Return a backend-specific condition that strictly matches an AttackResultRole.
+
+        Subclasses override this when backend comparison semantics (such as SQL Server's string
+        padding or case-insensitive default collation) require exact scalar matching.
+
+        Returns:
+            A backend-specific condition matching the specified AttackResultRole.
+        """
+        return and_(
+            role_expression == role.value,
+            func.length(role_expression) == len(role.value),
+        )
 
     def _get_scenario_attempt_unit_expressions(self) -> tuple[Any, Any, Any, Any]:
         """
@@ -2933,6 +3565,45 @@ class MemoryInterface(abc.ABC):
         """
         return await self._run_database_operation_async(self._get_conversation, conversation_id=conversation_id)
 
+    def _get_attack_result_for_conversation(self, *, conversation_id: str) -> AttackResult | None:
+        """
+        Read the newest result that names this main or pruned conversation.
+
+        Returns:
+            AttackResult | None: The newest referring result, or None if none exists.
+        """
+        entries = self._query_entries(
+            AttackResultEntry,
+            conditions=or_(
+                AttackResultEntry.conversation_id == conversation_id,
+                self._get_condition_json_array_match(
+                    json_column=AttackResultEntry.pruned_conversation_ids,
+                    property_path="$",
+                    array_to_match=[conversation_id],
+                ),
+            ),
+            order_by=self._attack_results_recency_order_by(),
+            limit=1,
+        )
+        return entries[0].get_attack_result() if entries else None
+
+    async def get_attack_result_for_conversation_async(self, *, conversation_id: str) -> AttackResult | None:
+        """
+        Read the newest result that references a main or pruned conversation.
+
+        This also works for upgraded history without a conversation-to-attack link.
+        Internal conversation references are not included.
+
+        Args:
+            conversation_id (str): The conversation ID to resolve.
+
+        Returns:
+            AttackResult | None: The newest referring result, or None if none exists.
+        """
+        return await self._run_database_operation_async(
+            self._get_attack_result_for_conversation, conversation_id=conversation_id
+        )
+
     def _get_attack_result_conversations(self, *, attack_result_id: str) -> list[Conversation]:
         """
         Return the conversations owned by the attack execution that produced ``attack_result_id``.
@@ -2999,7 +3670,12 @@ class MemoryInterface(abc.ABC):
             self._execute_get_conversation_messages,
             conversation_id=response.conversation_id,
         )
-        return conversation[response.sequence - 1]
+        preceding_messages = [msg for msg in conversation if msg.sequence < response.sequence]
+        if not preceding_messages:
+            raise ValueError(
+                f"The provided request does not have a preceding request in conversation '{response.conversation_id}'."
+            )
+        return preceding_messages[-1]
 
     def _build_message_piece_identifier_conditions(
         self, *, identifier_filters: Sequence[IdentifierFilter]
@@ -3248,15 +3924,13 @@ class MemoryInterface(abc.ABC):
         if len(messages) == 0:
             return str(uuid.uuid4())
 
-        last_message = messages[-1]
-
-        length_of_sequence_to_remove = 0
-
-        length_of_sequence_to_remove = 1 if last_message.api_role == "system" or last_message.api_role == "user" else 2
-
-        messages_to_duplicate = [
-            message for message in messages if message.sequence <= last_message.sequence - length_of_sequence_to_remove
-        ]
+        # The last turn starts at the last user (or system) message. A target's tool loop stores the function
+        # call, the tool output and the final answer as separate messages, so the turn can span more than two.
+        last_turn_start = max(
+            (index for index, message in enumerate(messages) if message.api_role in ("user", "system")),
+            default=0,
+        )
+        messages_to_duplicate = messages[:last_turn_start]
 
         source_metadata = self._get_conversation(conversation_id=conversation_id)
         source_target = source_metadata.target_identifier if source_metadata else None
@@ -3582,7 +4256,7 @@ class MemoryInterface(abc.ABC):
                 require full-string equality instead. If None, all values are returned.
             exact (bool): When True, ``value`` is matched by full-string equality rather than substring,
                 and ``harm_categories``, ``authors``, ``groups`` and ``parameters`` must match whole list
-                elements (case-insensitive) rather than substrings of the stored list. Defaults to False
+                elements (case-insensitive) rather than substrings within decoded list elements. Defaults to False
                 (substring matching).
             value_sha256 (Sequence[str] | None): A list of SHA256 hashes of values to match.
                 If None, all values are returned.
@@ -3655,6 +4329,69 @@ class MemoryInterface(abc.ABC):
 
         return conditions
 
+    async def filter_seed_candidates_async(
+        self, *, seeds: Sequence[Seed[Any]], filters: Mapping[str, Any]
+    ) -> list[Seed[Any]]:
+        """
+        Apply the backend's seed predicates to storage-ready candidates without storing them.
+
+        Use ``prepare_seed_batch_async`` before this read so storage-derived fields have
+        the same values as persisted rows.
+
+        Returns:
+            list[Seed]: Matching candidates in input order, with their original identities.
+        """
+        if not seeds or not filters:
+            return list(seeds)
+        return await self._run_database_operation_async(self._filter_seed_candidates, seeds=seeds, filters=filters)
+
+    def _filter_seed_candidates(self, *, seeds: Sequence[Seed[Any]], filters: Mapping[str, Any]) -> list[Seed[Any]]:
+        if self.engine is None:
+            raise RuntimeError("Memory engine is not initialized.")
+        conditions = self._build_seed_filter_conditions(**filters)
+        referenced = [
+            element
+            for condition in conditions
+            for element in visitors.iterate(condition)
+            if isinstance(element, Column) and element.table is SeedEntry.__table__
+        ]
+        columns = [
+            column for column in SeedEntry.__table__.columns if any(column.shares_lineage(ref) for ref in referenced)
+        ]
+        filter_binds = len(
+            select(literal(1))
+            .where(*conditions)
+            .compile(dialect=self.engine.dialect, compile_kwargs={"render_postcompile": True})
+            .params
+        )
+        chunk_size = min(100, max(1, (self._MAX_BIND_VARS - filter_binds - 1) // (len(columns) + 1)))
+        matched: set[int] = set()
+        with closing(self._get_session()) as session:
+            for start in range(0, len(seeds), chunk_size):
+                rows = []
+                for index in range(start, min(start + chunk_size, len(seeds))):
+                    entry = SeedEntry(entry=seeds[index])
+                    rows.append(
+                        select(
+                            literal(index).label("candidate_index"),
+                            *[
+                                literal(getattr(entry, column.key), type_=column.type).label(column.name)
+                                for column in columns
+                            ],
+                        )
+                    )
+                candidates = union_all(*rows).subquery()
+                replacements = {column: candidates.c[column.name] for column in referenced}
+
+                def replace_column(
+                    element: ClauseElement, *, mapping: Mapping[Column[Any], ClauseElement] = replacements, **kw: Any
+                ) -> ClauseElement | None:
+                    return mapping.get(element) if isinstance(element, Column) else None
+
+                predicates = [visitors.replacement_traverse(condition, {}, replace_column) for condition in conditions]
+                matched.update(session.scalars(select(candidates.c.candidate_index).where(*predicates)).all())
+        return [seed for index, seed in enumerate(seeds) if index in matched]
+
     def _execute_get_seeds(
         self,
         *,
@@ -3673,7 +4410,7 @@ class MemoryInterface(abc.ABC):
         parameters: Sequence[str] | None = None,
         metadata: dict[str, str | int] | None = None,
         prompt_group_ids: Sequence[uuid.UUID] | None = None,
-    ) -> Sequence[Seed]:
+    ) -> Sequence[Seed[Any]]:
         """
         Retrieve a list of seed prompts based on the specified filters.
 
@@ -4000,9 +4737,13 @@ class MemoryInterface(abc.ABC):
                 )
             )
         else:
-            conditions.extend(field.contains(value) for value in values)
+            items = JsonArrayItems(JsonContainer(field, "$")).table_valued(column("value", Unicode))
+            conditions.extend(
+                select(1).select_from(items).where(items.c.value.contains(value)).correlate_except(items).exists()
+                for value in values
+            )
 
-    async def _serialize_seed_value_async(self, prompt: Seed) -> str:
+    async def _serialize_seed_value_async(self, prompt: Seed[Any]) -> str:
         """
         Serialize the value of a seed prompt based on its data type.
 
@@ -4035,7 +4776,7 @@ class MemoryInterface(abc.ABC):
         return serialized_prompt_value or ""
 
     async def _prepare_seed_for_storage_async(
-        self, *, prompt: Seed, added_by: str | None, current_time: datetime
+        self, *, prompt: Seed[Any], added_by: str | None, current_time: datetime
     ) -> None:
         """
         Prepare a seed in place for persistence.
@@ -4072,16 +4813,53 @@ class MemoryInterface(abc.ABC):
 
         await set_seed_sha256_async(prompt)
 
-    async def add_seeds_to_memory_async(self, *, seeds: Sequence[Seed], added_by: str | None = None) -> None:
+    async def _prepare_seeds_for_storage_async(self, *, seeds: Sequence[Seed[Any]], added_by: str | None) -> None:
+        current_time = datetime.now(tz=UTC)
+        for seed in seeds:
+            await self._prepare_seed_for_storage_async(prompt=seed, added_by=added_by, current_time=current_time)
+
+    async def prepare_seed_batch_async(
+        self, *, seeds: Sequence[Seed[Any]], added_by: str | None = None
+    ) -> PreparedSeedBatch:
+        """
+        Prepare copied seeds once for validation and subsequent persistence.
+
+        Computes checksums, attribution, timestamps, and encoding metadata through the
+        normal storage path. Media may be copied into managed storage; no database rows
+        are written. Rejected batches can leave unreferenced media, not changed seed rows.
+
+        Args:
+            seeds (Sequence[Seed]): Caller-owned seeds to copy and prepare.
+            added_by (str | None): Attribution override, matching normal insertion.
+
+        Returns:
+            PreparedSeedBatch: Storage-ready seeds, isolated from caller and validator mutations.
+        """
+        copies = [seed.model_copy(deep=True) for seed in seeds]
+        SeedDataset.group_seed_prompts_by_prompt_group_id(copies)
+        await self._prepare_seeds_for_storage_async(seeds=copies, added_by=added_by)
+        return PreparedSeedBatch(_seeds=tuple(SeedEntry(entry=seed).get_seed() for seed in copies))
+
+    async def add_prepared_seed_batch_async(self, batch: PreparedSeedBatch) -> None:
+        """
+        Insert prepared seeds with normal deduplication, without preparing them again.
+
+        Args:
+            batch (PreparedSeedBatch): The snapshot returned by ``prepare_seed_batch_async``.
+        """
+        await self._run_database_operation_async(self._insert_prepared_seeds, seeds=batch.seeds)
+
+    async def add_seeds_to_memory_async(self, *, seeds: Sequence[Seed[Any]], added_by: str | None = None) -> None:
         """
         Insert a list of seeds into the memory storage.
 
-        Seeds with the same value hash, dataset, and canonical conditions already present
-        in storage are skipped. Duplicates *within* ``seeds`` are all inserted, because the
-        check looks at what storage held when the call started.
-        Groups introducing new objective criteria retain the other seeds in the same group
-        even when their content is already stored in another group. When a stored seed is
-        copied to a new group, its caller-visible ID is updated after successful insertion.
+        Standalone seeds with the same value hash, dataset, and canonical conditions already
+        present in storage are skipped. Multi-seed groups are compared as complete groups,
+        including roles, sequence, metadata, and criteria, so shared content cannot strip
+        members from a different conversation. Duplicates *within* ``seeds`` are all inserted,
+        because the check looks at what storage held when the call started.
+        When a stored seed is copied to a new group, its caller-visible ID is updated after
+        successful insertion.
 
         Args:
             seeds (Sequence[Seed]): A list of seeds to insert.
@@ -4090,19 +4868,22 @@ class MemoryInterface(abc.ABC):
         Raises:
             ValueError: If the 'added_by' attribute is not set for each prompt.
         """
-        current_time = datetime.now(tz=UTC)
-        for prompt in seeds:
-            await self._prepare_seed_for_storage_async(prompt=prompt, added_by=added_by, current_time=current_time)
-
+        await self._prepare_seeds_for_storage_async(seeds=seeds, added_by=added_by)
         await self._run_database_operation_async(self._insert_prepared_seeds, seeds=seeds)
 
-    def _insert_prepared_seeds(self, *, seeds: Sequence[Seed]) -> None:
+    def _insert_prepared_seeds(self, *, seeds: Sequence[Seed[Any]]) -> None:
         """Deduplicate and store seeds after their media is prepared."""
-        existing_pairs, existing_hashes = self._get_existing_seed_keys(seeds=seeds)
-        new_condition_group_ids = self._get_new_condition_group_ids(
+        existing_pairs, existing_hashes, existing_seeds = self._get_existing_seed_keys(seeds=seeds)
+        retained_group_ids = self._get_new_condition_group_ids(
             seeds=seeds, existing_pairs=existing_pairs, existing_hashes=existing_hashes
         )
-        retained_seed_ids = [seed.id for seed in seeds if seed.prompt_group_id in new_condition_group_ids]
+        retained_group_ids.update(self._get_new_seed_group_ids(seeds=seeds, existing_seeds=existing_seeds))
+        stored_group_members = {
+            (seed.prompt_group_id, dataset, self._seed_group_member_key(seed))
+            for dataset, seed in existing_seeds
+            if seed.prompt_group_id is not None
+        }
+        retained_seed_ids = [seed.id for seed in seeds if seed.prompt_group_id in retained_group_ids]
         stored_groups = (
             {
                 entry.id: entry.prompt_group_id
@@ -4115,15 +4896,21 @@ class MemoryInterface(abc.ABC):
         )
 
         entries: MutableSequence[SeedEntry] = []
-        copied_seed_ids: list[tuple[Seed, uuid.UUID]] = []
+        copied_seed_ids: list[tuple[Seed[Any], uuid.UUID]] = []
         for prompt in seeds:
             if not prompt.value_sha256:
                 continue
             conditions_key = self._seed_conditions_key(prompt)
             # A seed without a dataset name matches the hash in any dataset, mirroring the
             # filter that is applied when dataset_name is not supplied.
-            if prompt.prompt_group_id in new_condition_group_ids:
+            if prompt.prompt_group_id in retained_group_ids:
                 if prompt.id in stored_groups and stored_groups[prompt.id] == prompt.prompt_group_id:
+                    continue
+                if (
+                    prompt.prompt_group_id,
+                    prompt.dataset_name or None,
+                    self._seed_group_member_key(prompt),
+                ) in stored_group_members:
                     continue
                 entry = SeedEntry(entry=prompt)
                 if prompt.id in stored_groups:
@@ -4143,7 +4930,107 @@ class MemoryInterface(abc.ABC):
             prompt.id = new_id
 
     @staticmethod
-    def _seed_conditions_key(seed: Seed) -> str:
+    def _seed_group_member_key(seed: Seed[Any]) -> str:
+        """
+        Identify a member by persisted content and context, excluding IDs and import attribution.
+
+        Returns:
+            str: Canonical persisted member identity.
+        """
+        entry = SeedEntry(entry=seed)
+        return json.dumps(
+            {
+                "value_sha256": entry.value_sha256,
+                "data_type": entry.data_type,
+                "seed_type": entry.seed_type,
+                "role": entry.role,
+                "sequence": entry.sequence,
+                "metadata": entry.prompt_metadata or {},
+                "conditions": entry.conditions or [],
+                "parameters": entry.parameters or [],
+                "harm_categories": entry.harm_categories or [],
+                "name": entry.name,
+                "description": entry.description,
+                "authors": entry.authors or [],
+                "groups": entry.groups or [],
+                "source": entry.source,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _get_new_seed_group_ids(
+        self,
+        *,
+        seeds: Sequence[Seed[Any]],
+        existing_seeds: Sequence[tuple[str | None, Seed[Any]]],
+    ) -> set[uuid.UUID]:
+        """
+        Retain multi-seed groups unless an equivalent complete group is already stored.
+
+        Returns:
+            set[uuid.UUID]: Group IDs whose complete input membership must be retained.
+        """
+        members_by_group: dict[uuid.UUID, Counter[tuple[str | None, str]]] = {}
+        for seed in seeds:
+            if seed.prompt_group_id is not None:
+                key = (seed.dataset_name or None, self._seed_group_member_key(seed))
+                members_by_group.setdefault(seed.prompt_group_id, Counter())[key] += 1
+        members_by_group = {group_id: members for group_id, members in members_by_group.items() if members.total() > 1}
+        if not members_by_group:
+            return set()
+
+        matches: dict[tuple[str | None, str], dict[uuid.UUID, set[uuid.UUID | None]]] = {}
+        for dataset, seed in existing_seeds:
+            if seed.prompt_group_id is not None:
+                key = (dataset, self._seed_group_member_key(seed))
+                matches.setdefault(key, {}).setdefault(seed.prompt_group_id, set()).add(seed.id)
+
+        candidate_groups: dict[uuid.UUID, set[uuid.UUID]] = {}
+        for group_id, members in members_by_group.items():
+            candidates: set[uuid.UUID] | None = None
+            for key, count in members.items():
+                matching_groups = {
+                    stored_group_id
+                    for stored_group_id, member_ids in matches.get(key, {}).items()
+                    if len(member_ids) >= count
+                }
+                candidates = matching_groups if candidates is None else candidates & matching_groups
+                if not candidates:
+                    break
+            candidate_groups[group_id] = candidates or set()
+
+        candidate_ids = {candidate_id for candidates in candidate_groups.values() for candidate_id in candidates}
+        stored_sizes = (
+            Counter(
+                entry.prompt_group_id
+                for entry in self._execute_batched_query(
+                    SeedEntry, batch_column=SeedEntry.prompt_group_id, batch_values=list(candidate_ids)
+                )
+            )
+            if candidate_ids
+            else Counter()
+        )
+        new_group_ids: set[uuid.UUID] = set()
+        for group_id, members in members_by_group.items():
+            for candidate_id in candidate_groups[group_id]:
+                if stored_sizes[candidate_id] != members.total():
+                    continue
+                matched_ids: set[uuid.UUID | None] = set()
+                # Match named filters before wildcards; collated dataset names can overlap.
+                for key, count in sorted(members.items(), key=lambda item: item[0][0] is None):
+                    available_ids = matches[key][candidate_id] - matched_ids
+                    if len(available_ids) < count:
+                        break
+                    matched_ids.update(list(available_ids)[:count])
+                else:
+                    break
+            else:
+                new_group_ids.add(group_id)
+        return new_group_ids
+
+    @staticmethod
+    def _seed_conditions_key(seed: Seed[Any]) -> str:
         """
         Serialize criteria canonically, preserving condition order.
 
@@ -4158,7 +5045,7 @@ class MemoryInterface(abc.ABC):
     def _get_new_condition_group_ids(
         self,
         *,
-        seeds: Sequence[Seed],
+        seeds: Sequence[Seed[Any]],
         existing_pairs: set[tuple[str, str, str]],
         existing_hashes: set[tuple[str, str]],
     ) -> set[uuid.UUID]:
@@ -4167,7 +5054,8 @@ class MemoryInterface(abc.ABC):
 
         Other seeds in the same group do not own conditions. Their ordinary content
         deduplication must not strip them from a new condition-bearing group, or from a group that
-        removes previously stored criteria. Purely condition-free loading is unchanged.
+        removes previously stored criteria. Other multi-seed groups are compared by full
+        membership separately.
 
         Returns:
             set[uuid.UUID]: Group IDs whose complete input membership must be retained.
@@ -4190,8 +5078,8 @@ class MemoryInterface(abc.ABC):
         return group_ids
 
     def _get_existing_seed_keys(
-        self, *, seeds: Sequence[Seed]
-    ) -> tuple[set[tuple[str, str, str]], set[tuple[str, str]]]:
+        self, *, seeds: Sequence[Seed[Any]]
+    ) -> tuple[set[tuple[str, str, str]], set[tuple[str, str]], list[tuple[str | None, Seed[Any]]]]:
         """
         Look up which value hashes and canonical conditions are already stored.
 
@@ -4210,9 +5098,10 @@ class MemoryInterface(abc.ABC):
             seeds (Sequence[Seed]): The seeds whose hashes should be looked up.
 
         Returns:
-            tuple[set[tuple[str, str, str]], set[tuple[str, str]]]: The stored
+            tuple: The stored
                 (value_sha256, dataset_name, conditions) keys, using the requested
-                dataset name, and (value_sha256, conditions) keys irrespective of dataset.
+                dataset name, (value_sha256, conditions) keys irrespective of dataset,
+                and matched seeds paired with their requested dataset filter.
         """
         hashes_by_dataset: dict[str | None, set[str]] = {}
         for prompt in seeds:
@@ -4224,6 +5113,7 @@ class MemoryInterface(abc.ABC):
 
         existing_pairs: set[tuple[str, str, str]] = set()
         existing_hashes: set[tuple[str, str]] = set()
+        existing_seeds: list[tuple[str | None, Seed[Any]]] = []
         for dataset_name, dataset_hashes in hashes_by_dataset.items():
             hashes = sorted(dataset_hashes)
             # _MAX_BIND_VARS is the whole statement's budget, and the name takes one of those
@@ -4236,6 +5126,7 @@ class MemoryInterface(abc.ABC):
                 ):
                     if not existing.value_sha256:
                         continue
+                    existing_seeds.append((dataset_name, existing))
                     conditions_key = self._seed_conditions_key(existing)
                     if dataset_name:
                         # The database decided the name matched, so record the name that was
@@ -4245,7 +5136,7 @@ class MemoryInterface(abc.ABC):
                     else:
                         existing_hashes.add((existing.value_sha256, conditions_key))
 
-        return existing_pairs, existing_hashes
+        return existing_pairs, existing_hashes, existing_seeds
 
     async def add_seed_datasets_to_memory_async(self, *, datasets: Sequence[SeedDataset], added_by: str) -> None:
         """
@@ -4295,6 +5186,7 @@ class MemoryInterface(abc.ABC):
                     SeedEntry.dataset_name.label("dataset_name"),
                     SeedEntry.data_type,
                     SeedEntry.harm_categories,
+                    SeedEntry.origin,
                 )
                 .where(named_condition)
                 .distinct()
@@ -4307,6 +5199,7 @@ class MemoryInterface(abc.ABC):
                 named_aggregate.c.objectives,
                 named_metadata.c.data_type,
                 named_metadata.c.harm_categories,
+                named_metadata.c.origin,
             ).join(
                 named_metadata,
                 named_aggregate.c.dataset_name == named_metadata.c.dataset_name,
@@ -4323,7 +5216,10 @@ class MemoryInterface(abc.ABC):
                 .subquery()
             )
             unnamed_metadata = (
-                select(SeedEntry.data_type, SeedEntry.harm_categories).where(unnamed_condition).distinct().subquery()
+                select(SeedEntry.data_type, SeedEntry.harm_categories, SeedEntry.origin)
+                .where(unnamed_condition)
+                .distinct()
+                .subquery()
             )
             unnamed_statement = select(
                 unnamed_aggregate.c.dataset_name,
@@ -4332,31 +5228,35 @@ class MemoryInterface(abc.ABC):
                 unnamed_aggregate.c.objectives,
                 unnamed_metadata.c.data_type,
                 unnamed_metadata.c.harm_categories,
+                unnamed_metadata.c.origin,
             ).select_from(unnamed_aggregate.join(unnamed_metadata, literal(True)))
 
             combined_statement = named_statement.union_all(unnamed_statement)
 
             with closing(self._get_session()) as session:
-                rows = session.execute(combined_statement).all()
+                rows = session.execute(combined_statement).mappings().all()
 
             summaries_by_dataset: dict[str | None, dict[str, Any]] = {}
             dataset_order: list[str | None] = []
             for row in rows:
-                dataset_name = row.dataset_name
+                dataset_name = row["dataset_name"]
                 if dataset_name not in summaries_by_dataset:
                     summaries_by_dataset[dataset_name] = {
-                        "seed_pieces": int(row.seed_pieces or 0),
-                        "logical_examples": int(row.logical_examples or 0),
-                        "objectives": int(row.objectives or 0),
+                        "seed_pieces": int(row["seed_pieces"] or 0),
+                        "logical_examples": int(row["logical_examples"] or 0),
+                        "objectives": int(row["objectives"] or 0),
                         "modalities": set(),
                         "harm_categories": set(),
                         "has_unlabeled_harm_categories": False,
+                        "origins": set(),
                     }
                     dataset_order.append(dataset_name)
                 summary = summaries_by_dataset[dataset_name]
-                if row.data_type:
-                    summary["modalities"].add(row.data_type)
-                categories = row.harm_categories or []
+                if row["origin"]:
+                    summary["origins"].add(row["origin"])
+                if row["data_type"]:
+                    summary["modalities"].add(row["data_type"])
+                categories = row["harm_categories"] or []
                 if categories:
                     summary["harm_categories"].update(categories)
                 else:
@@ -4371,6 +5271,7 @@ class MemoryInterface(abc.ABC):
                     modalities=tuple(sorted(summaries_by_dataset[dataset_name]["modalities"])),
                     harm_categories=tuple(sorted(summaries_by_dataset[dataset_name]["harm_categories"])),
                     has_unlabeled_harm_categories=summaries_by_dataset[dataset_name]["has_unlabeled_harm_categories"],
+                    origins=tuple(sorted(summaries_by_dataset[dataset_name]["origins"])),
                 )
                 for dataset_name in dataset_order
             ]
@@ -4512,14 +5413,14 @@ class MemoryInterface(abc.ABC):
 
         with closing(self._get_session()) as session:
             total = session.execute(select(func.count()).select_from(grouped)).scalar_one()
-            rows = session.execute(page).all()
+            rows = session.execute(page).mappings().all()
             seeds = self._get_seed_example_seeds(
-                session=session, scope=scope, example_ids=[row.example_id for row in rows[:limit]]
+                session=session, scope=scope, example_ids=[row["example_id"] for row in rows[:limit]]
             )
         next_after = None
         if len(rows) > limit:
             last = rows[limit - 1]
-            next_after = DecodedKeysetCursor(timestamp=last.first_added, identifier=str(last.example_id))
+            next_after = DecodedKeysetCursor(timestamp=last["first_added"], identifier=str(last["example_id"]))
         return seeds, total, next_after
 
     def _execute_get_seed_example(self, *, dataset_name: str | None, example_id: uuid.UUID) -> list[SeedRecord]:
@@ -4543,25 +5444,25 @@ class MemoryInterface(abc.ABC):
 
         Returns:
             Sequence[str]: A list of unique dataset names.
+
+        Raises:
+            SQLAlchemyError: If the dataset-name query fails.
         """
         try:
-            entries: Sequence[SeedEntry] = self._query_entries(
-                SeedEntry,
-                conditions=and_(SeedEntry.dataset_name.isnot(None), SeedEntry.dataset_name != ""),
-                distinct=True,
-            )
-            # Extract unique dataset names from the entries
-            dataset_names: set[str] = set()
-            for entry in entries:
-                if entry.dataset_name:
-                    dataset_names.add(entry.dataset_name)
-            return list(dataset_names)
-        except Exception as e:
+            with closing(self._get_session()) as session:
+                statement = (
+                    select(SeedEntry.dataset_name)
+                    .where(SeedEntry.dataset_name.isnot(None), SeedEntry.dataset_name != "")
+                    .distinct()
+                )
+                names: Sequence[str | None] = session.scalars(statement).all()
+                return [name for name in names if name is not None]
+        except SQLAlchemyError as e:
             logger.exception(f"Failed to retrieve dataset names with error {e}")
             raise
 
     async def replace_seeds_for_dataset_async(
-        self, *, dataset_name: str, seeds: Sequence[Seed], added_by: str | None = None
+        self, *, dataset_name: str, seeds: Sequence[Seed[Any]], added_by: str | None = None
     ) -> int:
         """
         Atomically replace all stored seeds for a dataset with a new set.
@@ -4595,10 +5496,36 @@ class MemoryInterface(abc.ABC):
             int: The number of ``SeedPromptEntries`` deleted before the new seeds were inserted.
 
         Raises:
-            ValueError: If ``dataset_name`` is empty, ``seeds`` is empty, or any seed's
-                ``dataset_name`` does not match ``dataset_name``.
+            ValueError: If ``dataset_name`` is empty, ``seeds`` is empty, a seed belongs
+                to another dataset, or the seed groups are structurally invalid.
             SQLAlchemyError: If the replacement fails; the transaction is rolled back first.
         """
+        self._validate_seed_replacement(dataset_name=dataset_name, seeds=seeds)
+        await self._prepare_seeds_for_storage_async(seeds=seeds, added_by=added_by)
+        return await self.replace_prepared_seed_batch_async(
+            dataset_name=dataset_name, batch=PreparedSeedBatch(_seeds=tuple(seeds))
+        )
+
+    async def replace_prepared_seed_batch_async(self, *, dataset_name: str, batch: PreparedSeedBatch) -> int:
+        """
+        Atomically replace a dataset with the prepared snapshot, without reprocessing media or hashes.
+
+        Args:
+            dataset_name (str): Dataset whose rows are replaced.
+            batch (PreparedSeedBatch): The snapshot returned by ``prepare_seed_batch_async``.
+
+        Returns:
+            int: The number of replaced seed rows.
+        """
+        seeds = batch.seeds
+        self._validate_seed_replacement(dataset_name=dataset_name, seeds=seeds)
+        entries = [SeedEntry(entry=seed) for seed in seeds]
+        return await self._run_database_operation_async(
+            self._replace_prepared_seeds, dataset_name=dataset_name, entries=entries
+        )
+
+    @staticmethod
+    def _validate_seed_replacement(*, dataset_name: str, seeds: Sequence[Seed[Any]]) -> None:
         if not dataset_name:
             raise ValueError("dataset_name must be a non-empty string.")
         if not seeds:
@@ -4614,15 +5541,7 @@ class MemoryInterface(abc.ABC):
                 "seeds tagged for another dataset."
             )
 
-        current_time = datetime.now(tz=UTC)
-        entries: list[SeedEntry] = []
-        for prompt in seeds:
-            await self._prepare_seed_for_storage_async(prompt=prompt, added_by=added_by, current_time=current_time)
-            entries.append(SeedEntry(entry=prompt))
-
-        return await self._run_database_operation_async(
-            self._replace_prepared_seeds, dataset_name=dataset_name, entries=entries
-        )
+        SeedDataset.group_seed_prompts_by_prompt_group_id(seeds)
 
     def _replace_prepared_seeds(self, *, dataset_name: str, entries: Sequence[SeedEntry]) -> int:
         """
@@ -4667,7 +5586,7 @@ class MemoryInterface(abc.ABC):
             raise ValueError("At least one prompt group must be provided.")
         # Validates the prompt group IDs and sets them if possible before leveraging
         # the add_seeds_to_memory_async method.
-        all_seeds: MutableSequence[Seed] = []
+        all_seeds: MutableSequence[Seed[Any]] = []
         for prompt_group in prompt_groups:
             if not prompt_group.seeds:
                 raise ValueError("Seed group must have at least one seed.")
@@ -4787,11 +5706,18 @@ class MemoryInterface(abc.ABC):
         """
         with closing(self._get_session()) as session:
             try:
-                for attack_result in attack_results:
+                entries = [
                     self._add_attack_result_to_session(session=session, attack_result=attack_result)
+                    for attack_result in attack_results
+                ]
+                self._recheck_activity_operations(session=session, entries=entries)
                 session.commit()
-            except SQLAlchemyError:
+            except SQLAlchemyError as error:
                 session.rollback()
+                if isinstance(error, IntegrityError):
+                    self._raise_if_operations_missing(
+                        session=session, operation_ids=_operation_ids(attack_results), error=error
+                    )
                 raise
 
     def _add_attack_result_to_session(self, *, session: Session, attack_result: AttackResult) -> AttackResultEntry:
@@ -4807,8 +5733,69 @@ class MemoryInterface(abc.ABC):
                 identifier=AtomicAttackIdentifier.from_component_identifier(attack_result.atomic_attack_identifier),
             )
         entry = AttackResultEntry(entry=attack_result)
+        self._validate_activity_operation(session=session, entry=entry)
         session.add(entry)
         return entry
+
+    @staticmethod
+    def _validate_activity_operation(
+        *,
+        session: Session,
+        entry: AttackResultEntry | ScenarioResultEntry,
+        existing: AttackResultEntry | ScenarioResultEntry | None = None,
+    ) -> None:
+        """
+        Enforce saved references and keep Operation IDs and ID-attributed names unchanged on existing activity.
+
+        Until 1.4.0, new activity may still carry only an Operation name, with a deprecation warning.
+
+        TODO(PyRIT 1.4): Reject Operation names on new activity and drop the name checks.
+
+        Raises:
+            LookupError: If the supplied Operation does not exist.
+            ValueError: If an existing ID, or the name of ID-attributed activity, changes.
+        """
+        if existing is not None:
+            if entry.operation_id != existing.operation_id:
+                raise ValueError("Operation attribution is immutable")
+            _check_operation_name_change(existing=existing, incoming=_activity_operation_name(entry))
+        elif entry.operation_id is None and _activity_operation_name(entry) is not None:
+            print_deprecation_message(
+                old_item="Saving activity with only an Operation name", new_item="operation_id", removed_in="1.4.0"
+            )
+        if entry.operation_id is not None and session.get(OperationEntry, entry.operation_id) is None:
+            raise LookupError(f"Operation {entry.operation_id} not found")
+
+    @staticmethod
+    def _recheck_activity_operations(*, session: Session, entries: Sequence[Base]) -> None:
+        """
+        Check new activity's Operations again after inserting it, while this transaction holds the write lock.
+
+        Raises:
+            LookupError: If an Operation was deleted after the first check.
+        """
+        # SQLite does not enforce foreign keys, so a concurrent delete would otherwise orphan the activity.
+        session.flush()
+        MemoryInterface._raise_if_operations_missing(session=session, operation_ids=_operation_ids(entries))
+
+    @staticmethod
+    def _raise_if_operations_missing(
+        *, session: Session, operation_ids: set[uuid.UUID], error: Exception | None = None
+    ) -> None:
+        """
+        Report activity whose Operation no longer exists as a missing Operation.
+
+        After a rolled-back insert, this separates a foreign-key failure from a deleted Operation, which
+        SQL Server raises before the post-insert check runs, from unrelated integrity errors.
+
+        Raises:
+            LookupError: If one of the Operations does not exist.
+        """
+        if not operation_ids:
+            return
+        saved = set(session.scalars(select(OperationEntry.id).where(OperationEntry.id.in_(operation_ids))))
+        if missing := operation_ids - saved:
+            raise LookupError(f"Operation {next(iter(missing))} not found") from error
 
     def _execute_add_conversation_branches_to_attack(
         self,
@@ -4821,6 +5808,7 @@ class MemoryInterface(abc.ABC):
         expected_fields: Mapping[str, Any] | None = None,
         update_fields: Mapping[str, Any] | None = None,
         request_fingerprint: str | None = None,
+        replace_conversation_pieces: Mapping[str, Sequence[MessagePiece]] | None = None,
     ) -> bool:
         """
         Atomically store initial or related conversations, pieces, and attack references.
@@ -4842,6 +5830,9 @@ class MemoryInterface(abc.ABC):
         conversation_ids = [conversation.conversation_id for conversation in conversations]
         if len(set(conversation_ids)) != len(conversation_ids):
             raise ValueError("Prepared branch conversation IDs must be unique")
+        replacements = replace_conversation_pieces or {}
+        if not set(replacements).issubset(conversation_ids):
+            raise ValueError("Replacement snapshots must belong to the prepared conversations")
         if source_conversation and source_conversation.conversation_id in conversation_ids:
             raise ValueError("A prepared branch cannot replace the source conversation")
         if any(not piece.not_in_memory and piece.conversation_id not in conversation_ids for piece in message_pieces):
@@ -4861,7 +5852,10 @@ class MemoryInterface(abc.ABC):
                 if (
                     request_fingerprint
                     and entry is not None
-                    and (entry.attack_metadata or {}).get(receipt_key) == request_fingerprint
+                    and (
+                        (entry.attack_metadata or {}).get(receipt_key) == request_fingerprint
+                        or (entry.attack_metadata or {}).get(f"{receipt_key}:{request_fingerprint}")
+                    )
                 ):
                     return False
                 if new_attack is not None:
@@ -4871,6 +5865,27 @@ class MemoryInterface(abc.ABC):
                 elif entry is None:
                     return False
                 self._check_attack_fields(entry=entry, expected_fields=expected_fields or {})
+                if replacements:
+                    active_ids = {entry.conversation_id, *(entry.pruned_conversation_ids or [])}
+                    if not set(replacements).issubset(active_ids):
+                        raise ValueError("Replacement conversations must belong to the destination attack")
+                    self._check_conversation_history(session=session, expected=replacements)
+                    piece_ids = [piece.id for pieces in replacements.values() for piece in pieces]
+                    if piece_ids:
+                        if (
+                            session.query(ScoreEntry.id)
+                            .filter(ScoreEntry.prompt_request_response_id.in_(piece_ids))
+                            .first()
+                        ):
+                            raise AttackStateConflictError(
+                                "Scored history cannot be replaced. Save a new conversation."
+                            )
+                        session.query(EmbeddingDataEntry).filter(EmbeddingDataEntry.id.in_(piece_ids)).delete(
+                            synchronize_session=False
+                        )
+                        session.query(PromptMemoryEntry).filter(PromptMemoryEntry.id.in_(piece_ids)).delete(
+                            synchronize_session=False
+                        )
                 if source_conversation is not None:
                     active_ids = {entry.conversation_id, *(entry.pruned_conversation_ids or [])}
                     if source_conversation.conversation_id not in active_ids:
@@ -4880,7 +5895,11 @@ class MemoryInterface(abc.ABC):
                         conversation=source_conversation.model_copy(update={"attack_result_id": attack_result_id}),
                     )
                 for conversation in conversations:
-                    if request_fingerprint and session.get(ConversationEntry, conversation.conversation_id) is not None:
+                    if (
+                        request_fingerprint
+                        and conversation.conversation_id not in replacements
+                        and session.get(ConversationEntry, conversation.conversation_id) is not None
+                    ):
                         raise AttackStateConflictError("The creation identity is already in use")
                     self._insert_conversation_in_session(
                         session=session,
@@ -4894,19 +5913,31 @@ class MemoryInterface(abc.ABC):
                 entry.pruned_conversation_ids = pruned_ids or None
                 self._apply_attack_fields_in_session(session=session, entry=entry, update_fields=update_fields or {})
                 if request_fingerprint:
-                    entry.attack_metadata = {**(entry.attack_metadata or {}), receipt_key: request_fingerprint}
+                    entry.attack_metadata = {
+                        **(entry.attack_metadata or {}),
+                        receipt_key: request_fingerprint,
+                        f"{receipt_key}:{request_fingerprint}": True,
+                    }
                 entry.timestamp = datetime.now(UTC)
+                if new_attack is not None:
+                    self._recheck_activity_operations(session=session, entries=[entry])
             return True
-        except IntegrityError:
+        except IntegrityError as error:
             # A concurrent retry may have committed the same new attack before our insert.
             with closing(self._get_session()) as session:
                 existing = session.get(AttackResultEntry, uuid.UUID(attack_result_id))
                 if (
                     request_fingerprint
                     and existing is not None
-                    and (existing.attack_metadata or {}).get(receipt_key) == request_fingerprint
+                    and (
+                        (existing.attack_metadata or {}).get(receipt_key) == request_fingerprint
+                        or (existing.attack_metadata or {}).get(f"{receipt_key}:{request_fingerprint}")
+                    )
                 ):
                     return False
+                self._raise_if_operations_missing(
+                    session=session, operation_ids=_operation_ids([new_attack]), error=error
+                )
             raise
 
     def _execute_update_attack_result_conditionally(
@@ -5000,8 +6031,19 @@ class MemoryInterface(abc.ABC):
     def _apply_attack_fields_in_session(
         self, *, session: Session, entry: AttackResultEntry, update_fields: Mapping[str, Any]
     ) -> None:
-        """Persist prepared fields and their identifier references in the caller's transaction."""
+        """
+        Persist prepared fields and their identifier references in the caller's transaction.
+
+        Raises:
+            ValueError: If an update changes the Operation ID or the name of ID-attributed activity.
+        """
         for field, value in update_fields.items():
+            if field == "operation_id" and value != entry.operation_id:
+                raise ValueError("Operation attribution is immutable")
+            if field == "operation":
+                _check_operation_name_change(existing=entry, incoming=value)
+            if field == "labels" and "operation" in (value or {}):
+                _check_operation_name_change(existing=entry, incoming=value["operation"])
             if field == "atomic_attack_identifier" and value is not None:
                 identifier = AtomicAttackIdentifier.model_validate(value)
                 identifier = AtomicAttackIdentifier.from_component_identifier(
@@ -5011,7 +6053,7 @@ class MemoryInterface(abc.ABC):
                 entry.atomic_attack_identifier_hash = identifier.hash
                 value = identifier.model_dump()
             if field == "attack_metadata":
-                value = {**(entry.attack_metadata or {}), **value}
+                value = {**(entry.attack_metadata or {}), **cast("dict[str, Any]", value)}
             setattr(entry, field, value)
 
     def _execute_promote_attack_conversation(self, *, attack_result_id: str, conversation_id: str) -> bool:
@@ -5141,6 +6183,7 @@ class MemoryInterface(abc.ABC):
         labels: Mapping[str, str | Sequence[str]] | None = None,
         operator: str | Sequence[str] | None = None,
         operation: str | Sequence[str] | None = None,
+        operation_ids: Sequence[uuid.UUID] | None = None,
         targeted_harm_categories: Sequence[str] | None = None,
         identifier_filters: Sequence[IdentifierFilter] | None = None,
         scenario_result_id: str | None = None,
@@ -5193,6 +6236,8 @@ class MemoryInterface(abc.ABC):
                 for that label. Defaults to None.
             operator (str | Sequence[str] | None, optional): Filter by dedicated operator values.
             operation (str | Sequence[str] | None, optional): Filter by dedicated operation values.
+            operation_ids (Sequence[uuid.UUID] | None, optional): Filter by saved Operation IDs.
+                Legacy rows that only carry an operation name never match. Defaults to None.
             targeted_harm_categories (Sequence[str] | None, optional): Filter results by the
                 harm categories targeted by the attack (stored on
                 ``AttackResultEntry.targeted_harm_categories``, auto-populated from the
@@ -5252,6 +6297,7 @@ class MemoryInterface(abc.ABC):
             labels=labels,
             operator=operator,
             operation=operation,
+            operation_ids=operation_ids,
             targeted_harm_categories=targeted_harm_categories,
             identifier_filters=identifier_filters,
             scenario_result_id=scenario_result_id,
@@ -5356,6 +6402,8 @@ class MemoryInterface(abc.ABC):
             conditions.append(AttackResultEntry.operator.in_(query.operator))
         if query.operation:
             conditions.append(AttackResultEntry.operation.in_(query.operation))
+        if query.operation_ids:
+            conditions.append(AttackResultEntry.operation_id.in_(query.operation_ids))
         if query.scenario_result_id:
             conditions.append(AttackResultEntry.attribution_parent_id == uuid.UUID(query.scenario_result_id))
         elif not query.include_scenario_attacks:
@@ -5434,8 +6482,9 @@ class MemoryInterface(abc.ABC):
         Returns:
             list[Any]: The backend-specific label condition, if labels are effective.
 
-        Raises:
-            ValueError: If a label key falls outside the safe allowlist.
+        Keys in the ``[A-Za-z0-9_.-]+`` allowlist use the JSON-path condition. Other keys, such as
+        ones with spaces, quotes or non-ASCII characters, are matched literally against the stored
+        label names with bound parameters, so they never become part of a JSON path or SQL text.
         """
         if not query.labels:
             return []
@@ -5444,14 +6493,14 @@ class MemoryInterface(abc.ABC):
             for key, value in query.labels.items()
             if not (isinstance(value, (list, tuple)) and len(value) == 0)
         }
-        invalid_keys = [key for key in effective_labels if not self._LABEL_KEY_PATTERN.match(key)]
-        if invalid_keys:
-            raise ValueError(
-                f"Invalid label key(s) {invalid_keys!r}: keys must match {self._LABEL_KEY_PATTERN.pattern}."
-            )
-        if not effective_labels:
-            return []
-        return [self._get_attack_result_label_condition(labels=effective_labels)]
+        path_labels = {key: value for key, value in effective_labels.items() if self._LABEL_KEY_PATTERN.match(key)}
+        literal_labels = {key: value for key, value in effective_labels.items() if key not in path_labels}
+        conditions: list[Any] = []
+        if path_labels:
+            conditions.append(self._get_attack_result_label_condition(labels=path_labels))
+        if literal_labels:
+            conditions.append(self._get_attack_result_literal_label_condition(labels=literal_labels))
+        return conditions
 
     def _build_attack_result_category_conditions(self, *, query: _AttackResultQuery) -> list[Any]:
         """
@@ -5755,10 +6804,17 @@ class MemoryInterface(abc.ABC):
                         session=session,
                         scenario_identifier=scenario_result.scenario_identifier,
                     )
+                for entry in entries:
+                    self._validate_activity_operation(session=session, entry=entry)
                 session.add_all(entries)
+                self._recheck_activity_operations(session=session, entries=entries)
                 session.commit()
-            except SQLAlchemyError:
+            except SQLAlchemyError as error:
                 session.rollback()
+                if isinstance(error, IntegrityError):
+                    self._raise_if_operations_missing(
+                        session=session, operation_ids=_operation_ids(entries), error=error
+                    )
                 raise
 
     @classmethod
@@ -5971,7 +7027,7 @@ class MemoryInterface(abc.ABC):
             raise ValueError("Scenario run state projection limit must be between 1 and 500.")
         conditions = [ScenarioResultEntry.scenario_run_state.in_([state.value for state in states])]
         if after_id is not None:
-            conditions.append(ScenarioResultEntry.id > uuid.UUID(after_id))
+            conditions.append(ScenarioResultEntry.id > cast("Any", uuid.UUID(after_id)))
         statement = (
             select(ScenarioResultEntry.id, ScenarioResultEntry.scenario_run_state)
             .where(and_(*conditions))
@@ -5979,12 +7035,12 @@ class MemoryInterface(abc.ABC):
             .limit(limit + 1)
         )
         with closing(self._get_session()) as session:
-            rows = session.execute(statement).all()
+            rows = session.execute(statement).mappings().all()
         return (
             [
                 ScenarioRunStateRecord(
-                    scenario_result_id=str(row.id),
-                    state=ScenarioRunState(row.scenario_run_state),
+                    scenario_result_id=str(row["id"]),
+                    state=ScenarioRunState(row["scenario_run_state"]),
                 )
                 for row in rows[:limit]
             ],
@@ -5997,6 +7053,7 @@ class MemoryInterface(abc.ABC):
         scenario_names: Sequence[str] | None = None,
         statuses: Sequence[str] | None = None,
         labels: Mapping[str, str | Sequence[str]] | None = None,
+        operation_ids: Sequence[uuid.UUID] | None = None,
         cursor: ScenarioHistoryKeysetCursor | None = None,
         limit: int = 100,
     ) -> tuple[list[ScenarioHistoryRunRecord], dict[str, ScenarioHistoryAggregate], bool]:
@@ -6023,6 +7080,7 @@ class MemoryInterface(abc.ABC):
             scenario_names=scenario_names,
             statuses=statuses,
             labels=labels,
+            operation_ids=operation_ids,
             cursor=cursor,
             limit=limit,
         )
@@ -6076,9 +7134,13 @@ class MemoryInterface(abc.ABC):
             if scenario_result_id in aggregates
         ]
         with closing(self._get_session()) as session:
-            aggregate_rows = session.execute(
-                self._build_scenario_history_aggregate_statement(entry_ids=entry_ids, plan_entry_ids=plan_entry_ids)
-            ).all()
+            aggregate_rows = (
+                session.execute(
+                    self._build_scenario_history_aggregate_statement(entry_ids=entry_ids, plan_entry_ids=plan_entry_ids)
+                )
+                .mappings()
+                .all()
+            )
             name_rows = session.execute(
                 select(AttackResultEntry.attribution_parent_id, self._get_scenario_attempt_unit_expressions()[0])
                 .where(AttackResultEntry.attribution_parent_id.in_(entry_ids))
@@ -6104,19 +7166,28 @@ class MemoryInterface(abc.ABC):
                 continue
             names_by_run.setdefault(str(scenario_result_id), []).append(atomic_attack_name)
         for row in aggregate_rows:
-            if row.scenario_result_id is None:
+            if row["scenario_result_id"] is None:
                 continue
-            run_id = str(row.scenario_result_id)
+            run_id = str(row["scenario_result_id"])
             aggregates[run_id] = ScenarioHistoryAggregate(
                 scenario_result_id=run_id,
-                unit_count=row.unit_count or 0,
-                completed_units=row.completed_units or 0,
-                successful_units=row.successful_units or 0,
-                error_attempts=row.error_attempts or 0,
-                total_retries=row.total_retries or 0,
-                latest_attempt_timestamp=row.latest_attempt_timestamp,
+                unit_count=row["unit_count"] or 0,
+                completed_units=row["completed_units"] or 0,
+                successful_units=row["successful_units"] or 0,
+                error_attempts=row["error_attempts"] or 0,
+                total_retries=row["total_retries"] or 0,
+                latest_attempt_timestamp=row["latest_attempt_timestamp"],
                 atomic_attack_names=tuple(sorted(names_by_run.get(run_id, ()))),
                 needs_sdk_statistics=run_id in sdk_run_ids,
+                target_facing_attempts=row["target_facing_attempts"] or 0,
+                target_facing_error_attempts=row["target_facing_error_attempts"] or 0,
+                target_facing_retries=row["target_facing_retries"] or 0,
+                orchestration_attempts=row["orchestration_attempts"] or 0,
+                orchestration_error_attempts=row["orchestration_error_attempts"] or 0,
+                orchestration_retries=row["orchestration_retries"] or 0,
+                unknown_role_attempts=row["unknown_role_attempts"] or 0,
+                unknown_role_error_attempts=row["unknown_role_error_attempts"] or 0,
+                unknown_role_retries=row["unknown_role_retries"] or 0,
             )
         return aggregates
 
@@ -6133,6 +7204,22 @@ class MemoryInterface(abc.ABC):
             Any: A statement selecting one aggregate row per scenario run with attempts.
         """
         atomic_name, technique_hash, attributed_seed_group_id, _ = self._get_scenario_attempt_unit_expressions()
+        parents = AttackResultEntry.__table__.alias("history_parents")
+        children = AttackResultEntry.__table__.alias("history_children")
+        links = JsonArrayItems(parents.c.attack_metadata, literal("$.child_attack_result_ids")).table_valued(
+            "key", "value", "type"
+        )
+        duplicate_errors = (
+            select(parents.c.id.label("parent_id"))
+            .select_from(JsonArrayJoin(parents, links, literal(True)))
+            .join(
+                children,
+                func.replace(sql_cast(children.c.id, String(36)), "-", "") == func.replace(links.c.value, "-", ""),
+            )
+            .where(parents.c.attribution_parent_id.in_(entry_ids), children.c.outcome == AttackOutcome.ERROR.value)
+            .distinct()
+            .subquery("history_duplicate_errors")
+        )
         # Explicit seed attribution is authoritative, then the objective hash. Runs with attempts identified only by
         # their atomic identifier's seeds are flagged instead (see _get_scenario_history_runs_needing_sdk_statistics),
         # because SQL can't derive the logical seed group from those seeds.
@@ -6154,6 +7241,14 @@ class MemoryInterface(abc.ABC):
                     ),
                     else_=0,
                 ).label("total_retries"),
+                JsonScalar(AttackResultEntry.attribution_data, literal("$.result_role")).label("result_role"),
+                JsonScalar(AttackResultEntry.attribution_data, literal("$.attempt_index")).label("attempt_index"),
+                case((duplicate_errors.c.parent_id.is_not(None), 1), else_=0).label("duplicates_child_error"),
+            )
+            .select_from(
+                AttackResultEntry.__table__.outerjoin(
+                    duplicate_errors, AttackResultEntry.id == duplicate_errors.c.parent_id
+                )
             )
             .where(AttackResultEntry.attribution_parent_id.in_(entry_ids))
             .subquery("history_attempts")
@@ -6163,10 +7258,36 @@ class MemoryInterface(abc.ABC):
         )
 
         unit_partition = (units.c.scenario_result_id, units.c.unit_group_id, units.c.unit_seed_id)
+        is_execution = or_(
+            units.c.result_role.is_(None),
+            not_(
+                self._get_scenario_role_match_condition(
+                    role_expression=units.c.result_role, role=AttackResultRole.ORCHESTRATION
+                )
+            ),
+        )
+        units = select(
+            units,
+            func.max(case((is_execution, 1), else_=0))
+            .over(partition_by=unit_partition)
+            .label("has_execution_attempts"),
+        ).subquery("history_classified_units")
+        unit_partition = (units.c.scenario_result_id, units.c.unit_group_id, units.c.unit_seed_id)
+        is_execution = or_(
+            units.c.result_role.is_(None),
+            not_(
+                self._get_scenario_role_match_condition(
+                    role_expression=units.c.result_role, role=AttackResultRole.ORCHESTRATION
+                )
+            ),
+        )
+        independent_error = and_(units.c.outcome == AttackOutcome.ERROR.value, units.c.duplicates_child_error == 0)
+        pressure_attempt = case((or_(units.c.has_execution_attempts == 0, is_execution, independent_error), 1), else_=0)
+        is_completion = case((units.c.attempt_index.is_(None), 1), else_=0)
         is_error = units.c.outcome == AttackOutcome.ERROR.value
         unit_retries = (
-            func.sum(units.c.total_retries).over(partition_by=unit_partition)
-            + func.count().over(partition_by=unit_partition)
+            func.sum(pressure_attempt * units.c.total_retries).over(partition_by=unit_partition)
+            + func.sum(pressure_attempt).over(partition_by=unit_partition)
             - 1
         )
         ranked = select(
@@ -6175,11 +7296,17 @@ class MemoryInterface(abc.ABC):
             units.c.outcome.label("latest_outcome"),
             func.max(units.c.is_planned).over(partition_by=unit_partition).label("is_planned"),
             unit_retries.label("unit_retries"),
-            func.sum(case((is_error, 1), else_=0)).over(partition_by=unit_partition).label("unit_errors"),
+            func.sum(case((is_error, pressure_attempt), else_=0))
+            .over(partition_by=unit_partition)
+            .label("unit_errors"),
+            is_completion.label("is_completion"),
+            units.c.result_role.label("result_role"),
+            units.c.total_retries.label("attempt_retries"),
             func.row_number()
             .over(
                 partition_by=unit_partition,
                 order_by=(
+                    is_completion.desc(),
                     units.c.timestamp.desc(),
                     self._get_scenario_attempt_id_order_expression(attempt_id=units.c.attempt_id).desc(),
                 ),
@@ -6187,19 +7314,54 @@ class MemoryInterface(abc.ABC):
             .label("unit_rank"),
         ).subquery("history_ranked_units")
         counted = and_(ranked.c.unit_rank == 1, ranked.c.is_planned == 1)
+        completed = and_(counted, ranked.c.is_completion == 1)
+        is_target_facing = self._get_scenario_role_match_condition(
+            role_expression=ranked.c.result_role, role=AttackResultRole.TARGET_FACING
+        )
+        is_orchestration = self._get_scenario_role_match_condition(
+            role_expression=ranked.c.result_role, role=AttackResultRole.ORCHESTRATION
+        )
+        is_unknown = or_(
+            ranked.c.result_role.is_(None),
+            and_(not_(is_target_facing), not_(is_orchestration)),
+        )
         return (
             select(
                 ranked.c.scenario_result_id,
                 func.max(ranked.c.timestamp).label("latest_attempt_timestamp"),
                 func.sum(case((counted, 1), else_=0)).label("unit_count"),
-                func.sum(case((counted, 1), else_=0)).label("completed_units"),
+                func.sum(case((completed, 1), else_=0)).label("completed_units"),
                 func.sum(
-                    case((and_(counted, ranked.c.latest_outcome == AttackOutcome.SUCCESS.value), 1), else_=0)
+                    case((and_(completed, ranked.c.latest_outcome == AttackOutcome.SUCCESS.value), 1), else_=0)
                 ).label("successful_units"),
                 func.sum(case((counted, ranked.c.unit_errors), else_=0)).label("error_attempts"),
                 func.sum(case((and_(counted, ranked.c.unit_retries > 0), ranked.c.unit_retries), else_=0)).label(
                     "total_retries"
                 ),
+                func.sum(case((is_target_facing, 1), else_=0)).label("target_facing_attempts"),
+                func.sum(
+                    case(
+                        (and_(is_target_facing, ranked.c.latest_outcome == AttackOutcome.ERROR.value), 1),
+                        else_=0,
+                    )
+                ).label("target_facing_error_attempts"),
+                func.sum(case((is_target_facing, ranked.c.attempt_retries), else_=0)).label("target_facing_retries"),
+                func.sum(case((is_orchestration, 1), else_=0)).label("orchestration_attempts"),
+                func.sum(
+                    case(
+                        (and_(is_orchestration, ranked.c.latest_outcome == AttackOutcome.ERROR.value), 1),
+                        else_=0,
+                    )
+                ).label("orchestration_error_attempts"),
+                func.sum(case((is_orchestration, ranked.c.attempt_retries), else_=0)).label("orchestration_retries"),
+                func.sum(case((is_unknown, 1), else_=0)).label("unknown_role_attempts"),
+                func.sum(
+                    case(
+                        (and_(is_unknown, ranked.c.latest_outcome == AttackOutcome.ERROR.value), 1),
+                        else_=0,
+                    )
+                ).label("unknown_role_error_attempts"),
+                func.sum(case((is_unknown, ranked.c.attempt_retries), else_=0)).label("unknown_role_retries"),
             )
             .group_by(ranked.c.scenario_result_id)
             .order_by(ranked.c.scenario_result_id)
@@ -6226,6 +7388,9 @@ class MemoryInterface(abc.ABC):
                 attempts.c.outcome,
                 attempts.c.timestamp,
                 attempts.c.total_retries,
+                attempts.c.result_role,
+                attempts.c.attempt_index,
+                attempts.c.duplicates_child_error,
                 unplanned_group_id.label("unit_group_id"),
                 attempts.c.seed_group_id.label("unit_seed_id"),
                 literal(1).label("is_planned"),
@@ -6305,6 +7470,9 @@ class MemoryInterface(abc.ABC):
                 attempts.c.outcome,
                 attempts.c.timestamp,
                 attempts.c.total_retries,
+                attempts.c.result_role,
+                attempts.c.attempt_index,
+                attempts.c.duplicates_child_error,
                 attempts.c.atomic_attack_name,
                 unplanned_group_id.label("unplanned_group_id"),
                 attempts.c.seed_group_id,
@@ -6330,6 +7498,9 @@ class MemoryInterface(abc.ABC):
             matched.c.outcome,
             matched.c.timestamp,
             matched.c.total_retries,
+            matched.c.result_role,
+            matched.c.attempt_index,
+            matched.c.duplicates_child_error,
             func.coalesce(matched.c.atomic_group_id, matched.c.unplanned_group_id).label("unit_group_id"),
             func.coalesce(matched.c.planned_seed_group_id, matched.c.seed_group_id).label("unit_seed_id"),
             # Runs outside the plan-resolution set keep their raw identity and stay counted.
@@ -6443,50 +7614,50 @@ class MemoryInterface(abc.ABC):
             .limit(limit + 1)
         )
         with closing(self._get_session()) as session:
-            rows = session.execute(statement).all()
+            rows = session.execute(statement).mappings().all()
 
         has_more = len(rows) > limit
         deltas: list[ScenarioAttackResultDelta] = []
         for row in rows[:limit]:
             retry_events = [
                 RetryEvent.model_validate(event)
-                for event in (json.loads(row.retry_events_json) if row.retry_events_json else [])
+                for event in (json.loads(row["retry_events_json"]) if row["retry_events_json"] else [])
             ]
             atomic_identifier = (
-                AtomicAttackIdentifier.model_validate(row.atomic_attack_identifier)
-                if row.atomic_attack_identifier
+                AtomicAttackIdentifier.model_validate(row["atomic_attack_identifier"])
+                if row["atomic_attack_identifier"]
                 else None
             )
             score = None
-            if row.score_id is not None:
+            if row["score_id"] is not None:
                 scorer_identifier = (
-                    ComponentIdentifier.model_validate(row.scorer_class_identifier)
-                    if row.scorer_class_identifier
+                    ComponentIdentifier.model_validate(row["scorer_class_identifier"])
+                    if row["scorer_class_identifier"]
                     else None
                 )
                 score = ScenarioProgressScore(
                     scorer_name=scorer_identifier.class_name if scorer_identifier else "Unknown",
-                    score_type=row.score_type,
-                    status=ScoreStatus(row.score_status),
-                    score_value=row.score_value,
-                    score_rationale=row.score_rationale,
+                    score_type=row["score_type"],
+                    status=ScoreStatus(row["score_status"]),
+                    score_value=row["score_value"],
+                    score_rationale=row["score_rationale"],
                 )
             deltas.append(
                 ScenarioAttackResultDelta(
-                    attack_result_id=str(row.id),
-                    conversation_id=row.conversation_id,
-                    objective=row.objective,
-                    objective_sha256=row.objective_sha256,
+                    attack_result_id=str(row["id"]),
+                    conversation_id=row["conversation_id"],
+                    objective=row["objective"],
+                    objective_sha256=row["objective_sha256"],
                     atomic_attack_identifier=atomic_identifier,
-                    outcome=AttackOutcome(row.outcome),
-                    execution_time_ms=row.execution_time_ms,
-                    timestamp=row.timestamp,
+                    outcome=AttackOutcome(row["outcome"]),
+                    execution_time_ms=row["execution_time_ms"],
+                    timestamp=row["timestamp"],
                     retry_events=retry_events,
-                    total_retries=row.total_retries or 0,
-                    error_type=row.error_type,
-                    error_message=row.error_message,
-                    attribution_data=row.attribution_data or {},
-                    attack_metadata=row.attack_metadata or {},
+                    total_retries=row["total_retries"] or 0,
+                    error_type=row["error_type"],
+                    error_message=row["error_message"],
+                    attribution_data=row["attribution_data"] or {},
+                    attack_metadata=row["attack_metadata"] or {},
                     score=score,
                 )
             )
@@ -7838,7 +9009,9 @@ class MemoryInterface(abc.ABC):
             conversation_id (str | uuid.UUID | None, optional): The ID of the conversation. Defaults to None.
             prompt_ids (Sequence[str] | Sequence[uuid.UUID] | None, optional): A list of prompt IDs.
                 Defaults to None.
-            labels (dict[str, str] | None, optional): A dictionary of labels. Defaults to None.
+            labels (dict[str, str] | None, optional): Deprecated. Labels live on attack results, so
+                query ``get_attack_results_async(labels=...)`` and fetch their conversations instead.
+                Defaults to None.
             prompt_metadata (dict[str, str | int] | None, optional): The metadata associated with the prompt.
                 Defaults to None.
             sent_after (datetime | None, optional): Filter for prompts sent after this datetime. Defaults to None.
@@ -7854,6 +9027,8 @@ class MemoryInterface(abc.ABC):
         Returns:
             Sequence[Score]: A list of scores extracted from the message pieces.
         """
+        if labels is not None:
+            _deprecate_message_labels(method="get_prompt_scores_async")
         return await self._run_database_operation_async(
             self._execute_get_prompt_scores,
             role=role,
@@ -8014,7 +9189,9 @@ class MemoryInterface(abc.ABC):
             conversation_id (str | uuid.UUID | None, optional): The ID of the conversation. Defaults to None.
             prompt_ids (Sequence[str] | Sequence[uuid.UUID] | None, optional): A list of prompt IDs.
                 Defaults to None.
-            labels (dict[str, str] | None, optional): A dictionary of labels. Defaults to None.
+            labels (dict[str, str] | None, optional): Deprecated. Labels live on attack results, so
+                query ``get_attack_results_async(labels=...)`` and fetch their conversations instead.
+                Defaults to None.
             prompt_metadata (dict[str, str | int] | None, optional): The metadata associated with the prompt.
                 Defaults to None.
             sent_after (datetime | None, optional): Filter for prompts sent after this datetime. Defaults to None.
@@ -8038,6 +9215,8 @@ class MemoryInterface(abc.ABC):
             Exception: If there is an error retrieving the prompts,
                 an exception is logged and an empty list is returned.
         """
+        if labels is not None:
+            _deprecate_message_labels(method="get_message_pieces_async")
         return await self._run_database_operation_async(
             self._execute_get_message_pieces,
             role=role,
@@ -8301,7 +9480,7 @@ class MemoryInterface(abc.ABC):
         parameters: Sequence[str] | None = None,
         metadata: dict[str, str | int] | None = None,
         prompt_group_ids: Sequence[uuid.UUID] | None = None,
-    ) -> Sequence[Seed]:
+    ) -> Sequence[Seed[Any]]:
         """
         Use ``get_seeds_async``.
 
@@ -8350,9 +9529,12 @@ class MemoryInterface(abc.ABC):
         parameters: Sequence[str] | None = None,
         metadata: dict[str, str | int] | None = None,
         prompt_group_ids: Sequence[uuid.UUID] | None = None,
-    ) -> Sequence[Seed]:
+    ) -> Sequence[Seed[Any]]:
         """
         Retrieve a list of seed prompts based on the specified filters.
+
+        List filters match substrings within decoded elements, not their JSON representation.
+        Substring matching retains the backend's LIKE case and wildcard semantics.
 
         Args:
             origin (SeedOrigin | None): Match the recorded ingestion origin.
@@ -8990,6 +10172,7 @@ class MemoryInterface(abc.ABC):
         expected_fields: Mapping[str, Any] | None = None,
         update_fields: Mapping[str, Any] | None = None,
         request_fingerprint: str | None = None,
+        replace_conversation_pieces: Mapping[str, Sequence[MessagePiece]] | None = None,
     ) -> bool:
         """
         Use ``add_conversation_branches_to_attack_async``.
@@ -9013,6 +10196,7 @@ class MemoryInterface(abc.ABC):
             expected_fields=expected_fields,
             update_fields=update_fields,
             request_fingerprint=request_fingerprint,
+            replace_conversation_pieces=replace_conversation_pieces,
         )
 
     @legacy_sync_override(lambda: MemoryInterface.add_conversation_branches_to_attack)
@@ -9027,6 +10211,7 @@ class MemoryInterface(abc.ABC):
         expected_fields: Mapping[str, Any] | None = None,
         update_fields: Mapping[str, Any] | None = None,
         request_fingerprint: str | None = None,
+        replace_conversation_pieces: Mapping[str, Sequence[MessagePiece]] | None = None,
     ) -> bool:
         """
         Atomically store initial or related conversations, pieces, and attack references.
@@ -9055,6 +10240,7 @@ class MemoryInterface(abc.ABC):
             expected_fields=expected_fields,
             update_fields=update_fields,
             request_fingerprint=request_fingerprint,
+            replace_conversation_pieces=replace_conversation_pieces,
         )
 
     async def update_attack_result_conditionally_async(
@@ -9209,6 +10395,7 @@ class MemoryInterface(abc.ABC):
         labels: Mapping[str, str | Sequence[str]] | None = None,
         operator: str | Sequence[str] | None = None,
         operation: str | Sequence[str] | None = None,
+        operation_ids: Sequence[uuid.UUID] | None = None,
         targeted_harm_categories: Sequence[str] | None = None,
         identifier_filters: Sequence[IdentifierFilter] | None = None,
         scenario_result_id: str | None = None,
@@ -9246,6 +10433,7 @@ class MemoryInterface(abc.ABC):
             labels=labels,
             operator=operator,
             operation=operation,
+            operation_ids=operation_ids,
             targeted_harm_categories=targeted_harm_categories,
             identifier_filters=identifier_filters,
             scenario_result_id=scenario_result_id,
@@ -9274,6 +10462,7 @@ class MemoryInterface(abc.ABC):
         labels: Mapping[str, str | Sequence[str]] | None = None,
         operator: str | Sequence[str] | None = None,
         operation: str | Sequence[str] | None = None,
+        operation_ids: Sequence[uuid.UUID] | None = None,
         targeted_harm_categories: Sequence[str] | None = None,
         identifier_filters: Sequence[IdentifierFilter] | None = None,
         scenario_result_id: str | None = None,
@@ -9326,6 +10515,8 @@ class MemoryInterface(abc.ABC):
                 for that label. Defaults to None.
             operator (str | Sequence[str] | None, optional): Filter by dedicated operator values.
             operation (str | Sequence[str] | None, optional): Filter by dedicated operation values.
+            operation_ids (Sequence[uuid.UUID] | None, optional): Filter by saved Operation IDs.
+                Legacy rows that only carry an operation name never match. Defaults to None.
             targeted_harm_categories (Sequence[str] | None, optional): Filter results by the
                 harm categories targeted by the attack (stored on
                 ``AttackResultEntry.targeted_harm_categories``, auto-populated from the
@@ -9384,6 +10575,7 @@ class MemoryInterface(abc.ABC):
             labels=labels,
             operator=operator,
             operation=operation,
+            operation_ids=operation_ids,
             targeted_harm_categories=targeted_harm_categories,
             identifier_filters=identifier_filters,
             scenario_result_id=scenario_result_id,
@@ -9794,6 +10986,7 @@ class MemoryInterface(abc.ABC):
         scenario_names: Sequence[str] | None = None,
         statuses: Sequence[str] | None = None,
         labels: Mapping[str, str | Sequence[str]] | None = None,
+        operation_ids: Sequence[uuid.UUID] | None = None,
         cursor: ScenarioHistoryKeysetCursor | None = None,
         limit: int = 100,
     ) -> tuple[list[ScenarioHistoryRunRecord], dict[str, ScenarioHistoryAggregate], bool]:
@@ -9811,7 +11004,12 @@ class MemoryInterface(abc.ABC):
             removed_in="1.4.0",
         )
         return self._execute_get_scenario_run_history_page(
-            scenario_names=scenario_names, statuses=statuses, labels=labels, cursor=cursor, limit=limit
+            scenario_names=scenario_names,
+            statuses=statuses,
+            labels=labels,
+            operation_ids=operation_ids,
+            cursor=cursor,
+            limit=limit,
         )
 
     @legacy_sync_override(lambda: MemoryInterface.get_scenario_run_history_page)
@@ -9821,6 +11019,7 @@ class MemoryInterface(abc.ABC):
         scenario_names: Sequence[str] | None = None,
         statuses: Sequence[str] | None = None,
         labels: Mapping[str, str | Sequence[str]] | None = None,
+        operation_ids: Sequence[uuid.UUID] | None = None,
         cursor: ScenarioHistoryKeysetCursor | None = None,
         limit: int = 100,
     ) -> tuple[list[ScenarioHistoryRunRecord], dict[str, ScenarioHistoryAggregate], bool]:
@@ -9845,6 +11044,7 @@ class MemoryInterface(abc.ABC):
             scenario_names=scenario_names,
             statuses=statuses,
             labels=labels,
+            operation_ids=operation_ids,
             cursor=cursor,
             limit=limit,
         )
