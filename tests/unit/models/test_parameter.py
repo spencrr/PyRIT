@@ -12,7 +12,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from pyrit.common import REQUIRED_VALUE
-from pyrit.models import Parameter
+from pyrit.models import JsonParameterValue, Parameter
 from pyrit.models.parameter import (
     ComponentType,
     RegistryReference,
@@ -26,8 +26,12 @@ class _Speed(Enum):
     SLOW = "slow"
 
 
-class _Settings(BaseModel):
+class _Settings(BaseModel, JsonParameterValue):
     model_config = ConfigDict(extra="forbid")
+    size: int
+
+
+class _PlainModel(BaseModel):
     size: int
 
 
@@ -91,6 +95,7 @@ class TestParameterSerialization:
             "required": False,
             "choices": None,
             "is_list": False,
+            "is_json_object": False,
             "reference_type": None,
             "variants": None,
             "sensitive": False,
@@ -618,10 +623,19 @@ class TestIsExternalInput:
         assert not Parameter(name="o", description="d", param_type=str, opaque=True).is_external_input
 
     @pytest.mark.parametrize("param_type", [_Settings, _Settings | None, _Settings | dict[str, Any] | None])
-    def test_pydantic_models_are_external(self, param_type: object) -> None:
-        assert Parameter(name="p", description="d", param_type=param_type).is_external_input
+    def test_json_parameter_values_are_external(self, param_type: object) -> None:
+        parameter = Parameter(name="p", description="d", param_type=param_type)
+        assert parameter.is_external_input
+        assert parameter.is_json_object
 
-    def test_pydantic_model_validates_a_json_object(self) -> None:
+    @pytest.mark.parametrize("param_type", [_PlainModel, _PlainModel | None, _PlainModel | dict[str, Any]])
+    def test_unmarked_pydantic_models_take_python_objects_only(self, param_type: object) -> None:
+        parameter = Parameter(name="p", description="d", param_type=param_type)
+        assert not parameter.is_external_input
+        assert not parameter.is_json_object
+        assert parameter.coerce_value({"size": 3}) == {"size": 3}
+
+    def test_json_parameter_value_validates_a_json_object(self) -> None:
         parameter = Parameter(name="p", description="d", param_type=_Settings | dict[str, Any] | None)
         assert parameter.for_external_catalog().type_name == "_Settings"
         assert parameter.coerce_value({"size": 3}) == _Settings(size=3)

@@ -939,7 +939,8 @@ Use `/api/converters/types` and `/api/targets/types` for registry build metadata
 These endpoints return the constructor parameters external callers can set, each
 described in the form callers send it: a flat collection as a list, a union as its
 first alternative callers can send (`font_size: int | tuple[int, int]` as `int`),
-a pydantic model as a JSON object that the model validates (`AgentTarget.agent_configuration`),
+a model that declares `JsonParameterValue` as a JSON object the model validates
+(`AgentTarget.agent_configuration`; other object-typed parameters stay in-process only),
 and a component reference as a name. They leave out types external callers can't
 create. Registry metadata keeps every parameter with its full annotation.
 Create requests should supply an explicit registry `name`. Converter creation

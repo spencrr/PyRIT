@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, fi
 
 from pyrit.models.identifiers.class_name_utils import validate_registry_name
 from pyrit.models.model_inference import InferenceRequirements, InferenceWireApi
+from pyrit.models.parameter import JsonParameterValue
 
 
 class AgentEnvironment(str, Enum):
@@ -267,7 +268,7 @@ class EnvironmentTemplate(BaseModel):
         return self
 
 
-class AgentTargetConfiguration(BaseModel):
+class AgentTargetConfiguration(BaseModel, JsonParameterValue):
     """Resolved system-under-test configuration; construction does not provision resources."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")

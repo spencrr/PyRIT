@@ -131,6 +131,7 @@ if TYPE_CHECKING:
     from pyrit.models.operation import Operation, OperationCreate, OperationUsage
     from pyrit.models.parameter import (
         ComponentType,
+        JsonParameterValue,
         Parameter,
         ParameterDestination,
         RegistryReference,
@@ -514,6 +515,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "StoredPreset": "pyrit.models.catalog",
     "StrategyResult": "pyrit.models.results.strategy_result",
     "StrategyResultT": "pyrit.models.results.strategy_result",
+    "JsonParameterValue": "pyrit.models.parameter",
     "StructuredParameterValue": "pyrit.models.parameter",
     "TARGET_EVAL_PARAM_FALLBACKS": "pyrit.models.identifiers",
     "TARGET_EVAL_PARAMS": "pyrit.models.identifiers",
