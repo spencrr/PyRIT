@@ -139,7 +139,7 @@ class OpenAIResponseTarget(OpenAITarget):
 
     def _inference_blocked_reason(self) -> str | None:
         if self._extra_body_parameters or self._direct_tools or self._tool_providers or self._custom_functions:
-            return "Target-side tools or custom body configuration cannot be silently reused for agent inference"
+            return "Target-side tools or custom body configuration cannot be silently reused for single inference"
         return None
 
     def _inference_defaults(self) -> dict[str, Any]:

@@ -98,7 +98,7 @@ class OpenAIChatTarget(OpenAITarget):
         if self._extra_body_parameters or self._audio_response_config:
             return "Custom body/audio configuration requires a dedicated inference adapter"
         if self._n not in (None, 1):
-            return "Agent inference requires one completion choice"
+            return "Single inference requires one completion choice"
         return None
 
     def _inference_defaults(self) -> dict[str, Any]:

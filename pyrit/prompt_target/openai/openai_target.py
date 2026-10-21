@@ -126,12 +126,6 @@ class OpenAITarget(PromptTarget):
         effective["model"] = self._model_name
         return effective
 
-    async def cleanup_target_async(self) -> None:
-        """Close the HTTP transport shared by direct prompts and bound inference requests."""
-        if self._async_client is not None:
-            await self._async_client.close()
-            self._async_client = None
-
     @asynccontextmanager
     async def open_inference_async(
         self, *, body: dict[str, Any], requirements: InferenceRequirements, request_id: str
