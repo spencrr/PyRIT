@@ -7,6 +7,7 @@ import asyncio
 import codecs
 import contextlib
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,7 +25,12 @@ from pyrit.agent.environment import (
     validate_environment_template,
 )
 from pyrit.agent.execution_store import AgentExecutionStore
-from pyrit.agent.harness import launch_environment, resolve_credential_values, validate_harness_authentication
+from pyrit.agent.harness import (
+    inference_environment,
+    launch_environment,
+    resolve_credential_values,
+    validate_harness_authentication,
+)
 from pyrit.agent.tool_calls import AgentToolProjection, project_agent_tools
 from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.models.agent_execution import (
@@ -41,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pyrit.agent.acp_connection import AcpConnection
+    from pyrit.agent.inference_relay import InferenceLease, InferenceRelay
+    from pyrit.agent.model_binding import ResolvedModelBinding
 
 
 @dataclass
@@ -58,6 +66,9 @@ class _LiveExecution:
     close_requested: bool = False
     cancel_requested: bool = False
     close_task: asyncio.Task[None] | None = None
+    model_binding: "ResolvedModelBinding | None" = None
+    inference_lease: "InferenceLease | None" = None
+    inference_environment: dict[str, str] = field(default_factory=dict)
 
 
 class AgentExecutionManager:
@@ -87,6 +98,8 @@ class AgentExecutionManager:
         self._file_lock: BaseFileLock | None = None
         self._reaper: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[None] | None = None
+        self._relay: InferenceRelay | None = None
+        self._relay_lock = asyncio.Lock()
 
     async def __aenter__(self) -> Self:
         """
@@ -186,6 +199,7 @@ class AgentExecutionManager:
         request_id: str,
         prompt: str,
         has_history: bool,
+        model_binding: "ResolvedModelBinding | None" = None,
     ) -> tuple[AgentExecution, AgentTurn]:
         """
         Execute a new turn once. Closed sessions cannot be resurrected by replay.
@@ -198,9 +212,14 @@ class AgentExecutionManager:
             ValueError: History cannot be restored, or a credential value cannot be redacted.
             asyncio.CancelledError: The caller cancelled.
         """
-        validate_harness_authentication(harness=configuration.harness_profile)
+        validate_harness_authentication(
+            harness=configuration.harness_profile,
+            target_backed=model_binding is not None,
+        )
         validate_environment_template(configuration.environment_template)
         profile = configuration.to_profile()
+        if profile.target_registry_name is not None and model_binding is None:
+            raise ValueError("A target-backed agent execution requires a resolved model binding")
         await self.start_async()
         async with self._admission:
             if self._closed:
@@ -238,6 +257,7 @@ class AgentExecutionManager:
                     profile=profile,
                 )
                 live = self._make_live(record)
+                live.model_binding = model_binding
                 live.secrets = self._redactable_secrets(
                     resolve_credential_values(credential_env=profile.credential_env)
                 )
@@ -438,10 +458,15 @@ class AgentExecutionManager:
             credentials = resolve_credential_values(credential_env=profile.credential_env)
             live.secrets = self._redactable_secrets(credentials)
             live.environment.reserve()
+            if live.model_binding is not None:
+                await self._bind_inference_async(live)
             await self.store.save_async(live.record)
             spec = ExecutionSpec(
                 command=profile.command,
-                environment=launch_environment(kind=profile.harness_kind, home=live.environment.harness_home),
+                environment={
+                    **launch_environment(kind=profile.harness_kind, home=live.environment.harness_home),
+                    **live.inference_environment,
+                },
                 credentials=credentials,
             )
             try:
@@ -477,11 +502,49 @@ class AgentExecutionManager:
             live.stderr_task = asyncio.create_task(self._stderr_async(live, live.environment.stderr))
             live.record.agent_info = await live.connection.initialize_async(
                 cwd=live.environment.agent_cwd,
-                model=live.record.profile.model,
-                authentication_method=live.record.profile.authentication_method,
+                # Under BYOK the model and credentials arrive through the relay settings, not the ACP handshake.
+                model="" if live.model_binding else live.record.profile.model,
+                authentication_method=None if live.model_binding else live.record.profile.authentication_method,
             )
             live.record.session_id = live.connection.session_id
             live.record.connection_state = AgentConnectionState.READY
+
+    async def _bind_inference_async(self, live: _LiveExecution) -> None:
+        from pyrit.agent.inference_relay import InferenceLease, InferenceRelay
+
+        binding = live.model_binding
+        assert binding is not None
+        async with self._relay_lock:
+            if self._relay is None:
+                self._relay = InferenceRelay(
+                    host=os.getenv("PYRIT_INFERENCE_RELAY_HOST", "127.0.0.1"),
+                    advertised_host=os.getenv("PYRIT_INFERENCE_RELAY_ADVERTISED_HOST", "127.0.0.1"),
+                )
+            await self._relay.start_async()
+            base_url = await live.environment.inference_endpoint_async(relay_url=self._relay.url)
+
+            async def record_async(payload: dict[str, Any]) -> None:
+                await self._record_async(live, direction="inference", payload=payload)
+
+            lease = InferenceLease(
+                binding=binding,
+                record=record_async,
+                timeout_seconds=live.record.profile.turn_timeout_seconds,
+                max_calls=live.record.profile.max_inference_requests,
+                capture_content=live.record.profile.capture_inference_content,
+            )
+            self._relay.add(lease)
+            live.inference_lease = lease
+            live.secrets = (*live.secrets, lease.token)
+            live.record.inference_target_hash = binding.identifier_hash
+            live.record.inference_protocol = binding.requirements.wire_api
+            live.inference_environment = inference_environment(
+                kind=live.record.profile.harness_kind,
+                model=binding.model,
+                wire_api=binding.requirements.wire_api,
+                base_url=base_url,
+                token=lease.token,
+            )
 
     async def _record_async(self, live: _LiveExecution, *, direction: str, payload: dict[str, Any]) -> None:
         async with live.event_lock:
@@ -627,6 +690,8 @@ class AgentExecutionManager:
                     await asyncio.shield(live.startup)
                 except Exception:
                     logger.exception("Agent startup did not complete before close")
+            if live.inference_lease and self._relay:
+                await self._relay.revoke_async(live.inference_lease)
             if live.connection:
                 try:
                     await live.connection.cancel_async()
@@ -719,6 +784,8 @@ class AgentExecutionManager:
                 except Exception as error:
                     errors.append(error)
         finally:
+            if self._relay:
+                await self._relay.close_async()
             if self._file_lock:
                 await asyncio.to_thread(self._file_lock.release)
                 self._file_lock = None

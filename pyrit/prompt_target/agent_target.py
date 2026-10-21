@@ -78,13 +78,20 @@ class AgentTarget(PromptTarget):
         )
         from pyrit.agent.environment import validate_environment_template
         from pyrit.agent.harness import validate_harness_authentication
+        from pyrit.agent.model_binding import pinned_configuration, resolve_model_binding
 
-        validate_harness_authentication(harness=configuration.harness_profile)
         validate_environment_template(configuration.environment_template)
         if allowed_fixture_directory is not None:
             configuration = self._confine_fixture_directory(
                 configuration=configuration, allowed_directory=Path(allowed_fixture_directory)
             )
+        # A registered source target is resolved and pinned now, so identity names exactly what answers.
+        self._model_binding = resolve_model_binding(configuration)
+        if self._model_binding is not None:
+            configuration = pinned_configuration(configuration=configuration, binding=self._model_binding)
+        validate_harness_authentication(
+            harness=configuration.harness_profile, target_backed=self._model_binding is not None
+        )
         self.agent_configuration = configuration
         # The flattened profile is the shape persisted with each execution.
         self.profile = configuration.to_profile()
@@ -215,6 +222,7 @@ class AgentTarget(PromptTarget):
             request_id=str(request.id),
             prompt=request.converted_value,
             has_history=len(normalized_conversation) > 1,
+            model_binding=self._model_binding,
         )
         metadata: dict[str, Any] = {
             "agent_execution_id": str(record.id),

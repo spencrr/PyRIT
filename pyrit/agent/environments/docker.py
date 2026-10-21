@@ -10,6 +10,7 @@ import os
 import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 from pyrit.agent.environment import ExecutionEnvironmentProvider, ExecutionSession, ExecutionSpec
 from pyrit.agent.environments.subprocess_session import SubprocessSession
@@ -22,6 +23,7 @@ class DockerSession(SubprocessSession):
 
     MAX_WORKSPACE_ARCHIVE_BYTES = 32 * 1024 * 1024
     HARNESS_HOME = "/home/agent"
+    LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
     @property
     def harness_home(self) -> str:
@@ -47,6 +49,23 @@ class DockerSession(SubprocessSession):
     def reserve(self) -> None:
         """Container names are deterministic, so a crash during create remains reconcilable."""
         self.execution.provider_id = self._container
+
+    async def inference_endpoint_async(self, *, relay_url: str) -> str:
+        """
+        Require a relay address the container can reach; loopback belongs to the backend host.
+
+        Returns:
+            str: The unchanged relay URL.
+
+        Raises:
+            ValueError: The relay is advertised on a loopback address.
+        """
+        if (urlsplit(relay_url).hostname or "").lower() in self.LOOPBACK_HOSTS:
+            raise ValueError(
+                "Docker BYOK requires an explicitly reachable PYRIT_INFERENCE_RELAY_HOST and "
+                "PYRIT_INFERENCE_RELAY_ADVERTISED_HOST (for example host.docker.internal on Docker Desktop)"
+            )
+        return relay_url
 
     async def launch_async(self, spec: ExecutionSpec) -> None:
         """

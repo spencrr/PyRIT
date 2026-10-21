@@ -195,7 +195,8 @@ class AcpConnection:
             raise RequestError(
                 error.code,
                 "Harness authentication required. Executions use a private home, not the backend's stored login. "
-                "Configure a token environment reference (for Copilot, COPILOT_GITHUB_TOKEN).",
+                "Configure a token environment reference (for Copilot, COPILOT_GITHUB_TOKEN) "
+                "or bind an existing PyRIT model target.",
             ) from error
         self.session_id = session.session_id
         if model:

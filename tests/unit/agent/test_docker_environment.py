@@ -80,6 +80,16 @@ def test_docker_identity_tracks_image_and_workspace() -> None:
     assert "docker" in str(target().get_identifier().params)
 
 
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8021/v1", "http://localhost:8021/v1", "http://[::1]:8021/v1"])
+async def test_docker_rejects_loopback_relay(tmp_path: Path, url: str) -> None:
+    session = DockerSession(execution=execution(AgentProfile(environment="docker", image="test")), directory=tmp_path)
+    with pytest.raises(ValueError, match="reachable"):
+        await session.inference_endpoint_async(relay_url=url)
+    assert await session.inference_endpoint_async(relay_url="http://host.docker.internal:8021/v1") == (
+        "http://host.docker.internal:8021/v1"
+    )
+
+
 async def test_docker_creation_pins_image_and_does_not_mount_host(tmp_path: Path) -> None:
     record = execution(AgentProfile(environment="docker", image="receipt:latest"))
     session = DockerSession(execution=record, directory=tmp_path)
