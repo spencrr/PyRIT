@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from pyrit.models import ComponentIdentifier, Message, construct_response_from_request
 from pyrit.models.agent_execution import AgentProfile, AgentTargetConfiguration, AgentWorkspaceBase, legacy_harness_kind
 from pyrit.models.target.agent_tool_evidence import AgentToolEvidence
-from pyrit.models.target_response import TargetResponse, TargetResponseStatus
+from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_target.common.prompt_target import PromptTarget
 from pyrit.prompt_target.common.target_capabilities import CapabilityName, TargetCapabilities
 from pyrit.prompt_target.common.target_configuration import TargetConfiguration
@@ -215,14 +215,14 @@ class AgentTarget(PromptTarget):
         messages = projection.messages
         for item in messages:
             item.get_piece().prompt_metadata.update(metadata)
-            item.get_piece().prompt_metadata["target_response_status"] = turn.status.value
+            item.get_piece().prompt_metadata[TargetResponse.OUTCOME_METADATA_KEY] = turn.status.value
         if turn.response_text:
             response = construct_response_from_request(
                 request=request, response_text_pieces=[turn.response_text], response_type="text"
             )
             response.get_piece().prompt_metadata.update(metadata)
             messages.append(response)
-        return TargetResponse(messages=messages, status=TargetResponseStatus(turn.status.value), metadata=metadata)
+        return TargetResponse(messages=messages, outcome=TargetOutcome(turn.status.value), metadata=metadata)
 
     async def reset_conversation_async(self, *, conversation_id: str) -> None:
         """Release attack-owned resources without constructing a manager during cleanup."""

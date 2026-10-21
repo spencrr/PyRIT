@@ -55,6 +55,7 @@ from pyrit.models import (
     RequestTraceContext,
 )
 from pyrit.models.component_spec import TargetBinding
+from pyrit.models.target_response import TargetResponse
 from pyrit.prompt_normalizer import ConverterConfiguration, PromptNormalizer
 from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import PromptTarget
@@ -711,10 +712,10 @@ class MessageSendService:
                     send_context=_MessageSendContext(progress=progress) if progress is not None else None,
                     prepared_message=prepared_message,
                 )
-            except TargetResponseUnavailableError as outcome:
+            except TargetResponseUnavailableError as unavailable:
                 logger.info(
                     "Recorded %s target operation for conversation %s without a completed message.",
-                    outcome.outcome.status.value,
+                    unavailable.outcome.outcome.value,
                     msg_conversation_id,
                 )
             except Exception:
@@ -745,7 +746,7 @@ class MessageSendService:
                     if piece.id not in prior_ids
                     and piece.role in ("assistant", "tool")
                     and not piece.prompt_metadata.get(RequestTraceContext.REQUEST_METADATA_KEY)
-                    and piece.prompt_metadata.get("target_response_status", "completed") == "completed"
+                    and piece.prompt_metadata.get(TargetResponse.OUTCOME_METADATA_KEY, "completed") == "completed"
                 ),
                 key=lambda piece: piece.sequence,
                 default=None,

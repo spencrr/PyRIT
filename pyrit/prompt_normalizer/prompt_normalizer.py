@@ -32,7 +32,7 @@ from pyrit.models import (
     RequestTraceContext,
     construct_response_from_request,
 )
-from pyrit.models.target_response import TargetResponse, TargetResponseStatus
+from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_normalizer import ConverterConfiguration, NormalizerRequest
 from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import CapabilityName, PromptTarget
@@ -172,14 +172,14 @@ class PromptNormalizer:
                 responses = outcome.messages
                 for piece in request.message_pieces:
                     piece.prompt_metadata.update(outcome.metadata)
-                    piece.prompt_metadata["target_response_status"] = outcome.status.value
-                if outcome.status != TargetResponseStatus.COMPLETED or not responses:
+                    piece.prompt_metadata[TargetResponse.OUTCOME_METADATA_KEY] = outcome.outcome.value
+                if outcome.outcome != TargetOutcome.COMPLETED or not responses:
                     await self.memory.add_message_to_memory_async(request=request)
                     for response in responses:
                         for piece in response.message_pieces:
                             piece.conversation_id = conversation_id
                             piece.prompt_metadata.update(outcome.metadata)
-                            piece.prompt_metadata["target_response_status"] = outcome.status.value
+                            piece.prompt_metadata[TargetResponse.OUTCOME_METADATA_KEY] = outcome.outcome.value
                         await self.hash_and_persist_message_async(message=response)
                     raise TargetResponseUnavailableError(outcome)
             await self.memory.add_message_to_memory_async(request=request)

@@ -1203,7 +1203,7 @@ real correlated trace evidence from its configured source; it can be combined
 with message tool scoring using the existing composite scorer.
 
 `TargetResponse` preserves message-list compatibility while carrying an explicit
-terminal status and evidence references. The prompt normalizer persists the
+terminal `TargetOutcome` and evidence references. The prompt normalizer persists the
 request and any partial response, then raises `TargetResponseUnavailableError`
 for cancelled/failed/unknown outcomes or completion without any scorable message.
 A completed tool-only response with canonical evidence reaches message scoring

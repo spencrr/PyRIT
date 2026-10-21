@@ -191,11 +191,11 @@ async def test_explicit_operation_outcomes_are_not_processing_errors(
     sqlite_instance: SQLiteMemory,
     status: str,
 ) -> None:
-    from pyrit.models.target_response import TargetResponse, TargetResponseStatus
+    from pyrit.models.target_response import TargetOutcome, TargetResponse
 
     service, attack, target, _ = real_send_context
     outcome = TargetResponse(
-        status=TargetResponseStatus(status), metadata={"agent_execution_id": "execution", "agent_turn_id": "turn"}
+        outcome=TargetOutcome(status), metadata={"agent_execution_id": "execution", "agent_turn_id": "turn"}
     )
     with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
         await service.add_message_async(
@@ -205,7 +205,7 @@ async def test_explicit_operation_outcomes_are_not_processing_errors(
     assert len(messages) == 1
     piece = messages[0].get_piece()
     assert piece.role == "user"
-    assert piece.prompt_metadata["target_response_status"] == status
+    assert piece.prompt_metadata["target_outcome"] == status
     assert piece.prompt_metadata["agent_execution_id"] == "execution"
     assert not piece.has_error()
 
@@ -214,12 +214,12 @@ async def test_cancelled_partial_response_is_retained_without_conversion(
     real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
     sqlite_instance: SQLiteMemory,
 ) -> None:
-    from pyrit.models.target_response import TargetResponse, TargetResponseStatus
+    from pyrit.models.target_response import TargetOutcome, TargetResponse
 
     service, attack, target, _ = real_send_context
     partial = MessagePiece(role="assistant", original_value="Partial output").to_message()
     outcome = TargetResponse(
-        messages=[partial], status=TargetResponseStatus.CANCELLED, metadata={"agent_execution_id": "execution"}
+        messages=[partial], outcome=TargetOutcome.CANCELLED, metadata={"agent_execution_id": "execution"}
     )
     with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
         await service.add_message_async(
@@ -228,7 +228,7 @@ async def test_cancelled_partial_response_is_retained_without_conversion(
     messages = await sqlite_instance.get_conversation_messages_async(conversation_id=attack.conversation_id)
     assert len(messages) == 2
     assert messages[-1].get_piece().converted_value == "Partial output"
-    assert messages[-1].get_piece().prompt_metadata["target_response_status"] == "cancelled"
+    assert messages[-1].get_piece().prompt_metadata["target_outcome"] == "cancelled"
     assert not messages[-1].get_piece().has_error()
 
 
@@ -245,7 +245,7 @@ async def test_manual_tool_evidence_scores_through_the_final_response_async(
         ToolExecutionMetadata,
         ToolsCalled,
     )
-    from pyrit.models.target_response import TargetResponse, TargetResponseStatus
+    from pyrit.models.target_response import TargetOutcome, TargetResponse
     from pyrit.score import MessageToolCallScorer
 
     service, attack, target, _ = real_send_context
@@ -264,7 +264,7 @@ async def test_manual_tool_evidence_scores_through_the_final_response_async(
     ]
     if final_text:
         responses.append(MessagePiece(role="assistant", original_value="Done").to_message())
-    outcome = TargetResponse(messages=responses, status=TargetResponseStatus.COMPLETED)
+    outcome = TargetResponse(messages=responses, outcome=TargetOutcome.COMPLETED)
     with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
         await service.add_message_async(
             attack_result_id=attack.attack_result_id,

@@ -15,7 +15,7 @@ from pyrit.models.agent_execution import (
     AgentTurn,
     AgentTurnStatus,
 )
-from pyrit.models.target_response import TargetResponse, TargetResponseStatus
+from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_normalizer import PromptNormalizer
 from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import AgentTarget
@@ -57,7 +57,7 @@ class TestAgentTarget:
         target = AgentTarget(profile={"environment": "local", "local_execution_acknowledged": True})
         target._send_prompt_to_target_async = AsyncMock(
             return_value=TargetResponse(
-                status=TargetResponseStatus.COMPLETED,
+                outcome=TargetOutcome.COMPLETED,
                 metadata={"agent_execution_id": "execution"},
             )
         )
@@ -66,7 +66,7 @@ class TestAgentTarget:
             await PromptNormalizer().send_prompt_async(message=request, target=target, conversation_id="one")
         messages = await CentralMemory.get_memory_instance().get_conversation_messages_async(conversation_id="one")
         assert len(messages) == 1
-        assert messages[0].get_piece().prompt_metadata["target_response_status"] == "completed"
+        assert messages[0].get_piece().prompt_metadata["target_outcome"] == "completed"
         assert not messages[0].get_piece().has_error()
 
     async def test_only_current_prompt_is_dispatched(self) -> None:

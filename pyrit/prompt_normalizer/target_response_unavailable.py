@@ -13,6 +13,6 @@ class TargetResponseUnavailableError(ValueError):
         """Retain the real outcome instead of fabricating a processing-error response."""
         self.outcome = outcome
         super().__init__(
-            f"Target operation {outcome.status.value} has no completed scorable response. "
+            f"Target operation {outcome.outcome.value} has no completed scorable response. "
             "Inspect its execution evidence; do not automatically resend the operation."
         )

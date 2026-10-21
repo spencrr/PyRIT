@@ -20,7 +20,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from pyrit.agent.execution_manager import AgentExecutionManager
 from pyrit.models import MessagePiece
 from pyrit.models.agent_execution import AgentTargetConfiguration, EnvironmentTemplate, HarnessProfile, ModelBinding
-from pyrit.models.target_response import TargetResponseStatus
+from pyrit.models.target_response import TargetOutcome
 from pyrit.prompt_normalizer import PromptNormalizer
 from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import AgentTarget
@@ -146,7 +146,7 @@ async def run_async(args: argparse.Namespace) -> None:
                 )
                 assert response.get_piece().converted_value == "Receipt total: 31"
             except TargetResponseUnavailableError as error:
-                if args.permission_policy != "deny" or error.outcome.status != TargetResponseStatus.COMPLETED:
+                if args.permission_policy != "deny" or error.outcome.outcome != TargetOutcome.COMPLETED:
                     raise
             record = next(iter(manager.records.values()))
             page = await manager.store.events_async(execution_id=record.id, limit=500)
