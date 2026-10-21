@@ -226,7 +226,7 @@ result = await composite_attack.execute_async(  # type: ignore
     objective="my_tool_call", expectation=expects("my_tool_call")
 )
 assert result.outcome is AttackOutcome.SUCCESS
-print(f"Message and tool calls: {result.outcome.value}")
+print(f"Message and tool evidence: {result.outcome.value}")
 saved = (await memory.get_observations_async(observation_ids=result.automated_score.observation_ids))[0]
 await asyncio.to_thread(provider.shutdown)  # type: ignore
 client.close()
@@ -234,7 +234,7 @@ replayed = (  # type: ignore
     await tool_scorer.score_observation_async(observation=saved, expectation=expects("my_tool_call"))
 )[0]
 assert replayed.get_value() is True
-print(f"Saved attack tool calls: {replayed.get_value()}")
+print(f"Saved attack tool evidence: {replayed.get_value()}")
 (await memory.dispose_engine_async())
 
 # %% [markdown]
@@ -258,7 +258,7 @@ print(f"Saved attack tool calls: {replayed.get_value()}")
 # `extra_headers`, and PyRIT saves the same context on the request. Enable it only
 # when the provider or gateway accepts W3C trace context. While it is enabled, manual
 # trace headers in `headers`, `extra_headers` or `provider_specific_header` are
-# rejected. A model-call span is not a tool call; the scorer still needs execution
+# rejected. A model-call span is not tool evidence; the scorer still needs execution
 # spans for the named tool.
 
 # %% [markdown]
