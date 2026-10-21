@@ -61,6 +61,7 @@ from pyrit.models import (
     PromptDataType,
 )
 from pyrit.models.target.target_capabilities import TargetCapabilities
+from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_normalizer import ConverterConfiguration, PromptNormalizer
 from pyrit.prompt_target.common.target_capabilities import CapabilityName, TargetCapabilities
 from pyrit.prompt_target.common.target_configuration import TargetConfiguration
@@ -191,12 +192,8 @@ async def test_explicit_operation_outcomes_are_not_processing_errors(
     sqlite_instance: SQLiteMemory,
     status: str,
 ) -> None:
-    from pyrit.models.target_response import TargetOutcome, TargetResponse
-
     service, attack, target, _ = real_send_context
-    outcome = TargetResponse(
-        outcome=TargetOutcome(status), metadata={"agent_execution_id": "execution", "agent_turn_id": "turn"}
-    )
+    outcome = TargetResponse(outcome=TargetOutcome(status), metadata={"operation_id": "operation"})
     with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
         await service.add_message_async(
             attack_result_id=attack.attack_result_id, request=_request(conversation_id=attack.conversation_id)
@@ -206,21 +203,46 @@ async def test_explicit_operation_outcomes_are_not_processing_errors(
     piece = messages[0].get_piece()
     assert piece.role == "user"
     assert piece.prompt_metadata["target_outcome"] == status
-    assert piece.prompt_metadata["agent_execution_id"] == "execution"
+    assert piece.prompt_metadata["operation_id"] == "operation"
     assert not piece.has_error()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_state"),
+    [
+        ("cancelled", MessageSendState.COMPLETED),
+        ("failed", MessageSendState.FAILED),
+        ("unknown", MessageSendState.FAILED),
+    ],
+)
+async def test_failed_and_unknown_outcomes_are_reported_as_failed_sends(
+    real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
+    status: str,
+    expected_state: MessageSendState,
+) -> None:
+    service, attack, target, _ = real_send_context
+    outcome = TargetResponse(outcome=TargetOutcome(status), metadata={"operation_id": "operation"})
+    with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
+        accepted = await service.submit_async(
+            attack_result_id=attack.attack_result_id, request=_submission(conversation_id=attack.conversation_id)
+        )
+        settled = await _settle_send_async(service=service, status=accepted)
+    # A single send reports its only conversation at the top level.
+    assert settled.state == expected_state
+    if expected_state == MessageSendState.FAILED:
+        assert settled.failure_stage == MessageSendFailureStage.SENDING
+        assert settled.error and status in settled.error
+    else:
+        assert settled.error is None
 
 
 async def test_cancelled_partial_response_is_retained_without_conversion(
     real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
     sqlite_instance: SQLiteMemory,
 ) -> None:
-    from pyrit.models.target_response import TargetOutcome, TargetResponse
-
     service, attack, target, _ = real_send_context
     partial = MessagePiece(role="assistant", original_value="Partial output").to_message()
-    outcome = TargetResponse(
-        messages=[partial], outcome=TargetOutcome.CANCELLED, metadata={"agent_execution_id": "execution"}
-    )
+    outcome = TargetResponse(messages=[partial], outcome=TargetOutcome.CANCELLED, metadata={"operation_id": "op"})
     with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
         await service.add_message_async(
             attack_result_id=attack.attack_result_id, request=_request(conversation_id=attack.conversation_id)

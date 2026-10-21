@@ -42,6 +42,7 @@ from pyrit.backend.services.media_persistence import persist_message_pieces_asyn
 from pyrit.backend.services.target_service import get_target_service
 from pyrit.common.attack_result_scope import attack_result_id_scope
 from pyrit.common.deprecation import print_deprecation_message
+from pyrit.exceptions import TargetResponseUnavailableError
 from pyrit.memory import CentralMemory, data_serializer_factory
 from pyrit.models import (
     AtomicAttackIdentifier,
@@ -55,9 +56,8 @@ from pyrit.models import (
     RequestTraceContext,
 )
 from pyrit.models.component_spec import TargetBinding
-from pyrit.models.target_response import TargetResponse
+from pyrit.models.target_response import TargetOutcome
 from pyrit.prompt_normalizer import ConverterConfiguration, PromptNormalizer
-from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import PromptTarget
 from pyrit.prompt_target.common.target_send_context import TargetSendContext
 
@@ -718,6 +718,13 @@ class MessageSendService:
                     unavailable.outcome.outcome.value,
                     msg_conversation_id,
                 )
+                if progress is not None and unavailable.outcome.outcome in (
+                    TargetOutcome.FAILED,
+                    TargetOutcome.UNKNOWN,
+                ):
+                    # Explicit failures are reported as failed sends; cancellations stay recorded outcomes.
+                    progress.failure_stage = MessageSendFailureStage.SENDING
+                    progress.error = str(unavailable)
             except Exception:
                 if progress is not None:
                     self._record_failure(progress=progress)
@@ -746,7 +753,7 @@ class MessageSendService:
                     if piece.id not in prior_ids
                     and piece.role in ("assistant", "tool")
                     and not piece.prompt_metadata.get(RequestTraceContext.REQUEST_METADATA_KEY)
-                    and piece.prompt_metadata.get(TargetResponse.OUTCOME_METADATA_KEY, "completed") == "completed"
+                    and TargetOutcome.from_metadata(piece.prompt_metadata) is TargetOutcome.COMPLETED
                 ),
                 key=lambda piece: piece.sequence,
                 default=None,

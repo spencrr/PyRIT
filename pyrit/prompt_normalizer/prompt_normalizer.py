@@ -19,6 +19,7 @@ from pyrit.converter import Converter
 from pyrit.exceptions import (
     ComponentRole,
     EmptyResponseException,
+    TargetResponseUnavailableError,
     execution_context,
     get_execution_context,
 )
@@ -34,7 +35,6 @@ from pyrit.models import (
 )
 from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_normalizer import ConverterConfiguration, NormalizerRequest
-from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import CapabilityName, PromptTarget
 from pyrit.prompt_target.batch_helper import batch_task_async
 from pyrit.prompt_target.common.target_send_context import TargetSendContext
@@ -169,17 +169,14 @@ class PromptNormalizer:
             )
             if isinstance(responses, TargetResponse):
                 outcome = responses
-                responses = outcome.messages
                 for piece in request.message_pieces:
-                    piece.prompt_metadata.update(outcome.metadata)
-                    piece.prompt_metadata[TargetResponse.OUTCOME_METADATA_KEY] = outcome.outcome.value
-                if outcome.outcome != TargetOutcome.COMPLETED or not responses:
+                    piece.prompt_metadata.update(outcome.to_metadata())
+                if outcome.outcome != TargetOutcome.COMPLETED or not outcome:
                     await self.memory.add_message_to_memory_async(request=request)
-                    for response in responses:
+                    for response in outcome:
                         for piece in response.message_pieces:
                             piece.conversation_id = conversation_id
-                            piece.prompt_metadata.update(outcome.metadata)
-                            piece.prompt_metadata[TargetResponse.OUTCOME_METADATA_KEY] = outcome.outcome.value
+                            piece.prompt_metadata.update(outcome.to_metadata())
                         await self.hash_and_persist_message_async(message=response)
                     raise TargetResponseUnavailableError(outcome)
             await self.memory.add_message_to_memory_async(request=request)
