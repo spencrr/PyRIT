@@ -41,7 +41,7 @@ async def test_native_payload_stream_and_auth_are_preserved(
         )
         for _ in range(2):
             async with target.open_inference_async(
-                body={"model": "harness-model", "messages": [], "input": [], "tools": [], "stream": True},
+                body={"model": "caller-model", "messages": [], "input": [], "tools": [], "stream": True},
                 requirements=InferenceRequirements(wire_api=wire),
                 request_id="request",
             ) as response:
@@ -106,7 +106,7 @@ async def test_inference_does_not_run_responses_tool_loop() -> None:
         (OpenAIResponseTarget, InferenceWireApi.RESPONSES, "max_output_tokens"),
     ],
 )
-async def test_bound_target_settings_override_harness_suggestions_without_mutation_async(
+async def test_target_settings_override_caller_suggestions_without_mutation_async(
     target_type: type[OpenAIChatTarget] | type[OpenAIResponseTarget],
     wire: InferenceWireApi,
     limit: str,
@@ -156,7 +156,7 @@ async def test_bound_target_settings_override_harness_suggestions_without_mutati
 
 
 @pytest.mark.usefixtures("patch_central_database")
-async def test_unconfigured_target_parameters_remain_harness_owned_async() -> None:
+async def test_unconfigured_target_parameters_remain_caller_owned_async() -> None:
     target = OpenAIChatTarget(endpoint="https://provider.test/v1", model_name="model", api_key="test")
     body = {"messages": [], "temperature": 0.4, "max_tokens": 222, "seed": 3}
     assert target._inference_body(body) == {**body, "model": "model"}
