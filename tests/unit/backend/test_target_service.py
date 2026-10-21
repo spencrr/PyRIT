@@ -1490,7 +1490,7 @@ class TestFrontendBackendCompatibilitySync:
         """
         Guard the dynamic target form against new required Python-only inputs.
 
-        Scalar, choice, simple-list, and dictionary parameters are rendered from
+        Scalar, choice, simple-list, dictionary, and declared JSON-object parameters are rendered from
         metadata. Connection/auth parameters and RoundRobin inputs have dedicated
         controls. The remaining targets require live Python objects and must stay
         excluded until the frontend gains an explicit policy for them.
@@ -1524,6 +1524,8 @@ class TestFrontendBackendCompatibilitySync:
                 if parameter.type_name in scalar_types or parameter.type_name in simple_list_types:
                     continue
                 if parameter.type_name == "dict" or parameter.type_name.startswith("dict["):
+                    continue
+                if parameter.is_json_object:
                     continue
                 unsupported_names.append(parameter.name)
             if unsupported_names:
