@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from pyrit.models.identifiers.class_name_utils import validate_registry_name
 from pyrit.models.parameter import JsonParameterValue
@@ -19,7 +19,6 @@ class AgentEnvironment(str, Enum):
     """The first-party execution environment providers; registered providers use their own names."""
 
     LOCAL = "local"
-    DOCKER = "docker"
 
 
 class AgentHarnessKind(str, Enum):
@@ -29,44 +28,22 @@ class AgentHarnessKind(str, Enum):
     ACP = "acp"
 
 
-class AgentWorkspaceBase(str, Enum):
-    """Starting filesystem beneath the execution workspace."""
-
-    IMAGE = "image"
-    EMPTY = "empty"
-
-
-def legacy_harness_kind(command: object) -> AgentHarnessKind:
-    """
-    Resolve old recipes without enabling new adapters for existing custom commands.
-
-    Returns:
-        AgentHarnessKind: The original Copilot configuration or an unmodified generic launch.
-    """
-    first = command[0] if isinstance(command, (tuple, list)) and command else ""
-    executable = first.replace("\\", "/").rsplit("/", 1)[-1].lower() if isinstance(first, str) else ""
-    return AgentHarnessKind.COPILOT if executable in ("copilot", "copilot.exe", "copilot.cmd") else AgentHarnessKind.ACP
-
-
-# Fields removed from persisted recipes; historical records and startup files must still decode.
-_RETIRED_PROFILE_FIELDS = frozenset({"use_github_cli_login"})
+_HARNESS_DEFAULT_COMMANDS: dict[str, tuple[str, ...]] = {AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio")}
 
 
 def _resolve_harness(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
-    values = {key: item for key, item in value.items() if key not in _RETIRED_PROFILE_FIELDS}
-    defaults = {AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio")}
-    command = values.get("command", defaults[AgentHarnessKind.COPILOT])
-    kind = values.get("harness_kind", legacy_harness_kind(command))
+    values = dict(value)
+    kind = values.get("harness_kind", AgentHarnessKind.COPILOT)
     if not isinstance(kind, str):
         raise ValueError("harness_kind must name an installed adapter")
     validate_registry_name(kind)
     values["harness_kind"] = kind
     if "command" not in values:
-        if kind not in defaults:
+        if kind not in _HARNESS_DEFAULT_COMMANDS:
             raise ValueError("A generic or registered custom ACP harness requires an explicit command")
-        values["command"] = defaults[kind]
+        values["command"] = _HARNESS_DEFAULT_COMMANDS[kind]
     return values
 
 
@@ -115,9 +92,7 @@ def _validate_artifacts(value: tuple[str, ...]) -> tuple[str, ...]:
     return value
 
 
-def _validate_environment(*, environment: str, image: str | None, acknowledged: bool) -> None:
-    if environment == AgentEnvironment.DOCKER and not image:
-        raise ValueError("A Docker image is required")
+def _validate_environment(*, environment: str, acknowledged: bool) -> None:
     if environment == AgentEnvironment.LOCAL and not acknowledged:
         raise ValueError("Local execution is NOT sandboxed; set local_execution_acknowledged=True explicitly")
 
@@ -128,19 +103,22 @@ def _validate_environment_name(value: str) -> str:
 
 
 class AgentProfile(BaseModel):
-    """Flattened launch recipe persisted with each execution; target identity derives from it."""
+    """
+    The flattened execution profile persisted with each execution.
+
+    ``AgentTargetConfiguration`` is the authoring surface; ``to_profile()`` is the only projection into
+    this shape, which providers and the runtime read during one execution's lifetime.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(default="copilot", min_length=1, max_length=100)
     command: tuple[str, ...] = ("copilot", "--acp", "--stdio")
     harness_kind: str = AgentHarnessKind.COPILOT
-    environment: str = AgentEnvironment.DOCKER.value
+    environment: str
     environment_settings: dict[str, JsonValue] = Field(default_factory=dict)
-    image: str | None = None
     fixture_directory: str | None = None
     expected_fixture_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    workspace_base: AgentWorkspaceBase | None = None
     working_directory: str = "."
     credential_env: tuple[str, ...] = ()
     authentication_method: str | None = None
@@ -155,9 +133,6 @@ class AgentProfile(BaseModel):
     max_evidence_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=256 * 1024 * 1024)
     artifact_paths: tuple[str, ...] = ()
     max_artifact_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
-    docker_network: str = "bridge"
-    docker_memory: str = "1g"
-    docker_cpus: float = Field(default=1, gt=0, le=32)
 
     _command_validator = field_validator("command")(_validate_command)
     _harness_validator = model_validator(mode="before")(_resolve_harness)
@@ -168,9 +143,7 @@ class AgentProfile(BaseModel):
 
     @model_validator(mode="after")
     def _validate_environment(self) -> "AgentProfile":
-        _validate_environment(
-            environment=self.environment, image=self.image, acknowledged=self.local_execution_acknowledged
-        )
+        _validate_environment(environment=self.environment, acknowledged=self.local_execution_acknowledged)
         return self
 
 
@@ -198,34 +171,22 @@ class HarnessProfile(BaseModel):
 
 class EnvironmentTemplate(BaseModel):
     """
-    Reusable starting filesystem and resource/access policy; never a running environment.
+    Reusable starting filesystem and access policy; never a running environment.
 
-    ``environment`` names an installed provider. The first-party ``docker`` and ``local`` providers
-    read the typed fields below; a registered provider reads its own validated ``environment_settings``.
+    ``environment`` names an installed provider. First-party providers read the typed fields they
+    declare; a registered provider reads its own validated ``environment_settings``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    environment: str = AgentEnvironment.DOCKER.value
+    environment: str
     environment_settings: dict[str, JsonValue] = Field(default_factory=dict)
-    image: str | None = None
     fixture_directory: str | None = None
     expected_fixture_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    workspace_base: AgentWorkspaceBase | None = None
     working_directory: str = "."
     local_execution_acknowledged: bool = False
-    docker_network: str = "bridge"
-    docker_memory: str = "1g"
-    docker_cpus: float = Field(default=1, gt=0, le=32)
 
     _environment_validator = field_validator("environment")(_validate_environment_name)
     _working_directory_validator = field_validator("working_directory")(_validate_working_directory)
-
-    @model_validator(mode="after")
-    def _validate_template(self) -> "EnvironmentTemplate":
-        _validate_environment(environment=self.environment, image=self.image, acknowledged=True)
-        if self.environment == AgentEnvironment.LOCAL and self.workspace_base == AgentWorkspaceBase.IMAGE:
-            raise ValueError("An image-provided workspace requires a Docker environment")
-        return self
 
 
 class AgentTargetConfiguration(BaseModel, JsonParameterValue):
@@ -250,43 +211,21 @@ class AgentTargetConfiguration(BaseModel, JsonParameterValue):
     @model_validator(mode="after")
     def _validate_execution_consent(self) -> "AgentTargetConfiguration":
         template = self.environment_template
-        _validate_environment(
-            environment=template.environment,
-            image=template.image,
-            acknowledged=template.local_execution_acknowledged,
-        )
+        _validate_environment(environment=template.environment, acknowledged=template.local_execution_acknowledged)
         return self
 
     def to_profile(self) -> AgentProfile:
         """
-        Resolve into the original immutable launch representation.
+        Flatten into the execution profile persisted with each execution.
 
         Returns:
-            AgentProfile: Backward-compatible recipe with identical target identity.
+            AgentProfile: The immutable launch recipe the runtime and providers read.
         """
         values = self.model_dump(exclude={"model_binding", "harness_profile", "environment_template"})
         values.update(self.model_binding.model_dump())
         values.update(self.harness_profile.model_dump())
         values.update(self.environment_template.model_dump())
         return AgentProfile.model_validate(values)
-
-    @classmethod
-    def from_profile(cls, profile: AgentProfile) -> "AgentTargetConfiguration":
-        """
-        Project a legacy recipe into separate authoring concepts without changing its behavior.
-
-        Returns:
-            AgentTargetConfiguration: Immutable composed configuration.
-        """
-        values = profile.model_dump()
-        groups: dict[str, dict[str, JsonValue]] = {}
-        for name, model in (
-            ("model_binding", ModelBinding),
-            ("harness_profile", HarnessProfile),
-            ("environment_template", EnvironmentTemplate),
-        ):
-            groups[name] = {key: values.pop(key) for key in model.model_fields if key in values}
-        return cls.model_validate({**values, **groups})
 
 
 class AgentExecutionState(str, Enum):
@@ -333,7 +272,6 @@ class AgentExecution(BaseModel):
     conversation_id: str
     target_id: str
     profile: AgentProfile
-    parent_execution_id: UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_activity_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     state: AgentExecutionState = AgentExecutionState.STARTING
@@ -361,12 +299,6 @@ class AgentExecution(BaseModel):
     artifacts: list[str] = Field(default_factory=list)
     artifact_errors: list[str] = Field(default_factory=list)
     source_coverage: str = "ACP-exposed events only; internal tool coverage is not guaranteed."
-
-    @computed_field
-    @property
-    def configuration(self) -> AgentTargetConfiguration:
-        """The resolved configuration, independent of this execution's mutable state."""
-        return AgentTargetConfiguration.from_profile(self.profile)
 
 
 class AgentExecutionEvent(BaseModel):

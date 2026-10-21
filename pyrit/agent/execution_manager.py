@@ -6,7 +6,6 @@
 import asyncio
 import codecs
 import contextlib
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,15 +23,14 @@ from pyrit.agent.environment import (
     create_execution_session,
     validate_environment_template,
 )
+from pyrit.agent.execution_store import AgentExecutionStore
 from pyrit.agent.harness import launch_environment, resolve_credential_values, validate_harness_authentication
 from pyrit.common.asyncio_task import await_task_completion_async
-from pyrit.memory.agent_execution_store import AgentExecutionStore
 from pyrit.models.agent_execution import (
     AgentConnectionState,
     AgentExecution,
     AgentExecutionEvent,
     AgentExecutionState,
-    AgentProfile,
     AgentTargetConfiguration,
     AgentTurn,
     AgentTurnStatus,
@@ -65,6 +63,8 @@ class AgentExecutionManager:
     """Own resources, not attack decisions. One manager exclusively owns its storage directory."""
 
     MAX_ERROR_CHARS = 2048
+    # Shorter values cannot be redacted without destroying the journal; they are refused as credentials.
+    MIN_SECRET_CHARS = 8
 
     def __init__(self, *, root: Path, max_executions: int = 4) -> None:
         """
@@ -80,6 +80,7 @@ class AgentExecutionManager:
         self.records: dict[UUID, AgentExecution] = {}
         self._live: dict[UUID, _LiveExecution] = {}
         self._admission = asyncio.Lock()
+        self._capacity = asyncio.Condition(self._admission)
         self._started = False
         self._closed = False
         self._file_lock: BaseFileLock | None = None
@@ -122,8 +123,6 @@ class AgentExecutionManager:
             for record in self.records.values()
             if record.conversation_id == conversation_id and (target_id is None or record.target_id == target_id)
         ]
-        superseded = {record.parent_execution_id for record in candidates if record.parent_execution_id}
-        candidates = [record for record in candidates if record.id not in superseded]
         return max(candidates, key=lambda record: (record.created_at, str(record.id))) if candidates else None
 
     async def start_async(self) -> None:
@@ -180,7 +179,7 @@ class AgentExecutionManager:
     async def send_async(
         self,
         *,
-        profile: AgentProfile,
+        configuration: AgentTargetConfiguration,
         target_id: str,
         conversation_id: str,
         request_id: str,
@@ -195,13 +194,12 @@ class AgentExecutionManager:
 
         Raises:
             RuntimeError: Capacity, lifecycle, or request identity prevents sending.
-            ValueError: History cannot be restored.
-            TimeoutError: The turn exceeded its deadline.
+            ValueError: History cannot be restored, or a credential value cannot be redacted.
             asyncio.CancelledError: The caller cancelled.
         """
-        configuration = AgentTargetConfiguration.from_profile(profile)
         validate_harness_authentication(harness=configuration.harness_profile)
         validate_environment_template(configuration.environment_template)
+        profile = configuration.to_profile()
         await self.start_async()
         async with self._admission:
             if self._closed:
@@ -231,10 +229,7 @@ class AgentExecutionManager:
             else:
                 if has_history:
                     raise ValueError("A new agent cannot restore conversation history; start a fresh conversation")
-                if len(self._live) >= self.max_executions:
-                    raise RuntimeError(
-                        "Agent execution capacity reached; close an idle execution or reduce concurrency"
-                    )
+                await self._wait_for_capacity_async(timeout=profile.startup_timeout_seconds)
                 record = AgentExecution(
                     owner_id=self.store.root.resolve().as_posix(),
                     conversation_id=conversation_id,
@@ -242,7 +237,9 @@ class AgentExecutionManager:
                     profile=profile,
                 )
                 live = self._make_live(record)
-                live.secrets = tuple(resolve_credential_values(credential_env=profile.credential_env).values())
+                live.secrets = self._redactable_secrets(
+                    resolve_credential_values(credential_env=profile.credential_env)
+                )
                 self.records[record.id] = record
                 self._live[record.id] = live
             record = live.record
@@ -281,13 +278,14 @@ class AgentExecutionManager:
                 return await live.connection.prompt_async(prompt)
 
             live.operation = asyncio.create_task(prompt_async())
+            deadline_exceeded = False
             try:
                 stop_reason, text = await self._wait_for_turn_async(live)
             except TimeoutError:
+                # A confirmed cancellation is an explicit outcome; an unconfirmed one raises and closes.
                 await self.cancel_async(record.id)
-                await live.operation
-                turn.error = "Turn deadline exceeded"
-                raise
+                stop_reason, text = await live.operation
+                deadline_exceeded = True
             turn.stop_reason = stop_reason
             turn.response_text = self._redact(text, live.secrets)
             status = (
@@ -297,14 +295,22 @@ class AgentExecutionManager:
                 if stop_reason == "end_turn"
                 else AgentTurnStatus.FAILED
             )
+            if deadline_exceeded:
+                turn.error = "Turn deadline exceeded"
             await self._record_async(live, direction="lifecycle", payload={"type": "turn_finished", "status": status})
             turn.status = status
             turn.capture_complete = record.capture_error is None
             turn.event_end_cursor = record.event_count
+            if deadline_exceeded:
+                await self.close_execution_async(execution_id=record.id, reason="turn_timeout")
             return record, turn
         except asyncio.CancelledError:
             try:
-                await asyncio.shield(self.cancel_async(record.id))
+                if live.connection is None:
+                    # Startup is shielded and still running; nothing can be cancelled in place, so release it.
+                    await asyncio.shield(self.close_execution_async(execution_id=record.id, reason="caller_cancelled"))
+                else:
+                    await asyncio.shield(self.cancel_async(record.id))
                 turn.status = AgentTurnStatus.CANCELLED
             except Exception:
                 turn.status = AgentTurnStatus.UNKNOWN
@@ -325,6 +331,50 @@ class AgentExecutionManager:
             if record.state == AgentExecutionState.WORKING:
                 record.state = AgentExecutionState.IDLE
             await asyncio.shield(self.store.save_async(record))
+
+    def _capacity_used(self) -> int:
+        # Executions whose release failed are retried at shutdown; they no longer hold an admission slot.
+        return sum(1 for live in self._live.values() if live.record.state != AgentExecutionState.CLEANUP_FAILED)
+
+    async def _wait_for_capacity_async(self, *, timeout: float) -> None:
+        # Called with the admission lock held; waiting releases it so closers can free a slot.
+        try:
+            async with asyncio.timeout(timeout):
+                while self._capacity_used() >= self.max_executions:
+                    await self._capacity.wait()
+                    if self._closed:
+                        raise RuntimeError("Agent execution manager is closing")
+        except TimeoutError:
+            raise RuntimeError(
+                f"Agent execution capacity ({self.max_executions}) stayed full for {timeout:g}s; "
+                "close idle executions, reduce concurrency, or raise max_executions"
+            ) from None
+
+    def _release_capacity(self) -> None:
+        async def notify_async() -> None:
+            async with self._admission:
+                self._capacity.notify_all()
+
+        asyncio.create_task(notify_async())
+
+    @classmethod
+    def _redactable_secrets(cls, credentials: dict[str, str]) -> tuple[str, ...]:
+        """
+        Keep only values the journal redactor can remove without corrupting unrelated content.
+
+        Returns:
+            tuple[str, ...]: The credential values to redact from every journal frame.
+
+        Raises:
+            ValueError: A referenced credential value is too short to redact.
+        """
+        short = sorted(name for name, value in credentials.items() if len(value) < cls.MIN_SECRET_CHARS)
+        if short:
+            raise ValueError(
+                f"Credential values shorter than {cls.MIN_SECRET_CHARS} characters cannot be redacted from the "
+                f"journal: {', '.join(short)}"
+            )
+        return tuple(credentials.values())
 
     async def _wait_for_turn_async(self, live: _LiveExecution) -> tuple[str, str]:
         started = monotonic()
@@ -348,7 +398,7 @@ class AgentExecutionManager:
         profile = live.record.profile
         async with asyncio.timeout(profile.startup_timeout_seconds):
             credentials = resolve_credential_values(credential_env=profile.credential_env)
-            live.secrets = tuple(credentials.values())
+            live.secrets = self._redactable_secrets(credentials)
             live.environment.reserve()
             await self.store.save_async(live.record)
             spec = ExecutionSpec(
@@ -401,7 +451,7 @@ class AgentExecutionManager:
             if record.capture_error:
                 raise RuntimeError(record.capture_error)
             try:
-                sanitized = json.loads(self._redact(json.dumps(payload, ensure_ascii=True), live.secrets))
+                sanitized = self._redact_payload(payload, live.secrets)
                 event = AgentExecutionEvent(
                     execution_id=record.id,
                     sequence=record.event_count + 1,
@@ -444,6 +494,19 @@ class AgentExecutionManager:
             if secret:
                 text = text.replace(secret, "[REDACTED]")
         return text
+
+    @classmethod
+    def _redact_payload(cls, value: Any, secrets: tuple[str, ...]) -> Any:
+        # Redact string leaves before serialization: escaping would otherwise hide secrets from the comparison.
+        if isinstance(value, str):
+            return cls._redact(value, secrets)
+        if isinstance(value, dict):
+            return {
+                cls._redact_payload(key, secrets): cls._redact_payload(item, secrets) for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._redact_payload(item, secrets) for item in value]
+        return value
 
     async def _stderr_async(self, live: _LiveExecution, reader: AcpByteReader) -> None:
         pending = ""
@@ -558,6 +621,7 @@ class AgentExecutionManager:
                 logger.exception("Could not persist cleanup outcome for %s", execution_id)
             if not errors:
                 self._live.pop(execution_id, None)
+            self._release_capacity()
             if persistence_errors:
                 raise ExceptionGroup("Execution evidence persistence failed during cleanup", persistence_errors)
 
@@ -601,6 +665,7 @@ class AgentExecutionManager:
     async def _close_async(self) -> None:
         async with self._admission:
             self._closed = True
+            self._capacity.notify_all()
             self.store.notify()
         if self._reaper:
             self._reaper.cancel()

@@ -2,6 +2,7 @@
 # Licensed under the MIT license.
 
 import asyncio
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from pyrit.agent.environment import (
     validate_environment_template,
 )
 from pyrit.agent.environments.local import LocalSession
-from pyrit.models.agent_execution import AgentProfile, EnvironmentTemplate, HarnessProfile
+from pyrit.models.agent_execution import AgentProfile, EnvironmentTemplate
 from tests.unit.agent.session_helpers import execution, session_directory, spec_for
 
 
@@ -27,7 +28,7 @@ async def test_recreated_profile_rejects_changed_fixture(tmp_path: Path) -> None
         environment="local",
         local_execution_acknowledged=True,
         fixture_directory=str(fixture),
-        command=("python", "-c", "import sys; sys.stdin.read()"),
+        command=(sys.executable, "-c", "import sys; sys.stdin.read()"),
     )
     first = execution(profile)
     session = LocalSession(execution=first, directory=session_directory(tmp_path, "first"))
@@ -49,7 +50,7 @@ async def test_local_launch_uses_private_home_and_exposes_streams(tmp_path: Path
         environment="local",
         local_execution_acknowledged=True,
         command=(
-            "python",
+            sys.executable,
             "-c",
             "import os,sys; print(os.environ['HOME'], os.environ['TOKEN']); sys.stderr.write('warned')",
         ),
@@ -83,7 +84,15 @@ def test_template_validation_follows_provider_capabilities() -> None:
     with pytest.raises(ValueError, match="NOT sandboxed"):
         validate_environment_template(EnvironmentTemplate(environment="local"))
     with pytest.raises(ValueError, match="unavailable"):
-        validate_environment_template(EnvironmentTemplate(environment="aca_sandbox", image="x"))
+        validate_environment_template(EnvironmentTemplate(environment="aca_sandbox"))
+
+
+def test_providers_must_claim_isolation_explicitly() -> None:
+    from pyrit.models.agent_environment import EnvironmentCapabilities, EnvironmentProviderInfo
+
+    assert not EnvironmentCapabilities().isolated
+    info = EnvironmentProviderInfo(name="team_pool", display_name="Team pool")
+    assert not info.capabilities.isolated
 
 
 def test_first_party_providers_reject_settings_they_would_ignore() -> None:
@@ -99,7 +108,7 @@ async def test_local_close_is_effect_idempotent(tmp_path: Path) -> None:
         environment="local",
         local_execution_acknowledged=True,
         artifact_paths=("missing.txt",),
-        command=("python", "-c", "import sys; sys.stdin.read()"),
+        command=(sys.executable, "-c", "import sys; sys.stdin.read()"),
     )
     record = execution(profile)
     session = LocalSession(execution=record, directory=session_directory(tmp_path))
@@ -111,12 +120,11 @@ async def test_local_close_is_effect_idempotent(tmp_path: Path) -> None:
     assert record.model_dump(mode="json") == snapshot
 
 
-@pytest.mark.parametrize("model", [AgentProfile, HarnessProfile])
-def test_retired_profile_fields_still_decode(model: type[AgentProfile] | type[HarnessProfile]) -> None:
-    extra = {"image": "test"} if model is AgentProfile else {}
-    decoded = model.model_validate({**extra, "use_github_cli_login": True})
-    assert not hasattr(decoded, "use_github_cli_login")
-    assert decoded.harness_kind == "copilot"
+def test_environment_must_be_named_explicitly() -> None:
+    with pytest.raises(ValueError, match="environment"):
+        EnvironmentTemplate()  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="environment"):
+        AgentProfile()  # type: ignore[call-arg]
 
 
 def test_sessions_are_created_through_the_record_provider(tmp_path: Path) -> None:
@@ -125,4 +133,4 @@ def test_sessions_are_created_through_the_record_provider(tmp_path: Path) -> Non
     )
     assert isinstance(local, LocalSession) and local.harness_home == str(tmp_path / "home")
     with pytest.raises(ValueError, match="unavailable"):
-        create_execution_session(execution=execution(AgentProfile(image="test")), directory=tmp_path)
+        create_execution_session(execution=execution(AgentProfile(environment="aca_sandbox")), directory=tmp_path)

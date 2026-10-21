@@ -12,7 +12,7 @@ class EnvironmentCapabilities(BaseModel):
     """What a provider promises; an absent capability is refused explicitly, never emulated."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    isolated: bool = True
+    isolated: bool = False
 
 
 class EnvironmentProviderInfo(BaseModel):

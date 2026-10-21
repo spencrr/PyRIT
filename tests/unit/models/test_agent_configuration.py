@@ -13,10 +13,12 @@ from pyrit.models.agent_execution import (
     ModelBinding,
 )
 
+_LOCAL = {"environment": "local", "local_execution_acknowledged": True}
+
 
 def test_configuration_separates_model_harness_and_environment() -> None:
     harness = HarnessProfile(command=("copilot", "--acp"), credential_env=("COPILOT_GITHUB_TOKEN",))
-    template = EnvironmentTemplate(image="copilot@sha256:test")
+    template = EnvironmentTemplate(environment="local", local_execution_acknowledged=True)
     first = AgentTargetConfiguration(
         harness_profile=harness, environment_template=template, model_binding=ModelBinding(model="first")
     )
@@ -29,8 +31,16 @@ def test_configuration_separates_model_harness_and_environment() -> None:
         first.model_binding.model = "changed"
 
 
-def test_legacy_recipe_roundtrip_and_saved_execution_projection() -> None:
-    profile = AgentProfile(
+def test_flattened_profile_persists_with_the_execution() -> None:
+    config = AgentTargetConfiguration(
+        model_binding=ModelBinding(model="model"),
+        harness_profile=HarnessProfile(command=("example", "--acp"), credential_env=("TEST_TOKEN",)),
+        environment_template=EnvironmentTemplate(environment="local", local_execution_acknowledged=True),
+        artifact_paths=("receipt.json",),
+        idle_timeout_seconds=12,
+    )
+    profile = config.to_profile()
+    assert profile == AgentProfile(
         environment="local",
         local_execution_acknowledged=True,
         command=("example", "--acp"),
@@ -39,12 +49,8 @@ def test_legacy_recipe_roundtrip_and_saved_execution_projection() -> None:
         artifact_paths=("receipt.json",),
         idle_timeout_seconds=12,
     )
-    config = AgentTargetConfiguration.from_profile(profile)
-    assert config.to_profile() == profile
     record = AgentExecution(owner_id="test", conversation_id="conversation", target_id="target", profile=profile)
-    saved = record.model_dump_json()
-    reloaded = AgentExecution.model_validate_json(saved)
-    assert reloaded.configuration == config
+    reloaded = AgentExecution.model_validate_json(record.model_dump_json())
     assert reloaded.profile == profile
 
 
@@ -52,11 +58,12 @@ def test_legacy_recipe_roundtrip_and_saved_execution_projection() -> None:
     "fields",
     [
         {"environment_template": {"environment": "local"}},
-        {"environment_template": {"environment": "docker"}},
-        {"environment_template": {"image": "test"}, "harness_profile": {"command": []}},
-        {"environment_template": {"image": "test"}, "harness_profile": {"credential_env": ["literal token"]}},
-        {"environment_template": {"image": "test"}, "artifact_paths": ["../outside"]},
-        {"environment_template": {"image": "test"}, "model_binding": {"endpoint": "https://unsupported"}},
+        {"environment_template": {}},
+        {"environment_template": {"environment": "local", "local_execution_acknowledged": True, "image": "test"}},
+        {"environment_template": _LOCAL, "harness_profile": {"command": []}},
+        {"environment_template": _LOCAL, "harness_profile": {"credential_env": ["literal token"]}},
+        {"environment_template": _LOCAL, "artifact_paths": ["../outside"]},
+        {"environment_template": _LOCAL, "model_binding": {"endpoint": "https://unsupported"}},
     ],
 )
 def test_invalid_or_unsupported_configuration_is_rejected(fields: dict[str, object]) -> None:

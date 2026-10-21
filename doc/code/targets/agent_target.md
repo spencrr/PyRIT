@@ -30,9 +30,11 @@ Attack / chat -> Owned execution -> ACP -> Tested harness
 - **Execution** is the active, stateful instance: one native agent session in one owned
   environment, created on the first message of a conversation and reused for later turns.
 
-Changing configuration creates a new target; an active conversation keeps the execution it
-started with. Completing an attack releases its conversations; otherwise an execution ends
-at explicit closure, idle expiry, its maximum lifetime, or runtime shutdown.
+Target identity is the configuration without defaulted fields, timeouts, and evidence budgets,
+so tightening a deadline does not create a new target, while changing what runs or where does.
+An active conversation keeps the execution it started with. Completing an attack releases its
+conversations; otherwise an execution ends at explicit closure, idle expiry, its maximum
+lifetime, a turn deadline, or runtime shutdown.
 
 ## Use from Python
 
@@ -91,11 +93,18 @@ A turn ends with a `TargetResponse` whose `TargetOutcome` is `completed`, `cance
 A completed turn without assistant text, such as an agent that finished by writing files,
 is recorded as such rather than fabricated into a reply.
 
-Without a running manager of your own, `AgentTarget` uses the runtime-owned manager rooted
-in the memory results directory (`pyrit.agent.runtime`). One manager exclusively owns its
-directory through a file lock; records left by an interrupted runtime are reconciled and
-released at the next start, or marked `cleanup_failed` with the reason when their provider
-is no longer installed.
+Without a running manager of your own, `AgentTarget` uses the runtime-owned manager
+(`pyrit.agent.runtime`), rooted in the memory results directory or, when results live in
+remote storage, the local database data directory. The Co-PyRIT backend reconciles it at
+startup, waits for its executions before shutting down, and closes it with the other services.
+One manager exclusively owns its directory through a file lock; records left by an interrupted
+runtime are reconciled and released at the next start, or marked `cleanup_failed` with the
+reason when their provider is no longer installed.
+
+A manager admits at most `max_executions` concurrent executions (`PYRIT_AGENT_MAX_EXECUTIONS`
+for the runtime-owned manager, default 4). A new conversation waits up to
+`startup_timeout_seconds` for a slot before failing explicitly, so attacks with higher
+concurrency queue rather than error.
 
 ## What is recorded
 
@@ -107,8 +116,11 @@ bounds it, and capture failure is recorded on the execution rather than hidden.
 `max_artifact_bytes`). The runtime does not interpret tool calls in this release.
 
 Timeouts are core policy and apply to every provider and harness: `startup_timeout_seconds`,
-`turn_timeout_seconds` (a cancelled turn is confirmed with the harness, then the execution
-is closed), `idle_timeout_seconds`, `lifetime_seconds`, and `cancellation_grace_seconds`.
+`turn_timeout_seconds`, `idle_timeout_seconds`, `lifetime_seconds`, and
+`cancellation_grace_seconds`. A turn that exceeds its deadline is cancelled with the harness and
+returned as a `cancelled` outcome carrying `agent_turn_error`, with any partial text, and its
+execution is closed; only a cancellation the harness does not confirm within the grace period
+raises.
 
 ## Permission policy
 
@@ -179,14 +191,14 @@ harness's ACP byte streams and stderr through an `ExecutionSession`.
 of the PyRIT host with a private home and a fresh workspace. It is explicitly **not a
 sandbox**: a process running as the same OS user can reach what that user can reach. Its
 template therefore requires `local_execution_acknowledged=True`. An isolated Docker provider
-follows in the next release of this series; `environment="docker"` is reserved for it and is
-refused until that provider is installed.
+follows in the next release of this series.
 
-A registered provider is selected by name in `EnvironmentTemplate.environment` and reads its
-own validated `environment_settings`; first-party providers refuse settings they would ignore.
-`EnvironmentProviderInfo` declares `capabilities` (`isolated`) and an optional flat JSON
-`settings_schema` for authoring tools. A provider that is not isolated requires the same
-explicit consent as local execution.
+`EnvironmentTemplate.environment` always names the provider explicitly; there is no default
+place to run an agent. A registered provider reads its own validated `environment_settings`;
+first-party providers refuse settings they would ignore. `EnvironmentProviderInfo` declares
+`capabilities` and an optional flat JSON `settings_schema` for authoring tools. `isolated`
+defaults to `False`: a provider must claim isolation explicitly, and one that does not requires
+the same `local_execution_acknowledged` consent as local execution.
 
 ```python
 from pathlib import Path
@@ -257,7 +269,8 @@ never discovers, brokers, or refreshes harness credentials: a profile names envi
 variables, and the PyRIT process must hold their values when an execution is allocated. Those
 values are exposed to the agent and its tools, and indirectly to anyone who can prompt the
 target. They are resolved at launch, never appear in arguments, identifiers, or records, and
-are redacted from the journal.
+are redacted from the journal before frames are serialized. A value shorter than eight
+characters cannot be redacted without corrupting unrelated content, so launch refuses it.
 
 A model name alone does not authenticate a native Copilot harness. For local development,
 export your own GitHub CLI token into the PyRIT process and reference it from the profile:
@@ -282,6 +295,12 @@ Creating an `AgentTarget` through `POST /api/targets` requires administrator acc
 class declares `requires_admin_creation = True` because every execution launches a process
 with credentials the server holds, regardless of parameters. The create-target service
 enforces this next to the existing `code_execution_parameter` and `server_credential_parameter`
-checks. Direct Python and initializer use are unaffected. `agent_configuration` is accepted over
-REST as a JSON object because `AgentTargetConfiguration` declares `JsonParameterValue`; the
-model validates it before construction.
+checks. `agent_configuration` is accepted over REST as a JSON object because
+`AgentTargetConfiguration` declares `JsonParameterValue`; the model validates it before
+construction.
+
+`fixture_directory` copies server files into the agent's workspace, so API-created targets
+follow the same rule as other file-uploading targets: the class declares
+`upload_directory_parameter = "allowed_fixture_directory"`, the server supplies its configured
+`target_upload_directory`, and a fixture directory must resolve inside it. Direct Python and
+initializer use pass no root and may name any path.

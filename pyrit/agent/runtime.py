@@ -4,6 +4,7 @@
 """Lazy runtime ownership without importing optional agent dependencies at backend startup."""
 
 import asyncio
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,17 +13,41 @@ if TYPE_CHECKING:
 
 _default_manager: "AgentExecutionManager | None" = None
 
+MAX_EXECUTIONS_ENV = "PYRIT_AGENT_MAX_EXECUTIONS"
+DEFAULT_MAX_EXECUTIONS = 4
+
+
+def agent_execution_root() -> Path:
+    """
+    Return the directory the runtime-owned manager stores executions in.
+
+    The journal store is file-backed, so a remote memory results location (such as an Azure Storage
+    URL) falls back to the local database data directory.
+
+    Returns:
+        Path: The local ``agent_executions`` directory.
+    """
+    from pyrit.common.path import DB_DATA_PATH
+    from pyrit.memory import CentralMemory
+
+    results = CentralMemory.get_memory_instance().results_path
+    if results and "://" not in results:
+        return Path(results) / "agent_executions"
+    return Path(DB_DATA_PATH) / "agent_executions"
+
 
 def get_agent_execution_manager() -> "AgentExecutionManager":
     """
     Return the runtime-owned manager.
 
+    Capacity comes from ``PYRIT_AGENT_MAX_EXECUTIONS`` (default 4).
+
     Returns:
-        AgentExecutionManager: Manager rooted in the active memory results directory.
+        AgentExecutionManager: Manager rooted in the local agent execution directory.
 
     Raises:
-        ValueError: Memory has no persistent results directory.
         ImportError: The optional agents dependencies are missing.
+        ValueError: The configured capacity is not a positive integer.
     """
     global _default_manager
     if _default_manager is None:
@@ -30,12 +55,12 @@ def get_agent_execution_manager() -> "AgentExecutionManager":
             from pyrit.agent.execution_manager import AgentExecutionManager
         except ImportError as error:
             raise ImportError("Agent execution requires installation of pyrit[agents]") from error
-        from pyrit.memory import CentralMemory
-
-        results = CentralMemory.get_memory_instance().results_path
-        if not results:
-            raise ValueError("Agent execution requires a memory results directory")
-        _default_manager = AgentExecutionManager(root=Path(results) / "agent_executions")
+        configured = os.environ.get(MAX_EXECUTIONS_ENV, "")
+        try:
+            max_executions = int(configured) if configured else DEFAULT_MAX_EXECUTIONS
+        except ValueError:
+            raise ValueError(f"{MAX_EXECUTIONS_ENV} must be a positive integer, not {configured!r}") from None
+        _default_manager = AgentExecutionManager(root=agent_execution_root(), max_executions=max_executions)
     return _default_manager
 
 
@@ -62,8 +87,5 @@ async def close_agent_execution_manager_async() -> None:
 
 async def reconcile_agent_executions_async() -> None:
     """Reconcile persisted owned resources on backend startup, without creating an unused store."""
-    from pyrit.memory import CentralMemory
-
-    results = CentralMemory.get_memory_instance().results_path
-    if results and await asyncio.to_thread((Path(results) / "agent_executions").exists):
+    if await asyncio.to_thread(agent_execution_root().exists):
         await get_agent_execution_manager().start_async()

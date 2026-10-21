@@ -54,7 +54,9 @@ def test_custom_adapter_dispatch(adapter_registry: HarnessAdapterRegistry) -> No
 
 
 def test_unknown_adapter_data_roundtrips_without_import_or_fallback(adapter_registry: HarnessAdapterRegistry) -> None:
-    profile = AgentProfile(image="test", harness_kind="team_v1", command=("team-agent",))
+    profile = AgentProfile(
+        environment="local", local_execution_acknowledged=True, harness_kind="team_v1", command=("team-agent",)
+    )
     assert AgentProfile.model_validate_json(profile.model_dump_json()) == profile
     with pytest.raises(ValueError, match="unavailable"):
         launch_environment(kind=profile.harness_kind, home="private")
