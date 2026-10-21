@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from copy import deepcopy
@@ -9,8 +10,10 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from pyrit.models.model_inference import InferenceRequirements, InferenceWireApi
+from pyrit.models.model_inference import InferenceCapabilities, InferenceRequirements, InferenceWireApi
 from pyrit.prompt_target import OpenAIChatTarget, OpenAIResponseTarget, TextTarget
+from pyrit.prompt_target.common.model_inference import InferenceAdmissionError
+from pyrit.prompt_target.common.utils import _get_rate_limit_lock
 
 
 @pytest.mark.usefixtures("patch_central_database")
@@ -84,10 +87,38 @@ async def test_error_bytes_and_status_are_not_converted_to_chat_text() -> None:
 
 @pytest.mark.usefixtures("patch_central_database")
 async def test_inference_does_not_run_responses_tool_loop() -> None:
-    target = OpenAIResponseTarget(endpoint="https://provider.test/v1", model_name="model", api_key="test")
-    with patch.object(target, "_run_tool_call_loop_async", AsyncMock()) as loop:
+    raw = json.dumps(
+        {"output": [{"type": "function_call", "call_id": "one", "name": "lookup", "arguments": "{}"}]}
+    ).encode()
+    calls = 0
+
+    async def upstream_async(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream_async)) as http:
+        target = OpenAIResponseTarget(
+            endpoint="https://provider.test/v1",
+            model_name="model",
+            api_key="test",
+            httpx_client_kwargs={"http_client": http},
+        )
         assert target.inference_capabilities.tool_calls is True
+        with (
+            patch.object(target, "_run_tool_call_loop_async", AsyncMock()) as loop,
+            patch.object(target, "_send_prompt_to_target_async", AsyncMock()) as send,
+        ):
+            async with target.open_inference_async(
+                body={"input": [], "tools": [{"type": "function", "name": "lookup"}]},
+                requirements=InferenceRequirements(wire_api=InferenceWireApi.RESPONSES),
+                request_id="id",
+            ) as response:
+                # The function call reaches the caller as provider bytes; nothing executes it locally.
+                assert b"".join([chunk async for chunk in response.body]) == raw
         loop.assert_not_awaited()
+        send.assert_not_awaited()
+    assert calls == 1
     configured = OpenAIResponseTarget(
         endpoint="https://provider.test/v1",
         model_name="model",
@@ -96,6 +127,85 @@ async def test_inference_does_not_run_responses_tool_loop() -> None:
     )
     assert configured.inference_capabilities.blocked_reason
     assert TextTarget().inference_capabilities is None
+
+
+def test_incompatibilities_name_every_unmet_requirement() -> None:
+    capabilities = InferenceCapabilities(
+        wire_apis=frozenset({InferenceWireApi.CHAT_COMPLETIONS}),
+        streaming=False,
+        tool_calls=False,
+        input_modalities=frozenset({"text"}),
+        blocked_reason="Target executes its own tools",
+    )
+    reasons = capabilities.incompatibilities(
+        InferenceRequirements(wire_api=InferenceWireApi.RESPONSES, input_modalities=frozenset({"text", "image_path"}))
+    )
+    assert reasons == [
+        "Target executes its own tools",
+        "Target does not implement responses inference",
+        "Caller requires streaming inference",
+        "Caller requires tool-call passthrough without target-side execution",
+        "Unsupported input modalities: image_path",
+    ]
+    compatible = InferenceCapabilities(
+        wire_apis=frozenset({InferenceWireApi.CHAT_COMPLETIONS}),
+        streaming=True,
+        tool_calls=True,
+        input_modalities=frozenset({"text"}),
+    )
+    assert compatible.incompatibilities(InferenceRequirements()) == []
+
+
+@pytest.mark.usefixtures("patch_central_database")
+async def test_target_pacing_is_honored_and_only_queueing_is_budgeted() -> None:
+    slept: list[float] = []
+
+    async def upstream_async(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{}")
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream_async)) as http:
+        target = OpenAIChatTarget(
+            endpoint="https://provider.test/v1",
+            model_name="model",
+            api_key="test",
+            max_requests_per_minute=10,
+            httpx_client_kwargs={"http_client": http},
+        )
+        # 10 requests per minute means a 6-second pace: longer than the admission budget, still admitted.
+        with patch("pyrit.prompt_target.openai.openai_target.asyncio.sleep", fake_sleep):
+            async with target.open_inference_async(
+                body={"messages": []}, requirements=InferenceRequirements(), request_id="id"
+            ) as response:
+                assert response.status_code == 200
+        assert slept == [6.0]
+        # A request stuck behind the pacing lock gives up after the budget instead of waiting indefinitely.
+        with patch.object(OpenAIChatTarget, "INFERENCE_ADMISSION_SECONDS", 0.05):
+            async with _get_rate_limit_lock(target):
+                with pytest.raises(InferenceAdmissionError, match="admission budget"):
+                    async with target.open_inference_async(
+                        body={"messages": []}, requirements=InferenceRequirements(), request_id="id"
+                    ):
+                        pass
+        assert not _get_rate_limit_lock(target).locked()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.usefixtures("patch_central_database")
+def test_catalog_instance_carries_inference_capabilities() -> None:
+    from pyrit.backend.mappers.target_mappers import target_object_to_instance
+
+    target = OpenAIChatTarget(endpoint="https://provider.test/v1", model_name="model", api_key="test")
+    instance = target_object_to_instance("chat", target)
+    assert instance.inference_capabilities == target.inference_capabilities
+    assert instance.inference_capabilities is not None
+    assert InferenceWireApi.CHAT_COMPLETIONS in instance.inference_capabilities.wire_apis
+    assert "inference_capabilities" in instance.model_dump(mode="json")
+    plain = target_object_to_instance("text", TextTarget())
+    assert plain.inference_capabilities is None
+    assert "inference_capabilities" not in plain.model_dump(mode="json")
 
 
 @pytest.mark.usefixtures("patch_central_database")

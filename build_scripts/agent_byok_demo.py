@@ -18,11 +18,11 @@ from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse, StreamingResponse
 
 from pyrit.agent.execution_manager import AgentExecutionManager
+from pyrit.exceptions import TargetResponseUnavailableError
 from pyrit.models import MessagePiece
 from pyrit.models.agent_execution import AgentTargetConfiguration, EnvironmentTemplate, HarnessProfile, ModelBinding
 from pyrit.models.target_response import TargetOutcome
 from pyrit.prompt_normalizer import PromptNormalizer
-from pyrit.exceptions import TargetResponseUnavailableError
 from pyrit.prompt_target import AgentTarget
 from pyrit.registry import TargetRegistry
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
