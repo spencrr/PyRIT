@@ -62,6 +62,7 @@ from pyrit.models import (
     PromptDataType,
 )
 from pyrit.models.target.target_capabilities import TargetCapabilities
+from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_normalizer import ConverterConfiguration, PromptNormalizer
 from pyrit.prompt_target.common.target_capabilities import CapabilityName, TargetCapabilities
 from pyrit.prompt_target.common.target_configuration import TargetConfiguration
@@ -189,6 +190,49 @@ def _observe_operation(scheduler: ManualSendScheduler) -> Generator[asyncio.Even
 
     with patch.object(scheduler, "operation_async", side_effect=observe_async):
         yield waiting
+
+
+@pytest.mark.parametrize("status", ["completed", "cancelled", "failed", "unknown"])
+async def test_explicit_operation_outcomes_are_not_processing_errors(
+    real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
+    sqlite_instance: SQLiteMemory,
+    status: str,
+) -> None:
+    service, attack, target, _ = real_send_context
+    outcome = TargetResponse(outcome=TargetOutcome(status), metadata={"operation_id": "operation"})
+    with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
+        await service.add_message_async(
+            attack_result_id=attack.attack_result_id, request=_request(conversation_id=attack.conversation_id)
+        )
+    messages = await sqlite_instance.get_conversation_messages_async(conversation_id=attack.conversation_id)
+    assert len(messages) == 1
+    piece = messages[0].get_piece()
+    assert piece.role == "user"
+    assert piece.prompt_metadata["target_outcome"] == status
+    assert piece.prompt_metadata["operation_id"] == "operation"
+    assert not piece.has_error()
+    [stored] = await sqlite_instance.get_attack_results_async(attack_result_ids=[attack.attack_result_id])
+    assert stored.last_response is None
+
+
+async def test_cancelled_partial_response_is_retained_without_conversion(
+    real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
+    sqlite_instance: SQLiteMemory,
+) -> None:
+    service, attack, target, _ = real_send_context
+    partial = MessagePiece(role="assistant", original_value="Partial output").to_message()
+    outcome = TargetResponse(messages=[partial], outcome=TargetOutcome.CANCELLED, metadata={"operation_id": "op"})
+    with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
+        await service.add_message_async(
+            attack_result_id=attack.attack_result_id, request=_request(conversation_id=attack.conversation_id)
+        )
+    messages = await sqlite_instance.get_conversation_messages_async(conversation_id=attack.conversation_id)
+    assert len(messages) == 2
+    assert messages[-1].get_piece().converted_value == "Partial output"
+    assert messages[-1].get_piece().prompt_metadata["target_outcome"] == "cancelled"
+    assert not messages[-1].get_piece().has_error()
+    [stored] = await sqlite_instance.get_attack_results_async(attack_result_ids=[attack.attack_result_id])
+    assert stored.last_response is None
 
 
 async def _send_message_and_get_update_fields(

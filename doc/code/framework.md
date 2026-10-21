@@ -405,7 +405,7 @@ The below talks about responsibilities of most modules in the PyRIT library
 
 **Responsibility**: Reshape prompts and conversations so components and targets can interoperate.
 
-- **`prompt_normalizer`** applies converters, persists requests and responses, and dispatches prompts to a `PromptTarget`. Targets do not persist messages.
+- **`prompt_normalizer`** applies converters, persists requests and responses, and dispatches prompts to a `PromptTarget`. Targets do not persist messages. A target may return a `TargetResponse` with an explicit `TargetOutcome`; the normalizer records the outcome and raises `TargetResponseUnavailableError` when no completed scorable message exists, rather than inventing one.
 - **`message_normalizer`** reshapes conversations into target-compatible payloads. It owns target-facing representation, not attack policy or conversation state.
 - Prepended-history identity and delivery state belong to the attack execution context. Targets and normalizers consume only the narrow send-time view needed for provider adaptation.
 - **Does not own**: the conversation of record. Memory is canonical; a normalized payload is an ephemeral target-facing view that is never written back.

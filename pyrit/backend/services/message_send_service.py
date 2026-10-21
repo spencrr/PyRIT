@@ -64,12 +64,18 @@ from pyrit.models import (
 )
 from pyrit.models.component_spec import TargetBinding
 from pyrit.models.results.attack_result import AttackScoringInputs, ScoringFailure
+from pyrit.models.target_response import TargetResponse
 from pyrit.prompt_normalizer import ConverterConfiguration, PromptNormalizer
+from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import PromptTarget
 from pyrit.prompt_target.common.target_send_context import TargetSendContext
 from pyrit.score import Scorer
 
 logger = logging.getLogger(__name__)
+
+
+def _is_completed_outcome(piece: MessagePiece) -> bool:
+    return piece.prompt_metadata.get(TargetResponse.OUTCOME_METADATA_KEY, "completed") == "completed"
 
 
 class MessageSendNotFoundError(LookupError):
@@ -747,6 +753,12 @@ class MessageSendService:
                     send_context=_MessageSendContext(progress=progress) if progress is not None else None,
                     prepared_message=prepared_message,
                 )
+            except TargetResponseUnavailableError as unavailable:
+                logger.info(
+                    "Recorded %s target operation for conversation %s without a completed message.",
+                    unavailable.outcome.outcome.value,
+                    msg_conversation_id,
+                )
             except Exception:
                 if progress is not None:
                     self._record_failure(progress=progress)
@@ -768,11 +780,19 @@ class MessageSendService:
             if progress is not None:
                 progress.state = MessageSendState.FINALIZING
             current_pieces = await self._memory.get_message_pieces_async(conversation_id=msg_conversation_id)
+            # Only a completed outcome is a scorable last response; failed, cancelled, or unknown
+            # outcomes retain their pieces without becoming the attack's last response.
             last_response = (
                 delivered_response.message_pieces[0]
-                if isinstance(delivered_response, Message) and delivered_response.api_role == "assistant"
+                if isinstance(delivered_response, Message)
+                and delivered_response.api_role == "assistant"
+                and _is_completed_outcome(delivered_response.message_pieces[0])
                 else next(
-                    (piece for piece in current_pieces if piece.id not in prior_ids and piece.role == "assistant"),
+                    (
+                        piece
+                        for piece in current_pieces
+                        if piece.id not in prior_ids and piece.role == "assistant" and _is_completed_outcome(piece)
+                    ),
                     None,
                 )
             )
