@@ -78,6 +78,8 @@ class OpenAITarget(PromptTarget):
     _async_client: AsyncOpenAI | None = None
     _api_key: str | Callable[[], Awaitable[str]]
     _INFERENCE_WIRE_API: ClassVar[InferenceWireApi | None] = None
+    # Seconds an inference may wait behind other requests for this target's pacing lock.
+    INFERENCE_ADMISSION_SECONDS: ClassVar[float] = 5
 
     @property
     def inference_capabilities(self) -> InferenceCapabilities | None:
@@ -146,14 +148,19 @@ class OpenAITarget(PromptTarget):
             raise ValueError("; ".join(reasons))
         effective = self._inference_body(body)
         if self._max_requests_per_minute and self._max_requests_per_minute > 0:
+            # The budget bounds queueing behind other requests; the pacing sleep itself is the configured rate.
+            lock = _get_rate_limit_lock(self)
             try:
-                async with asyncio.timeout(5):
-                    async with _get_rate_limit_lock(self):
-                        await asyncio.sleep(60 / self._max_requests_per_minute)
+                async with asyncio.timeout(self.INFERENCE_ADMISSION_SECONDS):
+                    await lock.acquire()
             except TimeoutError as error:
                 raise InferenceAdmissionError(
-                    "Target pacing exceeded the 5-second inference admission budget"
+                    f"Target pacing exceeded the {self.INFERENCE_ADMISSION_SECONDS:g}-second inference admission budget"
                 ) from error
+            try:
+                await asyncio.sleep(60 / self._max_requests_per_minute)
+            finally:
+                lock.release()
         # Use the SDK's shared HTTP transport directly: its normal error path eagerly buffers
         # error bodies, which would defeat a caller's response budget before iteration starts.
         key = self._api_key if isinstance(self._api_key, str) else await self._api_key()

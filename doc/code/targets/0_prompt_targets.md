@@ -369,8 +369,9 @@ governs the request: `OpenAIChatTarget` and `OpenAIResponseTarget` apply their c
 and sampling parameters over whatever the caller supplied (logging what they overrode), refuse
 requests that conflict with a fixed completion count, and decline to serve configurations whose
 extra body parameters or target-side tools cannot be reused safely. Rate limiting is shared with
-ordinary sends and bounded by a short admission budget (`InferenceAdmissionError`). Target credentials
-stay inside the target: a caller holds only the response it was given.
+ordinary sends: the configured pace always applies, and only waiting behind other requests is
+bounded, by a short admission budget (`InferenceAdmissionError`). Target credentials stay inside
+the target: a caller holds only the response it was given.
 
 Targets without an implementation keep the default `inference_capabilities` of `None`, and
 `open_inference_async` raises `NotImplementedError`. `TargetInstance.inference_capabilities` surfaces
