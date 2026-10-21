@@ -9,10 +9,10 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class AgentToolEvidence(BaseModel):
+class AgentToolCallProvenance(BaseModel):
     """An observed tool report, not synthetic history or complete internal execution coverage."""
 
-    METADATA_KEY: ClassVar[str] = "agent_tool_evidence"
+    METADATA_KEY: ClassVar[str] = "agent_tool_call"
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     source: Literal["acp"] = "acp"
@@ -31,12 +31,12 @@ class AgentToolEvidence(BaseModel):
         return {self.METADATA_KEY: self.model_dump(mode="json")}
 
     @classmethod
-    def from_metadata(cls, metadata: dict[str, Any]) -> "AgentToolEvidence | None":
+    def from_metadata(cls, metadata: dict[str, Any]) -> "AgentToolCallProvenance | None":
         """
         Read retained provenance without inferring it from message content.
 
         Returns:
-            AgentToolEvidence | None: Validated provenance, when present.
+            AgentToolCallProvenance | None: Validated provenance, when present.
         """
         value = metadata.get(cls.METADATA_KEY)
         return cls.model_validate(value) if value is not None else None

@@ -25,10 +25,10 @@ describe("MessageList", () => {
     const user = userEvent.setup();
     render(<TestWrapper><MessageList isTextInActivity={() => true} messages={[{
       role, content: '{"output":31}', timestamp: "",
-      agentToolEvidence: { source: "acp", execution_id: "execution", turn_id: "turn",
+      agentToolCalls: { source: "acp", execution_id: "execution", turn_id: "turn",
         source_call_id: "call", event_sequence: 9 },
     }]} /></TestWrapper>);
-    const summary = role === "tool" ? /Stored tool evidence/ : /Simulated tool history/;
+    const summary = role === "tool" ? /Stored tool calls/ : /Simulated tool history/;
     await user.click(screen.getByText(summary));
     expect(screen.getByText(/"output": 31/)).toBeVisible();
     expect(screen.getByText(/journal event 9/)).toBeInTheDocument();

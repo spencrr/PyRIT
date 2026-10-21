@@ -689,11 +689,11 @@ export default function ChatWindow({
     if (!last || last.status === 'running') return
     const requestPresent = messages.some((message: Message) => message.pieceIds?.includes(last.request_id))
     const replyPresent = !last.response_text || messages.some((message: Message) => (
-      message.role === 'assistant' && message.agentTurnId === last.id && !message.agentToolEvidence
+      message.role === 'assistant' && message.agentTurnId === last.id && !message.agentToolCalls
     ))
-    const toolEvidencePresent = messages.filter((message) => message.agentToolEvidence?.turn_id === last.id).length
-      >= (last.tool_evidence_messages ?? 0)
-    if (!requestPresent || !replyPresent || !toolEvidencePresent) {
+    const toolCallsPresent = messages.filter((message) => message.agentToolCalls?.turn_id === last.id).length
+      >= (last.tool_call_messages ?? 0)
+    if (!requestPresent || !replyPresent || !toolCallsPresent) {
       await loadConversation(attackResultId, viewedConversationId)
     }
   }

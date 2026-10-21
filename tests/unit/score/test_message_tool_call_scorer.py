@@ -126,7 +126,7 @@ async def test_requested_call_without_output_is_undetermined_async(sqlite_instan
     assert "lookup" in score.score_rationale
 
 
-async def test_no_tool_evidence_is_undetermined_not_false_async(sqlite_instance: SQLiteMemory) -> None:
+async def test_no_tool_calls_is_undetermined_not_false_async(sqlite_instance: SQLiteMemory) -> None:
     conversation = await _Conversation.create_async(memory=sqlite_instance)
     reply = await conversation.reply_async()
 

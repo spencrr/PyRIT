@@ -323,7 +323,7 @@ Native `GitHubCopilotTarget` is a complementary, tools-off SDK adapter for text 
 self-contained judge calls. Its model binding is Copilot-managed; its harness owns
 native sessions and uses a local working directory without sandbox provisioning.
 It is neither an ACP execution nor a raw-inference source. The separate managed
-`AgentTarget` tests the tool-capable system. Canonical tool evidence uses existing
+`AgentTarget` tests the tool-capable system. Canonical tool calls use existing
 `FunctionCallContent`, `FunctionOutputContent`, and `ToolExecutionMetadata`; the
 target projects retained reports, the normalizer persists them, and the existing
 `MessageToolCallScorer` interprets `ToolsCalled`. Missing reports remain unknown.

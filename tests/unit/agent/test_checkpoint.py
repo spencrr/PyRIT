@@ -186,7 +186,7 @@ async def test_restore_creates_lineage_without_copying_old_turns_or_replaying_pr
     assert sent.id == restored.id
     connection.prompt_async.assert_awaited_once_with("only this prompt")
     assert record.model_dump_json() == original
-    assert (await manager.tool_evidence_async(execution_id=restored.id, turn_id=turn.id)).messages == []
+    assert (await manager.tool_calls_async(execution_id=restored.id, turn_id=turn.id)).messages == []
     with pytest.raises(ValueError, match="latest saved"):
         await manager.restore_checkpoint_async(
             checkpoint_id=checkpoint.id,

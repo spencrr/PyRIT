@@ -42,8 +42,8 @@ export default function AgentActivity({ turn, activity, approvals = [], onDecisi
       <summary>{tool.title} — {tool.status}</summary>
       <Text block size={200}>Tool name: {tool.name ?? 'not reported'} · ID: {tool.id}</Text>
       {turn.status !== 'running' && <Text block size={200}>
-        Scoring evidence: {turn.tool_evidence_omissions?.[tool.id]?.replace(/_/g, ' ')
-          ?? (turn.tool_evidence_messages ? 'canonical tool messages; see transcript evidence below' : 'not established')}
+        Scoring evidence: {turn.tool_call_omissions?.[tool.id]?.replace(/_/g, ' ')
+          ?? (turn.tool_call_messages ? 'canonical tool messages; see transcript evidence below' : 'not established')}
       </Text>}
       <Text block size={200}>Observed {new Date(tool.firstSeen).toLocaleTimeString()} – {new Date(tool.lastSeen).toLocaleTimeString()}</Text>
       <Text block weight="semibold">Input</Text><pre className={styles.raw}>{details(tool.rawInput)}</pre>
@@ -90,7 +90,7 @@ export default function AgentActivity({ turn, activity, approvals = [], onDecisi
       {turn.error && <Text>{turn.error}</Text>}
       {turn.status !== 'running' && <Text size={200}>
         {turn.capture_complete ? 'Exposed ACP events retained; internal tool coverage is not guaranteed.' : 'Capture is incomplete. Missing events do not establish that an action did not occur.'}
-        {turn.tool_evidence_messages != null && ` ${turn.tool_evidence_messages} canonical tool messages projected. Missing tool evidence is undetermined, not false.`}
+        {turn.tool_call_messages != null && ` ${turn.tool_call_messages} canonical tool messages projected. Missing tool calls are undetermined, not false.`}
       </Text>}
     </section>
   )

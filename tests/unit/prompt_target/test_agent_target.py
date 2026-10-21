@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pyrit.agent.tool_evidence import AgentToolProjection
+from pyrit.agent.tool_calls import AgentToolProjection
 from pyrit.memory import CentralMemory
 from pyrit.models import MessagePiece
 from pyrit.models.agent_execution import (
@@ -70,7 +70,7 @@ class TestAgentTarget:
 
         profile = AgentProfile(environment="local", local_execution_acknowledged=True)
         manager = MagicMock(spec=AgentExecutionManager)
-        manager.tool_evidence_async = AsyncMock(return_value=AgentToolProjection())
+        manager.tool_calls_async = AsyncMock(return_value=AgentToolProjection())
         manager.send_async = AsyncMock(
             return_value=(
                 AgentExecution(owner_id="test", conversation_id="one", target_id="target", profile=profile),

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pyrit.models import ComponentIdentifier, Message, construct_response_from_request
 from pyrit.models.agent_execution import AgentTargetConfiguration, AgentWorkspaceBase, legacy_harness_kind
-from pyrit.models.target.agent_tool_evidence import AgentToolEvidence
+from pyrit.models.target.agent_tool_call import AgentToolCallProvenance
 from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_target.common.prompt_target import PromptTarget
 from pyrit.prompt_target.common.target_capabilities import CapabilityName, TargetCapabilities
@@ -130,7 +130,7 @@ class AgentTarget(PromptTarget):
             list[Message]: Prepared user/history representation without replaying native tool effects.
 
         Raises:
-            ValueError: Recorded tool evidence was copied, simulated, or modified.
+            ValueError: Recorded tool calls were copied, simulated, or modified.
         """
         messages = await super()._get_normalized_conversation_async(
             message=message,
@@ -140,12 +140,12 @@ class AgentTarget(PromptTarget):
         expected: dict[str, Message] = {}
         retained: list[Message] = []
         for historical in messages[:-1]:
-            refs = [AgentToolEvidence.from_metadata(piece.prompt_metadata) for piece in historical.message_pieces]
+            refs = [AgentToolCallProvenance.from_metadata(piece.prompt_metadata) for piece in historical.message_pieces]
             if not any(refs):
                 retained.append(historical)
                 continue
             if len(refs) != 1 or refs[0] is None:
-                raise ValueError("Native tool evidence must belong to the live agent execution")
+                raise ValueError("Native tool calls must belong to the live agent execution")
             reference = refs[0]
             manager = self._manager()
             record = manager.records.get(reference.execution_id)
@@ -157,7 +157,7 @@ class AgentTarget(PromptTarget):
                 raise ValueError("Copied tool history cannot restore an agent execution")
             key = str(historical.get_piece().id)
             if key not in expected:
-                projection = await manager.tool_evidence_async(
+                projection = await manager.tool_calls_async(
                     execution_id=reference.execution_id,
                     turn_id=reference.turn_id,
                 )
@@ -171,7 +171,7 @@ class AgentTarget(PromptTarget):
                 or piece.converted_value != source.get_piece().original_value
                 or piece.converted_value_data_type != source.get_piece().original_value_data_type
             ):
-                raise ValueError("Native tool evidence was modified; start a fresh conversation instead")
+                raise ValueError("Native tool calls were modified; start a fresh conversation instead")
         return [*retained, messages[-1]]
 
     async def _send_prompt_to_target_async(self, *, normalized_conversation: list[Message]) -> TargetResponse:
@@ -205,7 +205,7 @@ class AgentTarget(PromptTarget):
             "agent_stop_reason": turn.stop_reason,
             "agent_capture_complete": turn.capture_complete,
         }
-        projection = await self._manager().tool_evidence_async(execution_id=record.id, turn_id=turn.id)
+        projection = await self._manager().tool_calls_async(execution_id=record.id, turn_id=turn.id)
         messages = projection.messages
         for item in messages:
             item.get_piece().prompt_metadata.update(metadata)

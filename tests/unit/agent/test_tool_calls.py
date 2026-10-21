@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from pyrit.agent.execution_manager import AgentExecutionManager
-from pyrit.agent.tool_evidence import TOOL_NAME_META_KEY, project_agent_tools
+from pyrit.agent.tool_calls import TOOL_NAME_META_KEY, project_agent_tools
 from pyrit.executor.attack import AttackScoringConfig, PromptSendingAttack
 from pyrit.memory import SQLiteMemory
 from pyrit.models import (
@@ -105,7 +105,7 @@ def test_projects_only_supported_evidence(
     if count == 2:
         piece = projection.messages[-1].get_piece()
         assert ToolExecutionMetadata.from_metadata(metadata=piece.prompt_metadata).invoked
-        assert piece.prompt_metadata["agent_tool_evidence"]["event_sequence"] == 2
+        assert piece.prompt_metadata["agent_tool_call"]["event_sequence"] == 2
 
 
 def test_arguments_reported_on_the_final_update_are_accepted() -> None:
@@ -305,7 +305,7 @@ def test_status_and_output_can_be_reported_in_separate_updates(result_first: boo
     )
     assert len(projection.messages) == 2
     assert not projection.omitted
-    assert projection.messages[-1].get_piece().prompt_metadata["agent_tool_evidence"]["event_sequence"] == 3
+    assert projection.messages[-1].get_piece().prompt_metadata["agent_tool_call"]["event_sequence"] == 3
 
 
 @pytest.mark.usefixtures("patch_central_database")
@@ -412,7 +412,7 @@ class TestAgentEvidenceIntegration:
     ) -> None:
         conversation_id = str(uuid4())
         manager, record, turn, target = await self.prepare_async(root=tmp_path, conversation_id=conversation_id)
-        projection = await manager.tool_evidence_async(execution_id=record.id, turn_id=turn.id)
+        projection = await manager.tool_calls_async(execution_id=record.id, turn_id=turn.id)
         messages = projection.messages
         piece = messages[0].get_piece()
         if change == "role":
@@ -435,10 +435,10 @@ class TestAgentEvidenceIntegration:
     async def test_terminal_evidence_does_not_change_when_late_reports_arrive_async(self, tmp_path: Path) -> None:
         manager, record, turn, _ = await self.prepare_async(root=tmp_path, conversation_id="one")
         turn.event_end_cursor = 2
-        before = await manager.tool_evidence_async(execution_id=record.id, turn_id=turn.id)
+        before = await manager.tool_calls_async(execution_id=record.id, turn_id=turn.id)
         for event in tool_events(execution_id=record.id, turn_id=turn.id, name="late_tool"):
             await manager.store.append_async(event.model_copy(update={"sequence": event.sequence + 2}))
-        after = await manager.tool_evidence_async(execution_id=record.id, turn_id=turn.id)
+        after = await manager.tool_calls_async(execution_id=record.id, turn_id=turn.id)
         assert [message.get_value() for message in after.messages] == [
             message.get_value() for message in before.messages
         ]

@@ -17,7 +17,7 @@ from acp import RequestError
 
 from pyrit.agent.execution_manager import AgentExecutionManager
 from pyrit.agent.hosts.agent_framework_acp import AgentFrameworkAcpHost, _Session, load_factory
-from pyrit.agent.tool_evidence import TOOL_NAME_META_KEY, project_agent_tools
+from pyrit.agent.tool_calls import TOOL_NAME_META_KEY, project_agent_tools
 from pyrit.models.agent_execution import AgentExecutionEvent, AgentExecutionState, AgentProfile, AgentTurnStatus
 from pyrit.models.messages.tool_content import FunctionCallContent
 from tests.unit.agent import fake_agent_framework
@@ -56,7 +56,7 @@ def host_profile(fixture_directory: Path, **overrides: object) -> AgentProfile:
     )
 
 
-async def test_host_serves_a_fake_agent_over_real_acp_with_named_tool_evidence(
+async def test_host_serves_a_fake_agent_over_real_acp_with_named_tool_calls(
     tmp_path: Path, fixture_directory: Path
 ) -> None:
     async with AgentExecutionManager(root=tmp_path / "executions") as manager:
@@ -71,7 +71,7 @@ async def test_host_serves_a_fake_agent_over_real_acp_with_named_tool_evidence(
         assert turn.status == AgentTurnStatus.COMPLETED and turn.stop_reason == "end_turn"
         assert turn.response_text == "Writing the receipt. Receipt total: 31"
         assert record.agent_info["initialize"]["agentInfo"]["name"] == "pyrit-agent-framework-host"
-        projection = await manager.tool_evidence_async(execution_id=record.id, turn_id=turn.id)
+        projection = await manager.tool_calls_async(execution_id=record.id, turn_id=turn.id)
         assert not projection.omitted
         call = FunctionCallContent.model_validate_json(projection.messages[0].get_piece().original_value)
         assert call.name == "write_file"

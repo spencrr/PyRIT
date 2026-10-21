@@ -233,7 +233,7 @@ async def test_cancelled_partial_response_is_retained_without_conversion(
 
 
 @pytest.mark.parametrize("final_text", [False, True])
-async def test_manual_tool_evidence_scores_through_the_final_response_async(
+async def test_manual_tool_call_pieces_score_through_the_final_response_async(
     real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
     sqlite_instance: SQLiteMemory,
     final_text: bool,

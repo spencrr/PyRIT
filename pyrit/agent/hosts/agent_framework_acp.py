@@ -50,7 +50,7 @@ from acp.schema import (
     ToolCallStart,
 )
 
-from pyrit.agent.tool_evidence import TOOL_NAME_META_KEY
+from pyrit.agent.tool_calls import TOOL_NAME_META_KEY
 
 if TYPE_CHECKING:
     from agent_framework import AgentSession, SupportsAgentRun
@@ -140,7 +140,7 @@ class AgentFrameworkAcpHost(Agent):
         self, session_id: str, prompt: list[Any], **kwargs: Any
     ) -> PromptResponse:
         """
-        Run one turn, streaming text and tool evidence as session updates.
+        Run one turn, streaming text and tool calls as session updates.
 
         Returns:
             PromptResponse: ``end_turn`` on completion or ``cancelled`` after a cancel request.

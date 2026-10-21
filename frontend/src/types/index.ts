@@ -200,8 +200,8 @@ export interface AgentTurn {
   readonly response_text: string
   readonly capture_complete: boolean
   readonly error: string | null
-  readonly tool_evidence_messages?: number | null
-  readonly tool_evidence_omissions?: Record<string, string>
+  readonly tool_call_messages?: number | null
+  readonly tool_call_omissions?: Record<string, string>
 }
 
 export interface AgentEvidenceOperation {
@@ -472,7 +472,7 @@ export type MessageDisplayPiece = MessageTextDisplayPiece | MessageMediaDisplayP
 export interface Message {
   pieceIds?: string[]
   agentTurnId?: string
-  agentToolEvidence?: {
+  agentToolCalls?: {
     readonly source: 'acp'
     readonly execution_id: string
     readonly turn_id: string

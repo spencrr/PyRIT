@@ -93,7 +93,7 @@ def _agent_target(*, client: InMemoryTraceClient, provider: TracerProvider, comp
         ("lookup", False, AttackOutcome.SUCCESS),
     ],
 )
-async def test_attack_scores_tool_evidence_and_replays_async(
+async def test_attack_scores_tool_calls_and_replays_async(
     sqlite_instance: SQLiteMemory,
     capture: tuple[InMemoryTraceClient, TracerProvider],
     composite: bool,
@@ -434,7 +434,7 @@ async def test_missing_message_is_an_error_without_acquisition_async() -> None:
 
 
 @pytest.mark.parametrize("error", ["blocked", "empty"])
-async def test_response_errors_do_not_suppress_tool_evidence_async(
+async def test_response_errors_do_not_suppress_tool_calls_async(
     sqlite_instance: SQLiteMemory, capture: tuple[InMemoryTraceClient, TracerProvider], error: str
 ) -> None:
     client, provider = capture

@@ -11,7 +11,7 @@ from uuid import UUID, uuid5
 from pyrit.models import Message, MessagePiece, ToolExecutionMetadata
 from pyrit.models.agent_execution import AgentExecutionEvent
 from pyrit.models.messages.tool_content import FunctionCallContent, FunctionOutputContent
-from pyrit.models.target.agent_tool_evidence import AgentToolEvidence
+from pyrit.models.target.agent_tool_call import AgentToolCallProvenance
 
 # ACP `_meta` is an unstructured implementation slot; only PyRIT's namespaced key carries trusted tool identity.
 TOOL_NAME_META_KEY = "pyrit.tool_name"
@@ -56,7 +56,7 @@ def project_agent_tools(
     last_sequence = 0
     for event in events:
         if event.execution_id != execution_id or event.turn_id != turn_id or event.sequence <= last_sequence:
-            raise ValueError("Tool evidence must be ordered within one execution turn")
+            raise ValueError("Tool call events must be ordered within one execution turn")
         last_sequence = event.sequence
         if event.direction == "lifecycle" and event.payload.get("type") == "permission.resolved":
             approval = event.payload.get("approval")
@@ -200,7 +200,7 @@ def _piece(
     *, event: AgentExecutionEvent, source_id: str, conversation_id: str, value: str, invoked: bool = False
 ) -> MessagePiece:
     assert event.turn_id is not None
-    reference = AgentToolEvidence(
+    reference = AgentToolCallProvenance(
         execution_id=event.execution_id, turn_id=event.turn_id, source_call_id=source_id, event_sequence=event.sequence
     )
     metadata = {

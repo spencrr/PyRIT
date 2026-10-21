@@ -54,8 +54,8 @@ describe('AgentActivity', () => {
 
   it('distinguishes display reports from canonical scoring evidence', async () => {
     const user = userEvent.setup()
-    render(<TestWrapper><AgentActivity turn={{ ...turn, tool_evidence_messages: 2,
-      tool_evidence_omissions: { unknown: 'name_not_reported' } }} activity={{
+    render(<TestWrapper><AgentActivity turn={{ ...turn, tool_call_messages: 2,
+      tool_call_omissions: { unknown: 'name_not_reported' } }} activity={{
       text: '', tools: [
         { id: 'known', title: 'Lookup', name: 'lookup', status: 'completed', firstSeen: '', lastSeen: '' },
         { id: 'unknown', title: 'Display only', status: 'completed', firstSeen: '', lastSeen: '' },
@@ -65,7 +65,7 @@ describe('AgentActivity', () => {
     await user.click(screen.getByText('Display only — completed'))
     expect(screen.getByText(/Scoring evidence: canonical tool messages/)).toBeVisible()
     expect(screen.getByText(/Scoring evidence: name not reported/)).toBeVisible()
-    expect(screen.getByText(/Missing tool evidence is undetermined, not false/)).toBeInTheDocument()
+    expect(screen.getByText(/Missing tool calls are undetermined, not false/)).toBeInTheDocument()
   })
 
   it('keeps streamed evidence visible after a transport failure without a final reply', () => {

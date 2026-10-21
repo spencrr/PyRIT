@@ -5,7 +5,7 @@
 A duck-typed ``SupportsAgentRun`` with no model and no Agent Framework dependency.
 
 The PyRIT ACP host loads it with ``--agent tests.unit.agent.fake_agent_framework:build`` so the
-full ACP path (process, streams, tool evidence, cancellation, errors) is exercised without a login.
+full ACP path (process, streams, tool calls, cancellation, errors) is exercised without a login.
 """
 
 import asyncio

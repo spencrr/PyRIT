@@ -590,10 +590,10 @@ export default function MessageList({
                           className={styles.pieceRow}
                           data-testid={`message-piece-${index}-${piece.pieceIndex}`}
                         >
-                          {message.agentToolEvidence ? (
+                          {message.agentToolCalls ? (
                             <details>
-                              <summary>{message.role.startsWith('simulated_') ? 'Simulated tool history' : 'Stored tool evidence'}
-                                {` · ${message.agentToolEvidence.source_call_id} · journal event ${message.agentToolEvidence.event_sequence}`}
+                              <summary>{message.role.startsWith('simulated_') ? 'Simulated tool history' : 'Stored tool calls'}
+                                {` · ${message.agentToolCalls.source_call_id} · journal event ${message.agentToolCalls.event_sequence}`}
                               </summary>
                               <pre className={styles.messageJsonBlock}>{formatted ?? piece.content}</pre>
                             </details>

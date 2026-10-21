@@ -1949,21 +1949,21 @@ describe("ChatWindow Integration", () => {
   });
 
   it.each([false, true])("refreshes missing tool-only evidence or a final text reply (text: %s)", async (textReply: boolean) => {
-    const reference: NonNullable<Message["agentToolEvidence"]> = {
+    const reference: NonNullable<Message["agentToolCalls"]> = {
       source: "acp", execution_id: "execution", turn_id: "turn", source_call_id: "call", event_sequence: 1,
     };
     const execution: ConversationExecution = {
       id: "execution", conversation_id: "conversation", state: "idle", environment: "docker",
       model: "", capture_error: null, close_reason: null, artifacts: [], event_count: 2, source_coverage: "ACP only",
       turns: [{ id: "turn", request_id: "request", status: "completed", response_text: textReply ? "Final reply" : "",
-        capture_complete: true, error: null, tool_evidence_messages: 2 }],
+        capture_complete: true, error: null, tool_call_messages: 2 }],
     };
     const transcript: Message[] = [
       { role: "user", pieceIds: ["request"], content: "Stored request", timestamp: "" },
-      { role: "assistant", agentTurnId: "turn", agentToolEvidence: reference, content: "Function call", timestamp: "" },
+      { role: "assistant", agentTurnId: "turn", agentToolCalls: reference, content: "Function call", timestamp: "" },
     ];
     if (textReply) {
-      transcript.push({ role: "tool", agentTurnId: "turn", agentToolEvidence: reference, content: "Output", timestamp: "" });
+      transcript.push({ role: "tool", agentTurnId: "turn", agentToolCalls: reference, content: "Output", timestamp: "" });
     }
     mockedAttacksApi.getMessages.mockResolvedValue({ conversation_id: "conversation", messages: [] });
     mockedMapper.backendMessagesToFrontend.mockReturnValue(transcript);

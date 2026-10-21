@@ -40,7 +40,7 @@ from pyrit.agent.harness import (
     resolve_credential_values,
     validate_harness_authentication,
 )
-from pyrit.agent.tool_evidence import AgentToolProjection, project_agent_tools
+from pyrit.agent.tool_calls import AgentToolProjection, project_agent_tools
 from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.memory.agent_checkpoint_store import AgentCheckpointStore
 from pyrit.memory.agent_execution_store import AgentExecutionStore
@@ -369,9 +369,9 @@ class AgentExecutionManager:
             turn.status = status
             turn.capture_complete = record.capture_error is None
             turn.event_end_cursor = record.event_count
-            projection = await self.tool_evidence_async(execution_id=record.id, turn_id=turn.id)
-            turn.tool_evidence_messages = len(projection.messages)
-            turn.tool_evidence_omissions = projection.omitted
+            projection = await self.tool_calls_async(execution_id=record.id, turn_id=turn.id)
+            turn.tool_call_messages = len(projection.messages)
+            turn.tool_call_omissions = projection.omitted
             return record, turn
         except asyncio.CancelledError:
             try:
@@ -438,7 +438,7 @@ class AgentExecutionManager:
         live.approvals = AgentApprovals(record=record, changed=approval_changed_async)
         return live
 
-    async def tool_evidence_async(self, *, execution_id: UUID, turn_id: UUID) -> AgentToolProjection:
+    async def tool_calls_async(self, *, execution_id: UUID, turn_id: UUID) -> AgentToolProjection:
         """
         Read one turn's retained reports through the shared canonical tool projection.
 

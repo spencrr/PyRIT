@@ -137,7 +137,7 @@ async def test_tool_only_subprocess_completion_is_scorable(tmp_path: Path) -> No
         assert result.outcome is AttackOutcome.SUCCESS
         assert result.last_response.role == "tool"
         record = next(iter(manager.records.values()))
-        assert record.turns[0].tool_evidence_messages == 2
+        assert record.turns[0].tool_call_messages == 2
         assert not record.turns[0].response_text
 
 

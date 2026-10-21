@@ -154,8 +154,8 @@ export function conversationToMarkdown(
 
   for (const message of exported) {
     lines.push('', `## ${ROLE_LABELS[message.role]} — ${inlineText(message.timestamp)}`, '', fencedBlock(message.content))
-    if (message.agentToolEvidence) {
-      lines.push('', '**Canonical tool evidence provenance:**', '', fencedBlock(JSON.stringify(message.agentToolEvidence, null, 2)))
+    if (message.agentToolCalls) {
+      lines.push('', '**Canonical tool call provenance:**', '', fencedBlock(JSON.stringify(message.agentToolCalls, null, 2)))
     }
     if (message.agentActivity) {
       lines.push('', '**Agent-reported activity (display snapshot, not proof of invocation or complete coverage):**',
@@ -682,8 +682,8 @@ function renderMessage(message: Message, resolved: ResolvedMedia['perMessage'][n
       `<span class="timestamp">${escapeHtml(message.timestamp)}</span></header>`,
   ]
   parts.push(...renderBody(message, resolved.attachments))
-  if (message.agentToolEvidence) {
-    parts.push(labelled('Canonical tool evidence provenance:', `<pre>${escapeHtml(JSON.stringify(message.agentToolEvidence, null, 2))}</pre>`))
+  if (message.agentToolCalls) {
+    parts.push(labelled('Canonical tool call provenance:', `<pre>${escapeHtml(JSON.stringify(message.agentToolCalls, null, 2))}</pre>`))
   }
   if (message.agentActivity) {
     parts.push(labelled('Agent-reported activity (display snapshot, not proof of invocation or complete coverage):',

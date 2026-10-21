@@ -128,8 +128,8 @@ async def test_default_agent_framework_agent_runs_a_tool_through_the_relay_async
             record = manager.latest_execution(conversation_id=conversation)
             assert record is not None
             turn = record.turns[-1]
-            assert turn.status == AgentTurnStatus.COMPLETED and turn.tool_evidence_messages == 2
-            projection = await manager.tool_evidence_async(execution_id=record.id, turn_id=turn.id)
+            assert turn.status == AgentTurnStatus.COMPLETED and turn.tool_call_messages == 2
+            projection = await manager.tool_calls_async(execution_id=record.id, turn_id=turn.id)
             call = FunctionCallContent.model_validate_json(projection.messages[0].get_piece().original_value)
             assert call.name == "write_file"
             assert json.loads(call.arguments) == {"path": "receipt.json", "content": json.dumps({"total": 31})}

@@ -1208,7 +1208,7 @@ request and any partial response, then raises `TargetResponseUnavailableError`
 for cancelled/failed/unknown outcomes or completion without any scorable message.
 A completed tool-only response with canonical evidence reaches message scoring
 without fabricating assistant text. Text-oriented scorers still require suitable
-text; use `MessageToolCallScorer` for the tool evidence.
+text; use `MessageToolCallScorer` for the tool calls.
 
 Manual chat handles that explicit outcome without inventing a processing-error
 assistant message. The inline activity shows cancellation or tool-only completion,

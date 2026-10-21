@@ -20,10 +20,10 @@ describe("messageMapper", () => {
       message_pieces: [{
         id: "output", original_value: '{"output":31}', converted_value: '{"output":31}',
         original_value_data_type: "function_call_output", converted_value_data_type: "function_call_output",
-        response_error: "none", scores: [], prompt_metadata: { agent_tool_evidence: evidence, agent_turn_id: "turn" },
+        response_error: "none", scores: [], prompt_metadata: { agent_tool_call: evidence, agent_turn_id: "turn" },
       }],
     });
-    expect(converted.agentToolEvidence).toEqual(evidence);
+    expect(converted.agentToolCalls).toEqual(evidence);
     expect(converted.role).toBe("tool");
     expect(converted.content).toBe('{"output":31}');
   });

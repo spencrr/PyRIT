@@ -366,8 +366,8 @@ export function backendMessageToFrontend(msg: BackendMessage): Message {
   const hasMediaDiff = originalAttachments.length > 0 &&
     JSON.stringify(originalAttachments.map(a => a.url)) !== JSON.stringify(attachments.map(a => a.url))
 
-  const evidence = msg.message_pieces[0]?.prompt_metadata?.agent_tool_evidence
-  const agentToolEvidence: Message['agentToolEvidence'] =
+  const evidence = msg.message_pieces[0]?.prompt_metadata?.agent_tool_call
+  const agentToolCalls: Message['agentToolCalls'] =
     evidence !== null && typeof evidence === 'object' && !Array.isArray(evidence)
     && 'source' in evidence && evidence.source === 'acp'
     && 'execution_id' in evidence && typeof evidence.execution_id === 'string'
@@ -383,7 +383,7 @@ export function backendMessageToFrontend(msg: BackendMessage): Message {
     pieceIds: msg.message_pieces.map((piece: BackendMessagePiece) => piece.id),
     agentTurnId: typeof msg.message_pieces[0]?.prompt_metadata?.agent_turn_id === 'string'
       ? msg.message_pieces[0].prompt_metadata.agent_turn_id : undefined,
-    agentToolEvidence,
+    agentToolCalls,
     content: convertedContent,
     timestamp: msg.created_at,
     attachments: attachments.length > 0 ? attachments : undefined,
