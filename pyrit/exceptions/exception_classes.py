@@ -23,6 +23,7 @@ from tenacity.wait import wait_base
 
 from pyrit.exceptions.exceptions_helpers import log_exception
 from pyrit.models import Message, MessagePiece, construct_response_from_request
+from pyrit.models.target_response import TargetResponse
 
 logger = logging.getLogger(__name__)
 _RetryParams = ParamSpec("_RetryParams")
@@ -210,6 +211,18 @@ class KeyVaultInitializationException(PyritException, ValueError):  # noqa: N818
             message (str): Human-readable failure description.
         """
         super().__init__(status_code=status_code, message=message)
+
+
+class TargetResponseUnavailableError(ValueError):
+    """The operation is recorded but cannot supply a completed message for an attack/scorer."""
+
+    def __init__(self, outcome: TargetResponse) -> None:
+        """Retain the real outcome instead of fabricating a processing-error response."""
+        self.outcome = outcome
+        super().__init__(
+            f"Target operation {outcome.outcome.value} has no completed scorable response. "
+            "Inspect its execution evidence; do not automatically resend the operation."
+        )
 
 
 class EmptyResponseException(BadRequestException):

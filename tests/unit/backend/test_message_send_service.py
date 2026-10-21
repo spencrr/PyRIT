@@ -215,6 +215,35 @@ async def test_explicit_operation_outcomes_are_not_processing_errors(
     assert stored.last_response is None
 
 
+@pytest.mark.parametrize(
+    ("status", "expected_state"),
+    [
+        ("cancelled", MessageSendState.COMPLETED),
+        ("failed", MessageSendState.FAILED),
+        ("unknown", MessageSendState.FAILED),
+    ],
+)
+async def test_failed_and_unknown_outcomes_are_reported_as_failed_sends(
+    real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
+    status: str,
+    expected_state: MessageSendState,
+) -> None:
+    service, attack, target, _ = real_send_context
+    outcome = TargetResponse(outcome=TargetOutcome(status), metadata={"operation_id": "operation"})
+    with patch.object(target, "_send_prompt_to_target_async", AsyncMock(return_value=outcome)):
+        accepted = await service.submit_async(
+            attack_result_id=attack.attack_result_id, request=_submission(conversation_id=attack.conversation_id)
+        )
+        settled = await _settle_send_async(service=service, status=accepted)
+    # A single send reports its only conversation at the top level.
+    assert settled.state == expected_state
+    if expected_state == MessageSendState.FAILED:
+        assert settled.failure_stage == MessageSendFailureStage.SENDING
+        assert settled.error and status in settled.error
+    else:
+        assert settled.error is None
+
+
 async def test_cancelled_partial_response_is_retained_without_conversion(
     real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
     sqlite_instance: SQLiteMemory,

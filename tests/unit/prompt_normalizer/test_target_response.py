@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from unit.mocks import MockPromptTarget
 
+from pyrit.exceptions import TargetResponseUnavailableError
 from pyrit.memory import SQLiteMemory
 from pyrit.models import Message, MessagePiece
 from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_normalizer import PromptNormalizer
-from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 
 
 def _reply(text: str) -> Message:
@@ -73,6 +73,19 @@ async def test_cancelled_partial_reply_is_retained_but_not_returned(sqlite_insta
     assert not partial.has_error()
     [request] = await sqlite_instance.get_message_pieces_async(role="user")
     assert partial.conversation_id == request.conversation_id
+
+
+def test_outcome_metadata_round_trips_and_defaults_to_completed() -> None:
+    import pyrit.exceptions
+    import pyrit.models
+
+    response = TargetResponse(outcome=TargetOutcome.CANCELLED, metadata={"operation_id": "op"})
+    metadata = response.to_metadata()
+    assert metadata == {"operation_id": "op", "target_outcome": "cancelled"}
+    assert TargetOutcome.from_metadata(metadata) is TargetOutcome.CANCELLED
+    assert TargetOutcome.from_metadata({}) is TargetOutcome.COMPLETED
+    assert pyrit.models.TargetResponse is TargetResponse and pyrit.models.TargetOutcome is TargetOutcome
+    assert pyrit.exceptions.TargetResponseUnavailableError is TargetResponseUnavailableError
 
 
 async def test_plain_message_lists_are_unchanged(sqlite_instance: SQLiteMemory) -> None:

@@ -44,6 +44,7 @@ from pyrit.backend.services.media_persistence import persist_message_pieces_asyn
 from pyrit.backend.services.target_service import get_target_service
 from pyrit.common.attack_result_scope import attack_result_id_scope
 from pyrit.common.deprecation import print_deprecation_message
+from pyrit.exceptions import TargetResponseUnavailableError
 from pyrit.executor.attack import attack_outcome_from_score
 from pyrit.executor.attack.core.attack_scoring import score_attack_response_async
 from pyrit.memory import CentralMemory, data_serializer_factory
@@ -64,9 +65,8 @@ from pyrit.models import (
 )
 from pyrit.models.component_spec import TargetBinding
 from pyrit.models.results.attack_result import AttackScoringInputs, ScoringFailure
-from pyrit.models.target_response import TargetResponse
+from pyrit.models.target_response import TargetOutcome
 from pyrit.prompt_normalizer import ConverterConfiguration, PromptNormalizer
-from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import PromptTarget
 from pyrit.prompt_target.common.target_send_context import TargetSendContext
 from pyrit.score import Scorer
@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_completed_outcome(piece: MessagePiece) -> bool:
-    return piece.prompt_metadata.get(TargetResponse.OUTCOME_METADATA_KEY, "completed") == "completed"
+    return TargetOutcome.from_metadata(piece.prompt_metadata) is TargetOutcome.COMPLETED
 
 
 class MessageSendNotFoundError(LookupError):
@@ -759,6 +759,13 @@ class MessageSendService:
                     unavailable.outcome.outcome.value,
                     msg_conversation_id,
                 )
+                if progress is not None and unavailable.outcome.outcome in (
+                    TargetOutcome.FAILED,
+                    TargetOutcome.UNKNOWN,
+                ):
+                    # Explicit failures are reported as failed sends; cancellations stay recorded outcomes.
+                    progress.failure_stage = MessageSendFailureStage.SENDING
+                    progress.error = str(unavailable)
             except Exception:
                 if progress is not None:
                     self._record_failure(progress=progress)

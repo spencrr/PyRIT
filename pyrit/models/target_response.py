@@ -4,7 +4,7 @@
 """Explicit outcomes for targets whose completed operations need not produce chat text."""
 
 from enum import Enum
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import JsonValue
 
@@ -23,6 +23,17 @@ class TargetOutcome(str, Enum):
     CANCELLED = "cancelled"
     FAILED = "failed"
     UNKNOWN = "unknown"
+
+    @classmethod
+    def from_metadata(cls, metadata: dict[str, Any]) -> "TargetOutcome":
+        """
+        Read the outcome a stored piece was persisted with.
+
+        Returns:
+            TargetOutcome: The recorded outcome; pieces stored before outcomes existed are ``COMPLETED``.
+        """
+        value = metadata.get(TargetResponse.OUTCOME_METADATA_KEY)
+        return cls(value) if value is not None else cls.COMPLETED
 
 
 class TargetResponse(list[Message]):
@@ -46,3 +57,14 @@ class TargetResponse(list[Message]):
     def messages(self) -> list[Message]:
         """The response's message projection."""
         return self
+
+    def to_metadata(self) -> dict[str, JsonValue]:
+        """
+        Return the metadata every persisted piece of this response carries.
+
+        Returns:
+            dict[str, JsonValue]: The target's metadata plus the recorded outcome.
+        """
+        metadata: dict[str, JsonValue] = dict(self.metadata)
+        metadata[self.OUTCOME_METADATA_KEY] = self.outcome.value
+        return metadata
