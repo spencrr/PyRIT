@@ -12,7 +12,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Union, get_args, get_origin
+from typing import Any, Literal, TypeGuard, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, computed_field, field_serializer, model_validator
 
@@ -530,7 +530,7 @@ def _json_model_type(annotation: Any) -> type[BaseModel] | None:
     return None
 
 
-def _is_json_model(annotation: Any) -> bool:
+def _is_json_model(annotation: Any) -> TypeGuard[type[BaseModel]]:
     return (
         isinstance(annotation, type)
         and issubclass(annotation, BaseModel)
