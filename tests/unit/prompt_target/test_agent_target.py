@@ -29,7 +29,7 @@ class TestAgentTarget:
 
         legacy = AgentProfile(environment="local", local_execution_acknowledged=True, model="test-model")
         configuration = AgentTargetConfiguration.from_profile(legacy)
-        old = AgentTarget(profile=legacy)
+        old = AgentTarget(agent_configuration=configuration)
         new = TargetRegistry.get_registry_singleton().create_instance(
             "AgentTarget", agent_configuration=configuration.model_dump(mode="json")
         )
@@ -38,23 +38,19 @@ class TestAgentTarget:
         assert view.agent_configuration == configuration
         assert view.model_dump()["agent_configuration"]["model_binding"]["model"] == "test-model"
 
-    def test_rejects_ambiguous_configuration(self) -> None:
-        configuration = AgentTargetConfiguration.from_profile(
-            AgentProfile(environment="local", local_execution_acknowledged=True)
-        )
-        with pytest.raises(ValueError, match="not both"):
-            AgentTarget(agent_configuration=configuration, profile=configuration.to_profile())
-
-    def test_registry_builds_profile_without_launch(self) -> None:
-        target = TargetRegistry.get_registry_singleton().create_instance(
-            "AgentTarget", profile={"environment": "local", "local_execution_acknowledged": True}
+    def test_registry_builds_configuration_without_launch(self) -> None:
+        target = TargetRegistry.get_registry_singleton().create_instance_from_external_input(
+            "AgentTarget",
+            params={"agent_configuration": {"environment_template": {"environment": "docker", "image": "test"}}},
         )
         assert isinstance(target, AgentTarget)
-        assert target.profile.environment == "local"
+        assert target.profile.environment == "docker"
         assert not target.capabilities.supports_editable_history
 
     async def test_tool_only_result_is_not_write_only_success(self) -> None:
-        target = AgentTarget(profile={"environment": "local", "local_execution_acknowledged": True})
+        target = AgentTarget(
+            agent_configuration={"environment_template": {"environment": "local", "local_execution_acknowledged": True}}
+        )
         target._send_prompt_to_target_async = AsyncMock(
             return_value=TargetResponse(
                 outcome=TargetOutcome.COMPLETED,
@@ -81,7 +77,7 @@ class TestAgentTarget:
                 AgentTurn(request_id="1", prompt="next", response_text="done", status=AgentTurnStatus.COMPLETED),
             )
         )
-        target = AgentTarget(profile=profile)
+        target = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(profile))
         target.bind_execution_manager(manager)
         await target._send_prompt_to_target_async(
             normalized_conversation=[

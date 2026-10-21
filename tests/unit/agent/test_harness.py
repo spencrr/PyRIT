@@ -67,10 +67,16 @@ def test_profile_roundtrip_keeps_new_fields_and_groups_disjoint() -> None:
     ],
 )
 def test_pre_adapter_identity_is_stable(profile: dict, expected: str) -> None:
-    target = AgentTarget(profile=profile)
+    target = AgentTarget(
+        agent_configuration=AgentTargetConfiguration.from_profile(AgentProfile.model_validate(profile))
+    )
     assert target.get_identifier().hash == expected
     original_base = "empty" if target.profile.environment == "local" else "image"
-    explicit = AgentTarget(profile={**profile, "workspace_base": original_base})
+    explicit = AgentTarget(
+        agent_configuration=AgentTargetConfiguration.from_profile(
+            AgentProfile.model_validate({**profile, "workspace_base": original_base})
+        )
+    )
     assert explicit.get_identifier().hash == expected
 
 

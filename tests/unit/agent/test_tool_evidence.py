@@ -23,7 +23,14 @@ from pyrit.models import (
     ToolExecutionMetadata,
     ToolsCalled,
 )
-from pyrit.models.agent_execution import AgentExecution, AgentExecutionEvent, AgentProfile, AgentTurn, AgentTurnStatus
+from pyrit.models.agent_execution import (
+    AgentExecution,
+    AgentExecutionEvent,
+    AgentProfile,
+    AgentTargetConfiguration,
+    AgentTurn,
+    AgentTurnStatus,
+)
 from pyrit.models.messages.tool_content import FunctionCallContent, validate_tool_conversation
 from pyrit.prompt_normalizer import PromptNormalizer
 from pyrit.prompt_target import AgentTarget
@@ -313,7 +320,7 @@ class TestAgentEvidenceIntegration:
         manager = AgentExecutionManager(root=root)
         profile = AgentProfile(environment="local", local_execution_acknowledged=True)
         turn = AgentTurn(request_id="one", prompt="lookup", status=AgentTurnStatus.COMPLETED)
-        target = AgentTarget(profile=profile)
+        target = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(profile))
         record = AgentExecution(
             owner_id="test",
             conversation_id=conversation_id,
@@ -451,7 +458,7 @@ class TestAgentEvidenceIntegration:
                 target=target,
                 conversation_id=conversation_id,
             )
-        replacement = AgentTarget(profile=target.profile)
+        replacement = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(target.profile))
         assert replacement.get_identifier().hash == target.get_identifier().hash
         next_turn = AgentTurn(
             request_id="two", prompt="second", response_text="continued", status=AgentTurnStatus.COMPLETED

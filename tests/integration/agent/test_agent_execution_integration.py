@@ -26,7 +26,7 @@ from pyrit.models import (
     ToolCallRequirement,
     ToolsCalled,
 )
-from pyrit.models.agent_execution import AgentExecutionState, AgentProfile, AgentTurnStatus
+from pyrit.models.agent_execution import AgentExecutionState, AgentProfile, AgentTargetConfiguration, AgentTurnStatus
 from pyrit.models.agent_setup import AgentTargetComposition
 from pyrit.models.harness_adapter import HarnessAdapterInfo
 from pyrit.prompt_target import AgentTarget
@@ -124,7 +124,7 @@ async def test_initializer_composed_target_uses_the_existing_execution_and_score
 
 async def test_tool_only_subprocess_completion_is_scorable(tmp_path: Path) -> None:
     async with AgentExecutionManager(root=tmp_path) as manager:
-        target = AgentTarget(profile=scripted_profile())
+        target = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(scripted_profile()))
         target.bind_execution_manager(manager)
         attack = PromptSendingAttack(
             objective_target=target,
@@ -157,7 +157,7 @@ def scripted_profile() -> AgentProfile:
 
 async def test_atomic_attack_uses_isolated_agent_executions(tmp_path: Path) -> None:
     async with AgentExecutionManager(root=tmp_path) as manager:
-        target = AgentTarget(profile=scripted_profile())
+        target = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(scripted_profile()))
         target.bind_execution_manager(manager)
         atomic = AtomicAttack(
             atomic_attack_name="receipt-integration",

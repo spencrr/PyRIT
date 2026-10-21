@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pyrit.models import ComponentIdentifier, Message, construct_response_from_request
-from pyrit.models.agent_execution import AgentProfile, AgentTargetConfiguration, AgentWorkspaceBase, legacy_harness_kind
+from pyrit.models.agent_execution import AgentTargetConfiguration, AgentWorkspaceBase, legacy_harness_kind
 from pyrit.models.target.agent_tool_evidence import AgentToolEvidence
 from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_target.common.prompt_target import PromptTarget
@@ -41,8 +41,7 @@ class AgentTarget(PromptTarget):
     def __init__(
         self,
         *,
-        agent_configuration: AgentTargetConfiguration | dict[str, Any] | None = None,
-        profile: AgentProfile | dict[str, Any] | None = None,
+        agent_configuration: AgentTargetConfiguration | dict[str, Any],
         custom_configuration: TargetConfiguration | None = None,
     ) -> None:
         """
@@ -51,18 +50,13 @@ class AgentTarget(PromptTarget):
         Raises:
             ValueError: The configured capabilities cannot be supported by ACP.
         """
-        if (agent_configuration is None) == (profile is None):
-            raise ValueError("Supply agent_configuration or the legacy profile, but not both")
-        if agent_configuration is not None:
-            self.agent_configuration = (
-                agent_configuration
-                if isinstance(agent_configuration, AgentTargetConfiguration)
-                else AgentTargetConfiguration.model_validate(agent_configuration)
-            )
-            self.profile = self.agent_configuration.to_profile()
-        else:
-            self.profile = profile if isinstance(profile, AgentProfile) else AgentProfile.model_validate(profile)
-            self.agent_configuration = AgentTargetConfiguration.from_profile(self.profile)
+        self.agent_configuration = (
+            agent_configuration
+            if isinstance(agent_configuration, AgentTargetConfiguration)
+            else AgentTargetConfiguration.model_validate(agent_configuration)
+        )
+        # The flattened profile is the persisted execution shape; identity derives from it.
+        self.profile = self.agent_configuration.to_profile()
         from pyrit.agent.environment import validate_environment_template
         from pyrit.agent.model_binding import pinned_configuration, resolve_model_binding
 
