@@ -8,7 +8,7 @@ from __future__ import annotations
 import copy
 import types
 from abc import ABC, abstractmethod
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -84,6 +84,16 @@ class StructuredParameterValue(ABC):
             dict[str, type[StructuredParameterValue]]: Input names mapped to subclasses of the declaring type.
         """
         ...
+
+
+class JsonParameterValue:
+    """
+    Marker for a pydantic model that external callers may supply as a JSON object.
+
+    The model is the validator: a REST, CLI, or GUI caller sends its JSON form and the
+    registry calls ``model_validate`` before construction. Models that do not declare this
+    marker stay in-process only, as for every other object-typed parameter.
+    """
 
 
 class Parameter(BaseModel):
@@ -236,6 +246,12 @@ class Parameter(BaseModel):
         """True when the parameter accepts a list of values (e.g. ``list[str]``)."""
         return get_origin(self._display_type) is list
 
+    @computed_field
+    @property
+    def is_json_object(self) -> bool:
+        """True when external callers send a JSON object that a ``JsonParameterValue`` model validates."""
+        return self.reference is None and not self.opaque and _json_model_type(self._display_type) is not None
+
     @property
     def is_path(self) -> bool:
         """Whether this is a local filesystem path parameter."""
@@ -296,8 +312,8 @@ class Parameter(BaseModel):
 
         True for registry references, declared structured inputs, scalars (``Path`` and
         ``Path | str`` included), flat ``list`` / ``Collection`` / ``Sequence`` of non-path
-        scalars, and other unions with one of those as an alternative and no path
-        alternative. External callers supply that
+        scalars, ``JsonParameterValue`` models (sent as a JSON object the model validates), and
+        other unions with one of those as an alternative and no path alternative. External callers supply that
         alternative, as for ``api_key: str | Callable[...]`` or
         ``font_size: int | tuple[int, int]``; the other alternatives are for in-process
         callers. Other parameters take Python objects from in-process callers only.
@@ -315,9 +331,9 @@ class Parameter(BaseModel):
         if get_origin(param_type) in (Union, types.UnionType):
             members = [member for member in get_args(param_type) if member is not type(None)]
             return not any(_mentions_path(member) for member in members) and any(
-                _is_non_path_json_type(member) for member in members
+                _is_non_path_json_type(member) or _json_model_type(member) is not None for member in members
             )
-        return _is_non_path_json_type(param_type)
+        return _is_non_path_json_type(param_type) or _json_model_type(param_type) is not None
 
     def for_external_catalog(self) -> Parameter:
         """
@@ -430,8 +446,9 @@ class Parameter(BaseModel):
         identity — the registry layer resolves a reference by name; an opaque
         value is a live object owned by the caller). Otherwise it branches by
         shape: ``None`` passes through (deep-copied), a ``list`` coerces per
-        element, and a scalar form (including ``Literal``/``Enum``) coerces and
-        validates membership. Arbitrary defaulted types pass through unchanged.
+        element, a scalar form (including ``Literal``/``Enum``) coerces and
+        validates membership, and a ``JsonParameterValue`` model validates a JSON object
+        (an existing instance passes through). Arbitrary defaulted types pass through unchanged.
 
         Args:
             raw_value (Any): The raw value to coerce.
@@ -443,7 +460,7 @@ class Parameter(BaseModel):
 
         Raises:
             ValueError: If the value cannot be coerced to a constrained scalar or
-                list element type.
+                list element type, or a JSON object does not validate as the declared model.
         """
         if self.reference is not None or self.opaque:
             return raw_value
@@ -457,6 +474,12 @@ class Parameter(BaseModel):
             return _coerce_list(param_name=self.name, param_type=param_type, raw_value=raw_value)
         if _is_scalar_param_type(param_type):
             return _coerce_simple_value(param_name=self.name, annotation=param_type, raw_value=raw_value)
+        model_type = _json_model_type(param_type)
+        if model_type is not None and isinstance(raw_value, Mapping):
+            try:
+                return model_type.model_validate(raw_value)
+            except ValidationError as error:
+                raise ValueError(f"Parameter '{self.name}' expects {model_type.__name__}: {error}") from error
         return raw_value
 
     def validate_value(self, value: Any) -> None:
@@ -573,6 +596,34 @@ def _is_non_path_json_type(annotation: Any) -> bool:
     return _is_scalar_param_type(annotation) and annotation is not Path and not _is_path_or_str(annotation)
 
 
+def _json_model_type(annotation: Any) -> type[BaseModel] | None:
+    """
+    Return the ``JsonParameterValue`` model an annotation accepts, if any.
+
+    A plain model class matches directly; a union matches its first such alternative, so
+    ``Config | dict[str, Any] | None`` validates a JSON object as ``Config``. Models without
+    the marker never match.
+
+    Returns:
+        type[BaseModel] | None: The model class, or None when the annotation names no marked model.
+    """
+    if _is_json_model(annotation):
+        return annotation
+    if get_origin(annotation) in (Union, types.UnionType):
+        for member in get_args(annotation):
+            if _is_json_model(member):
+                return member
+    return None
+
+
+def _is_json_model(annotation: Any) -> bool:
+    return (
+        isinstance(annotation, type)
+        and issubclass(annotation, BaseModel)
+        and issubclass(annotation, JsonParameterValue)
+    )
+
+
 def _mentions_path(annotation: Any) -> bool:
     """
     Return whether the annotation is ``Path`` or has ``Path`` among its type arguments.
@@ -588,8 +639,9 @@ def _external_input_type(annotation: Any) -> Any:
     Return the form external callers send for an annotation.
 
     A flat ``Collection`` or ``Sequence`` becomes a ``list``, and a union becomes its first
-    alternative external callers can send, keeping ``None`` when the union allows it.
-    ``Path | str`` and every other annotation are returned unchanged.
+    alternative external callers can send (a scalar, flat list, or ``JsonParameterValue`` model),
+    keeping ``None`` when the union allows it. ``Path | str`` and every other annotation are
+    returned unchanged.
 
     Returns:
         Any: The external form of the annotation.
@@ -599,7 +651,9 @@ def _external_input_type(annotation: Any) -> Any:
     origin = get_origin(annotation)
     if origin in (Union, types.UnionType):
         members = get_args(annotation)
-        supported = next((member for member in members if _is_non_path_json_type(member)), None)
+        supported = next(
+            (member for member in members if _is_non_path_json_type(member) or _json_model_type(member)), None
+        )
         if supported is None:
             return annotation
         external = _external_input_type(supported)

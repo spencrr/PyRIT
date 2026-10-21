@@ -126,6 +126,11 @@ class PromptTarget(Identifiable):
     # unaffected.
     server_credential_parameter: ClassVar[str | None] = None
 
+    # Targets that launch processes or containers on the machine running PyRIT, with the
+    # credentials the server holds, declare it here. The create-target API builds them only for
+    # an administrator regardless of parameters; direct Python use is unaffected.
+    requires_admin_creation: ClassVar[bool] = False
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         """
         Validate that subclasses follow the keyword-only ``__init__`` contract.

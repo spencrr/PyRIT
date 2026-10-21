@@ -1,0 +1,251 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+"""
+Executable contracts for the two agent extension seams.
+
+Extension authors run these against their harness adapter or environment provider; PyRIT runs
+them against the first-party implementations. A report lists every check, so a failure names
+the broken promise instead of surfacing later as a confusing runtime error.
+"""
+
+import asyncio
+import secrets
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from pyrit.agent.environment import (
+    EnvironmentProviderRegistry,
+    ExecutionEnvironmentProvider,
+    ExecutionSession,
+    ExecutionSpec,
+    validate_template_with_provider,
+)
+from pyrit.agent.harness import HarnessAdapter
+from pyrit.models.agent_execution import AgentExecution, AgentProfile, AgentTargetConfiguration, EnvironmentTemplate
+
+
+class ConformanceCheck(BaseModel):
+    """One contract promise and whether the implementation kept it."""
+
+    model_config = ConfigDict(frozen=True)
+    name: str
+    passed: bool
+    detail: str = ""
+
+
+class ConformanceReport(BaseModel):
+    """All checks for one implementation; read ``passed`` or call ``raise_for_failures``."""
+
+    subject: str
+    checks: list[ConformanceCheck] = Field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        """Whether every check passed."""
+        return all(check.passed for check in self.checks)
+
+    @property
+    def failures(self) -> list[ConformanceCheck]:
+        """The checks that failed, in order."""
+        return [check for check in self.checks if not check.passed]
+
+    def raise_for_failures(self) -> None:
+        """
+        Fail loudly with every broken promise.
+
+        Raises:
+            AssertionError: At least one check failed.
+        """
+        if not self.passed:
+            lines = [f"{check.name}: {check.detail}" for check in self.failures]
+            raise AssertionError(f"{self.subject} failed conformance:\n" + "\n".join(lines))
+
+
+class _Recorder:
+    def __init__(self, subject: str) -> None:
+        self.report = ConformanceReport(subject=subject)
+
+    def check(self, name: str, condition: bool, detail: str = "") -> bool:
+        self.report.checks.append(ConformanceCheck(name=name, passed=condition, detail="" if condition else detail))
+        return condition
+
+    async def attempt_async(self, name: str, action: Callable[[], Awaitable[object]]) -> bool:
+        try:
+            await action()
+        except Exception as error:  # noqa: BLE001 - every failure must become a named check
+            return self.check(name, False, f"{type(error).__name__}: {error}")
+        return self.check(name, True)
+
+
+def verify_harness_adapter(adapter: HarnessAdapter) -> ConformanceReport:
+    """
+    Verify an adapter's declarations against what it emits, without running anything.
+
+    Returns:
+        ConformanceReport: One check per promise.
+    """
+    recorder = _Recorder(f"harness adapter '{type(adapter).__name__}'")
+    info = adapter.info
+    reserved = set(info.reserved_environment) | adapter.EXECUTION_RESERVED_ENVIRONMENT
+    recorder.check("info.name is a registry name", bool(info.name), "info.name must be set")
+    recorder.check(
+        "declared reserved names are uppercase identifiers",
+        all(name.isidentifier() and name == name.upper() for name in info.reserved_environment),
+        "reserved_environment must contain UPPER_CASE environment variable names",
+    )
+    home = "/conformance/home"
+    launch = adapter.launch_environment(home=home)
+    recorder.check(
+        "launch settings only use declared reserved names",
+        set(launch) <= reserved,
+        f"undeclared launch variables: {sorted(set(launch) - reserved)}",
+    )
+    recorder.check(
+        "launch settings do not look like provider credentials",
+        not any("KEY" in name or "TOKEN" in name or "SECRET" in name for name in launch),
+        "launch_environment must not emit credential-like variables",
+    )
+    return recorder.report
+
+
+async def verify_environment_provider_async(
+    provider: ExecutionEnvironmentProvider,
+    *,
+    template: EnvironmentTemplate,
+    echo_command: tuple[str, ...],
+    directory: Path,
+    timeout_seconds: float = 60,
+) -> ConformanceReport:
+    """
+    Drive one real allocation through the provider contract with a byte-echo command.
+
+    ``echo_command`` must copy stdin to stdout inside the environment (for example ``("cat",)``
+    in a POSIX image). Nothing here speaks ACP; the checks cover resources, streams, secrets,
+    idempotent release, and capability honesty.
+
+    Returns:
+        ConformanceReport: One check per promise.
+    """
+    recorder = _Recorder(f"environment provider '{provider.info.name}'")
+    info = provider.info
+    recorder.check("template names this provider", template.environment == info.name, "template/provider mismatch")
+    _verify_registration(recorder, provider)
+    _verify_consent(recorder, provider, template)
+    profile = conformance_profile(template, command=echo_command)
+    record = AgentExecution(
+        owner_id="conformance", conversation_id="conformance", target_id="conformance", profile=profile
+    )
+    session = provider.create_session(execution=record, directory=directory)
+    recorder.check("create_session returns an ExecutionSession", isinstance(session, ExecutionSession))
+    for name in ("acp_reader", "acp_writer", "stderr"):
+        try:
+            getattr(session, name)
+        except RuntimeError:
+            recorder.check(f"{name} is unavailable before launch", True)
+        else:
+            recorder.check(
+                f"{name} is unavailable before launch", False, "streams must raise RuntimeError before launch"
+            )
+    session.reserve()
+    secret = secrets.token_hex(24)
+    spec = ExecutionSpec(
+        command=echo_command,
+        environment={"PYRIT_CONFORMANCE": "1"},
+        credentials={"PYRIT_CONFORMANCE_SECRET": secret},
+    )
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            launched = await recorder.attempt_async(
+                "launch_async starts the harness", lambda: session.launch_async(spec)
+            )
+            if launched:
+                await _verify_streams_async(recorder, session)
+        recorder.check(
+            "credential values never reach the record",
+            secret not in record.model_dump_json(),
+            "spec.credentials leaked into the persisted execution record",
+        )
+        recorder.check("provenance is a string mapping", all(isinstance(v, str) for v in record.provenance.values()))
+    finally:
+        async with asyncio.timeout(timeout_seconds):
+            await recorder.attempt_async("close_async releases resources", session.close_async)
+            before = record.model_dump(mode="json")
+            if await recorder.attempt_async("close_async is idempotent", session.close_async):
+                recorder.check(
+                    "a repeated close_async leaves the record unchanged",
+                    record.model_dump(mode="json") == before,
+                    "the second close altered the record (for example new artifact errors)",
+                )
+    return recorder.report
+
+
+def _verify_registration(recorder: _Recorder, provider: ExecutionEnvironmentProvider) -> None:
+    try:
+        registered = EnvironmentProviderRegistry.get_registry_singleton().get(provider.info.name)
+    except ValueError:
+        recorder.check("provider is registered under its name", False, "register it before creating targets")
+        return
+    recorder.check(
+        "provider is registered under its name",
+        type(registered) is type(provider),
+        f"a different provider type owns the name '{provider.info.name}'",
+    )
+
+
+def _verify_consent(recorder: _Recorder, provider: ExecutionEnvironmentProvider, template: EnvironmentTemplate) -> None:
+    unconsented = template.model_copy(update={"local_execution_acknowledged": False})
+    consent_required = not provider.info.capabilities.isolated
+    try:
+        validate_template_with_provider(provider, unconsented)
+    except ValueError as error:
+        recorder.check(
+            "unsandboxed providers require consent and isolated providers do not",
+            consent_required and "NOT sandboxed" in str(error),
+            f"validation failed for another reason or an isolated provider demanded consent: {error}",
+        )
+        return
+    recorder.check(
+        "unsandboxed providers require consent and isolated providers do not",
+        not consent_required,
+        "an unsandboxed provider accepted a template without consent",
+    )
+
+
+async def _verify_streams_async(recorder: _Recorder, session: ExecutionSession) -> None:
+    payload = b"".join(secrets.token_hex(64).encode() + b"\n" for _ in range(64))
+    session.acp_writer.write(payload)
+    await session.acp_writer.drain()
+    received = b""
+    while len(received) < len(payload):
+        line = await session.acp_reader.readline()
+        if not line:
+            break
+        received += line
+    recorder.check(
+        "ACP byte streams are full-duplex and order-preserving",
+        received == payload,
+        f"echoed {len(received)} of {len(payload)} bytes intact" if received != payload else "",
+    )
+    session.acp_writer.close()
+    trailing = await session.acp_reader.read()
+    recorder.check(
+        "closing ACP input ends the output stream", trailing == b"", "harness kept writing after input closed"
+    )
+    drained = await session.stderr.read()
+    recorder.check("stderr is readable to end of stream", isinstance(drained, bytes))
+
+
+def conformance_profile(template: EnvironmentTemplate, *, command: tuple[str, ...]) -> AgentProfile:
+    """
+    Build the profile the verifier allocates, for callers that want to inspect or reuse it.
+
+    Returns:
+        AgentProfile: A consented profile running ``command`` in ``template``.
+    """
+    configuration = AgentTargetConfiguration(
+        environment_template=template.model_copy(update={"local_execution_acknowledged": True})
+    )
+    return configuration.to_profile().model_copy(update={"command": command})
