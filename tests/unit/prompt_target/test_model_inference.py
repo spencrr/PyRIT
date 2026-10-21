@@ -152,7 +152,7 @@ async def test_bound_target_settings_override_harness_suggestions_without_mutati
         assert calls[0]["model"] == "configured-model" and calls[0]["tools"] == body["tools"]
         assert calls[0]["vendor_extension"] == body["vendor_extension"] and calls[0]["stream"] is True
         assert "max_tokens" not in calls[0]
-        assert "override harness inference parameters" in caplog.text and "temperature" in caplog.text
+        assert "override caller-supplied inference parameters" in caplog.text and "temperature" in caplog.text
 
 
 @pytest.mark.usefixtures("patch_central_database")

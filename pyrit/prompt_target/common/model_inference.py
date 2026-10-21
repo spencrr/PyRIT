@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, kw_only=True)
 class InferenceResponse:
-    """Raw provider outcome; parsing for observation must not change the harness's payload."""
+    """Raw provider outcome; observers may parse it but must not alter the caller's payload."""
 
     status_code: int
     headers: Mapping[str, str]

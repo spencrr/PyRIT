@@ -110,7 +110,7 @@ class OpenAITarget(PromptTarget):
             if value is None:
                 continue
             if key == "n" and effective.get(key, value) != value:
-                raise ValueError("Harness request conflicts with configured target parameter 'n'")
+                raise ValueError("Inference request conflicts with configured target parameter 'n'")
             if key == "reasoning" and isinstance(value, dict) and isinstance(effective.get(key), dict):
                 value = {**effective[key], **value}
             if key in effective and effective[key] != value:
@@ -121,7 +121,7 @@ class OpenAITarget(PromptTarget):
             overridden.append("max_tokens")
         if overridden:
             logger.warning(
-                "Bound model target settings override harness inference parameters: %s", ", ".join(overridden)
+                "Target settings override caller-supplied inference parameters: %s", ", ".join(overridden)
             )
         effective["model"] = self._model_name
         return effective
@@ -163,7 +163,7 @@ class OpenAITarget(PromptTarget):
                     "Target pacing exceeded the 5-second inference admission budget"
                 ) from error
         # Use the SDK's shared HTTP transport directly: its normal error path eagerly buffers
-        # error bodies, which would bypass the relay's response budget before iteration starts.
+        # error bodies, which would defeat a caller's response budget before iteration starts.
         key = self._api_key if isinstance(self._api_key, str) else await self._api_key()
         headers = httpx.Headers({k: v for k, v in self._client.default_headers.items() if isinstance(v, str)})
         headers["Authorization"] = f"Bearer {key}"

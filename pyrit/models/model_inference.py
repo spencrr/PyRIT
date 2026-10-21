@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
-"""Provider-wire capabilities for a harness that owns its conversation and tools."""
+"""Provider-wire capabilities for callers that own their own conversation and tool loop."""
 
 from enum import Enum
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, field_serializer
 
 
 class InferenceWireApi(str, Enum):
-    """Standard model protocols understood by the relay."""
+    """Provider wire protocols a target can serve for a single inference."""
 
     CHAT_COMPLETIONS = "completions"
     RESPONSES = "responses"
@@ -64,9 +64,9 @@ class InferenceCapabilities(BaseModel):
         if requirements.wire_api not in self.wire_apis:
             reasons.append(f"Target does not implement {requirements.wire_api.value} inference")
         if requirements.streaming and not self.streaming:
-            reasons.append("Harness requires streaming inference")
+            reasons.append("Caller requires streaming inference")
         if requirements.tool_calls and not self.tool_calls:
-            reasons.append("Harness requires tool-call passthrough without target-side execution")
+            reasons.append("Caller requires tool-call passthrough without target-side execution")
         missing = requirements.input_modalities - self.input_modalities
         if missing:
             reasons.append(f"Unsupported input modalities: {', '.join(sorted(missing))}")
