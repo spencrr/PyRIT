@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from pyrit.models.identifiers.component_identifier import JSONValue
 from pyrit.models.identifiers.target_identifier import TargetIdentifier
+from pyrit.models.model_inference import InferenceCapabilities
 from pyrit.models.target.target_capabilities import TargetCapabilities
 
 
@@ -56,6 +57,11 @@ class TargetInstance(BaseModel):
         ),
     )
     capabilities: TargetCapabilities = Field(..., description="Structured snapshot of target capabilities")
+    inference_capabilities: InferenceCapabilities | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Single-inference support (wire APIs, streaming, tool passthrough), when the target offers it.",
+    )
     supports_history_replay: bool = Field(
         False,
         description="Effective history replay support, including configured adapters and provider restoration",

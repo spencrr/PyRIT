@@ -1,0 +1,73 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+"""Provider-wire capabilities for callers that own their own conversation and tool loop."""
+
+from enum import Enum
+
+from pydantic import BaseModel, ConfigDict, field_serializer
+
+
+class InferenceWireApi(str, Enum):
+    """Provider wire protocols a target can serve for a single inference."""
+
+    CHAT_COMPLETIONS = "completions"
+    RESPONSES = "responses"
+
+
+class InferenceRequirements(BaseModel):
+    """Required inference behavior, not a target class-name allowlist."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    wire_api: InferenceWireApi = InferenceWireApi.CHAT_COMPLETIONS
+    streaming: bool = True
+    tool_calls: bool = True
+    input_modalities: frozenset[str] = frozenset({"text"})
+
+    @field_serializer("input_modalities", when_used="json")
+    def _serialize_input_modalities(self, value: frozenset[str]) -> list[str]:
+        """
+        Serialize unordered requirements consistently across processes.
+
+        Returns:
+            list[str]: Stable values for configuration snapshots and target identities.
+        """
+        return sorted(value)
+
+
+class InferenceCapabilities(BaseModel):
+    """
+    Raw-wire adapter capabilities, separate from high-level target message capabilities.
+
+    ``tool_calls`` means tool declarations/calls/results pass through without local
+    execution. It neither enables tool-history input modalities nor proves a tool
+    ran. Model tool behavior still needs verification.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    wire_apis: frozenset[InferenceWireApi]
+    streaming: bool
+    tool_calls: bool
+    input_modalities: frozenset[str]
+    blocked_reason: str | None = None
+
+    def incompatibilities(self, requirements: InferenceRequirements) -> list[str]:
+        """
+        Compare actual requirements with this target's inference implementation.
+
+        Returns:
+            list[str]: Reasons the binding cannot be used.
+        """
+        reasons: list[str] = []
+        if self.blocked_reason:
+            reasons.append(self.blocked_reason)
+        if requirements.wire_api not in self.wire_apis:
+            reasons.append(f"Target does not implement {requirements.wire_api.value} inference")
+        if requirements.streaming and not self.streaming:
+            reasons.append("Caller requires streaming inference")
+        if requirements.tool_calls and not self.tool_calls:
+            reasons.append("Caller requires tool-call passthrough without target-side execution")
+        missing = requirements.input_modalities - self.input_modalities
+        if missing:
+            reasons.append(f"Unsupported input modalities: {', '.join(sorted(missing))}")
+        return reasons

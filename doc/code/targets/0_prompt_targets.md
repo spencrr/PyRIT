@@ -341,6 +341,41 @@ queried = await discover_target_capabilities_async(target=target)
 
 Each probe sends a minimal request (bounded by `per_probe_timeout_s`, default 30s, with one retry on transient errors) and only marks a capability or modality as supported if the call returns cleanly. `discover_target_capabilities_async` returns a merged view: probed where possible, declared where probing is unavailable or out of scope. "Supported" here means *the request was accepted* — a target that silently ignores a system prompt or `response_format` directive is still reported as supporting it, so validate response content out of band when the distinction matters. This function is not safe to call concurrently with other operations on the same target instance: it temporarily mutates `target._configuration` and writes probe rows to memory (rows are tagged with `prompt_metadata["capability_probe"] == "1"` for filtering). See [Target Capabilities](./6_1_target_capabilities.ipynb) for runnable examples.
 
+## Single inference
+
+`send_prompt_async` owns the conversation: it loads history from memory, normalizes it, and, for
+targets with tools, runs the tool loop. Some callers already own all of that themselves — an agent
+harness, a replay tool, a proxy — and only need the target's **transport and authentication** for one
+provider request. For them a target may expose a second, lower-level capability:
+
+```python
+capabilities = target.inference_capabilities          # None when the target offers no inference path
+reasons = capabilities.incompatibilities(requirements)  # [] when the caller's needs are met
+async with target.open_inference_async(body=body, requirements=requirements, request_id=rid) as response:
+    async for chunk in response.body:                 # raw provider bytes, including SSE frames
+        ...
+```
+
+`InferenceCapabilities` states which wire APIs the target serves (`completions`, `responses`),
+whether it streams, whether tool declarations and calls pass through without target-side execution,
+and which input modalities it accepts; `blocked_reason` explains a configuration the target refuses
+to reuse this way. `InferenceRequirements` is the caller's side of that comparison. Eligibility is
+decided by capabilities, never by target class name.
+
+`open_inference_async` never replays memory, never executes tools, and never parses the provider's
+payload: the caller receives the provider's status, headers, and body bytes unchanged, including
+error bodies, and the response is closed when the context exits. The target's own configuration still
+governs the request: `OpenAIChatTarget` and `OpenAIResponseTarget` apply their configured model name
+and sampling parameters over whatever the caller supplied (logging what they overrode), refuse
+requests that conflict with a fixed completion count, and decline to serve configurations whose
+extra body parameters or target-side tools cannot be reused safely. Rate limiting is shared with
+ordinary sends and bounded by a short admission budget (`InferenceAdmissionError`). Target credentials
+stay inside the target: a caller holds only the response it was given.
+
+Targets without an implementation keep the default `inference_capabilities` of `None`, and
+`open_inference_async` raises `NotImplementedError`. `TargetInstance.inference_capabilities` surfaces
+the same information through the registry API.
+
 ## Multi-Modal Targets
 
 Like most of PyRIT, targets can be multi-modal.
