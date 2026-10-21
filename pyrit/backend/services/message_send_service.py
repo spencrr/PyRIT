@@ -60,6 +60,7 @@ from pyrit.models import (
     ConverterIdentifier,
     Message,
     MessagePiece,
+    RequestTraceContext,
     Score,
     ScoringExpectation,
 )
@@ -74,8 +75,12 @@ from pyrit.score import Scorer
 logger = logging.getLogger(__name__)
 
 
-def _is_completed_outcome(piece: MessagePiece) -> bool:
-    return TargetOutcome.from_metadata(piece.prompt_metadata) is TargetOutcome.COMPLETED
+def _is_scorable_response(piece: MessagePiece) -> bool:
+    return (
+        piece.role in ("assistant", "tool")
+        and not piece.prompt_metadata.get(RequestTraceContext.REQUEST_METADATA_KEY)
+        and TargetOutcome.from_metadata(piece.prompt_metadata) is TargetOutcome.COMPLETED
+    )
 
 
 class MessageSendNotFoundError(LookupError):
@@ -788,20 +793,21 @@ class MessageSendService:
                 progress.state = MessageSendState.FINALIZING
             current_pieces = await self._memory.get_message_pieces_async(conversation_id=msg_conversation_id)
             # Only a completed outcome is a scorable last response; failed, cancelled, or unknown
-            # outcomes retain their pieces without becoming the attack's last response.
-            last_response = (
+            # outcomes retain their pieces without becoming the attack's last response. A tool-only
+            # completion ends in a tool piece, so the latest scorable piece wins when the delivered
+            # message is not an assistant reply.
+            delivered = (
                 delivered_response.message_pieces[0]
-                if isinstance(delivered_response, Message)
-                and delivered_response.api_role == "assistant"
-                and _is_completed_outcome(delivered_response.message_pieces[0])
-                else next(
-                    (
-                        piece
-                        for piece in current_pieces
-                        if piece.id not in prior_ids and piece.role == "assistant" and _is_completed_outcome(piece)
-                    ),
-                    None,
-                )
+                if isinstance(delivered_response, Message) and delivered_response.api_role == "assistant"
+                else None
+            )
+            scorable = [piece for piece in current_pieces if piece.id not in prior_ids and _is_scorable_response(piece)]
+            last_response = (
+                delivered
+                if delivered is not None and _is_scorable_response(delivered)
+                else max(scorable, key=lambda piece: piece.sequence)
+                if scorable
+                else None
             )
             if (
                 last_response is not None

@@ -251,7 +251,11 @@ class PromptNormalizer:
                 piece.prompt_metadata.pop(RequestTraceContext.METADATA_KEY, None)
                 piece.prompt_metadata.pop(RequestTraceContext.REQUEST_METADATA_KEY, None)
             is_last = i == len(responses) - 1
-            if is_last:
+            is_tool_call_piece = all(
+                piece.converted_value_data_type in {"function_call", "function_call_output", "tool_call"}
+                for piece in resp.message_pieces
+            )
+            if is_last and not is_tool_call_piece:
                 await self.convert_values_async(
                     converter_configurations=response_converter_configurations, message=resp
                 )

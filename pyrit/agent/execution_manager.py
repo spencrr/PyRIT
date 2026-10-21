@@ -25,6 +25,7 @@ from pyrit.agent.environment import (
 )
 from pyrit.agent.execution_store import AgentExecutionStore
 from pyrit.agent.harness import launch_environment, resolve_credential_values, validate_harness_authentication
+from pyrit.agent.tool_calls import AgentToolProjection, project_agent_tools
 from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.models.agent_execution import (
     AgentConnectionState,
@@ -301,6 +302,9 @@ class AgentExecutionManager:
             turn.status = status
             turn.capture_complete = record.capture_error is None
             turn.event_end_cursor = record.event_count
+            projection = await self.tool_calls_async(execution_id=record.id, turn_id=turn.id)
+            turn.tool_call_messages = len(projection.messages)
+            turn.tool_call_omissions = projection.omitted
             if deadline_exceeded:
                 await self.close_execution_async(execution_id=record.id, reason="turn_timeout")
             return record, turn
@@ -390,6 +394,40 @@ class AgentExecutionManager:
         return _LiveExecution(
             record=record,
             environment=create_execution_session(execution=record, directory=self.store.directory(record.id)),
+        )
+
+    async def tool_calls_async(self, *, execution_id: UUID, turn_id: UUID) -> AgentToolProjection:
+        """
+        Read one turn's retained reports through the shared canonical tool projection.
+
+        Returns:
+            AgentToolProjection: Scorer-compatible messages and conservative omission reasons.
+
+        Raises:
+            ValueError: The turn does not belong to this execution.
+        """
+        record = self.records[execution_id]
+        turn = next((turn for turn in record.turns if turn.id == turn_id), None)
+        if turn is None:
+            raise ValueError("Evidence turn does not belong to the execution")
+        events: list[AgentExecutionEvent] = []
+        cursor = turn.event_start_cursor
+        while turn.event_end_cursor is None or cursor < turn.event_end_cursor:
+            page = await self.store.events_async(execution_id=execution_id, after=cursor, limit=500)
+            if not page.events:
+                break
+            events.extend(
+                event
+                for event in page.events
+                if event.turn_id == turn_id
+                and (turn.event_end_cursor is None or event.sequence <= turn.event_end_cursor)
+            )
+            cursor = page.next_cursor
+        return project_agent_tools(
+            events=events,
+            execution_id=execution_id,
+            turn_id=turn_id,
+            conversation_id=record.conversation_id,
         )
 
     async def _launch_async(self, live: _LiveExecution) -> None:

@@ -281,6 +281,8 @@ class AgentTurn(BaseModel):
     error: str | None = None
     event_start_cursor: int = Field(default=0, ge=0)
     event_end_cursor: int | None = Field(default=None, ge=0)
+    tool_call_messages: int | None = None
+    tool_call_omissions: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentExecution(BaseModel):

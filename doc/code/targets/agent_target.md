@@ -119,7 +119,46 @@ appended to the execution's journal, in order, with referenced credential values
 The journal and the per-turn cursors into it are the evidence; `max_evidence_bytes`
 bounds it, and capture failure is recorded on the execution rather than hidden.
 `artifact_paths` names workspace files to copy out when the execution closes (bounded by
-`max_artifact_bytes`). The runtime does not interpret tool calls in this release.
+`max_artifact_bytes`).
+
+## Tool calls
+
+Each completed turn is projected from its journal into PyRIT's existing canonical tool
+pieces (`function_call` / `function_call_output`), so `MessageToolCallScorer` with
+`ToolsCalled` evaluates an agent turn like any other target's, including a **tool-only**
+turn that finished without assistant text. The projection is conservative: a call needs an
+explicit programmatic `name` and object-shaped `rawInput`; a human-readable `title` is never
+used as a name, and an output counts as an invocation only when the harness reported execution
+and a `rawOutput`. Denials, duplicate IDs, conflicting reports, and request-only
+calls are not evidence of invocation; `AgentTurn.tool_call_omissions` records why each such
+report was left out, and the raw report stays in the journal. Each turn pins its journal
+range, so late reports cannot change already projected pieces.
+
+Projected pieces carry `AgentToolCallProvenance` (execution, turn, source call ID, journal
+sequence) in their metadata and outputs carry `ToolExecutionMetadata(invoked=True)`. Response
+converters do not rewrite them. These persisted pieces are evidence, not replay instructions:
+on the next turn the target verifies them against the journal and removes only verified pieces
+from the history it prepares; copied, simulated, or edited native tool history is refused, and
+the conversation keeps its live execution.
+
+```python
+from pyrit.executor.attack import AttackScoringConfig, PromptSendingAttack
+from pyrit.models import ScoringExpectation, ToolCallRequirement, ToolsCalled
+from pyrit.score import MessageToolCallScorer
+
+attack = PromptSendingAttack(
+    objective_target=target,
+    attack_scoring_config=AttackScoringConfig(objective_scorer=MessageToolCallScorer()),
+)
+result = await attack.execute_async(
+    objective="Read orders.json and write receipt.json",
+    expectation=ScoringExpectation(conditions=(ToolsCalled(tools=(ToolCallRequirement(name="write_file"),)),)),
+)
+```
+
+Real harnesses may omit programmatic names in their ACP reports, in which case tool scoring
+stays undetermined rather than false. No synthetic trace IDs are minted; `OtelToolCallScorer`
+still needs real correlated trace evidence and can be composed with message tool scoring.
 
 Timeouts are core policy and apply to every provider and harness: `startup_timeout_seconds`,
 `turn_timeout_seconds`, `idle_timeout_seconds`, `lifetime_seconds`, and
