@@ -22,6 +22,7 @@ from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 async def run_async(args: argparse.Namespace) -> None:
     """Run two real dispatch turns and verify the retained receipt outside the agent workspace."""
     root = Path(__file__).resolve().parents[1]
+    local = bool(args.local or args.scripted)
     command = ("copilot", "--acp", "--stdio")
     if args.scripted:
         command = (sys.executable, str(root / "tests" / "integration" / "agent" / "scripted_acp_agent.py"))
@@ -34,9 +35,9 @@ async def run_async(args: argparse.Namespace) -> None:
             permission_policy="allow_once",
         ),
         environment_template=EnvironmentTemplate(
-            environment="local" if args.local or args.scripted else "docker",
-            local_execution_acknowledged=args.local or args.scripted,
-            image=args.image,
+            environment="local" if local else "docker",
+            local_execution_acknowledged=local,
+            image=None if local else args.image,
             fixture_directory=str(root / "assets" / "agent_receipt"),
         ),
         artifact_paths=("receipt.json", "orders.json"),

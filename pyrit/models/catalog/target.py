@@ -59,7 +59,11 @@ class TargetInstance(BaseModel):
         ),
     )
     capabilities: TargetCapabilities = Field(..., description="Structured snapshot of target capabilities")
-    inference_capabilities: InferenceCapabilities | None = Field(default=None, exclude_if=lambda value: value is None)
+    inference_capabilities: InferenceCapabilities | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Single-inference support (wire APIs, streaming, tool passthrough), when the target offers it.",
+    )
     agent_configuration: AgentTargetConfiguration | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
