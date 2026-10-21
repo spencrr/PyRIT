@@ -2,6 +2,7 @@
 # Licensed under the MIT license.
 
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -26,10 +27,10 @@ from pyrit.models import (
 from pyrit.models.agent_execution import (
     AgentExecution,
     AgentExecutionEvent,
-    AgentProfile,
     AgentTargetConfiguration,
     AgentTurn,
     AgentTurnStatus,
+    EnvironmentTemplate,
 )
 from pyrit.models.messages.tool_content import FunctionCallContent, validate_tool_conversation
 from pyrit.prompt_normalizer import PromptNormalizer
@@ -310,6 +311,13 @@ def test_status_and_output_can_be_reported_in_separate_updates(result_first: boo
 
 @pytest.mark.usefixtures("patch_central_database")
 class TestAgentEvidenceIntegration:
+    @pytest.fixture(autouse=True)
+    async def _close_managers_async(self) -> AsyncIterator[None]:
+        self.managers: list[AgentExecutionManager] = []
+        yield
+        for manager in self.managers:
+            await manager.close_async()
+
     async def prepare_async(
         self,
         *,
@@ -317,15 +325,20 @@ class TestAgentEvidenceIntegration:
         conversation_id: str,
         name: str | None = "lookup",
     ) -> tuple[AgentExecutionManager, AgentExecution, AgentTurn, AgentTarget]:
+        # A started manager with an in-memory record models a live execution between turns.
         manager = AgentExecutionManager(root=root)
-        profile = AgentProfile(environment="local", local_execution_acknowledged=True)
+        await manager.start_async()
+        self.managers.append(manager)
+        configuration = AgentTargetConfiguration(
+            environment_template=EnvironmentTemplate(environment="local", local_execution_acknowledged=True)
+        )
         turn = AgentTurn(request_id="one", prompt="lookup", status=AgentTurnStatus.COMPLETED)
-        target = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(profile))
+        target = AgentTarget(agent_configuration=configuration)
         record = AgentExecution(
             owner_id="test",
             conversation_id=conversation_id,
             target_id=target.get_identifier().hash,
-            profile=profile,
+            profile=configuration.to_profile(),
             turns=[turn],
         )
         manager.records[record.id] = record
@@ -458,7 +471,7 @@ class TestAgentEvidenceIntegration:
                 target=target,
                 conversation_id=conversation_id,
             )
-        replacement = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(target.profile))
+        replacement = AgentTarget(agent_configuration=target.agent_configuration.model_copy())
         assert replacement.get_identifier().hash == target.get_identifier().hash
         next_turn = AgentTurn(
             request_id="two", prompt="second", response_text="continued", status=AgentTurnStatus.COMPLETED

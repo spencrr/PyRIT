@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-from pyrit.memory.agent_execution_store import AgentExecutionStore
+from pyrit.agent.execution_store import AgentExecutionStore
 from pyrit.models.agent_execution import AgentExecution, AgentExecutionEvent, AgentProfile
 
 

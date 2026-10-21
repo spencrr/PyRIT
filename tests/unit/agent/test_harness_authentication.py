@@ -92,7 +92,7 @@ def test_authentication_method_is_not_silently_dropped() -> None:
 async def test_credential_reference_reaches_docker_as_runtime_environment_not_argv_or_record_async(
     tmp_path: Path,
 ) -> None:
-    profile = AgentProfile(image="test", credential_env=("COPILOT_GITHUB_TOKEN",))
+    profile = AgentProfile(environment="docker", image="test", credential_env=("COPILOT_GITHUB_TOKEN",))
     record = AgentExecution(owner_id="test", conversation_id="one", target_id="target", profile=profile)
     session = DockerSession(execution=record, directory=tmp_path)
     with patch.dict("os.environ", {"COPILOT_GITHUB_TOKEN": "gho_synthetic"}):
@@ -120,7 +120,7 @@ def test_python_target_applies_auth_validation_before_source_resolution() -> Non
             agent_configuration=AgentTargetConfiguration(
                 model_binding=ModelBinding(target_registry_name="source"),
                 harness_profile=HarnessProfile(credential_env=("GITHUB_TOKEN",)),
-                environment_template=EnvironmentTemplate(image="test"),
+                environment_template=EnvironmentTemplate(environment="docker", image="test"),
             )
         )
 
@@ -133,7 +133,7 @@ async def test_tool_credentials_survive_byok_without_provider_credential_export_
             agent_configuration=AgentTargetConfiguration(
                 model_binding=ModelBinding(target_registry_name="source", model="model"),
                 harness_profile=HarnessProfile(credential_env=("TEST_REPO_CREDENTIAL",)),
-                environment_template=EnvironmentTemplate(image="test"),
+                environment_template=EnvironmentTemplate(environment="docker", image="test"),
             )
         )
     record = AgentExecution(owner_id="test", target_id="target", conversation_id="one", profile=target.profile)
@@ -159,7 +159,10 @@ async def test_manager_rejects_unresolved_binding_without_provisioning_async(tmp
         pytest.raises(ValueError, match="resolved"),
     ):
         await manager.send_async(
-            profile=AgentProfile(image="test", target_registry_name="model"),
+            configuration=AgentTargetConfiguration(
+                model_binding=ModelBinding(target_registry_name="model"),
+                environment_template=EnvironmentTemplate(environment="docker", image="test"),
+            ),
             conversation_id="one",
             target_id="target",
             request_id="request",

@@ -22,7 +22,7 @@ from pyrit.models import MessagePiece
 from pyrit.models.agent_execution import AgentTargetConfiguration, EnvironmentTemplate, HarnessProfile, ModelBinding
 from pyrit.models.target_response import TargetOutcome
 from pyrit.prompt_normalizer import PromptNormalizer
-from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
+from pyrit.exceptions import TargetResponseUnavailableError
 from pyrit.prompt_target import AgentTarget
 from pyrit.registry import TargetRegistry
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async

@@ -26,7 +26,13 @@ from pyrit.models import (
     ToolCallRequirement,
     ToolsCalled,
 )
-from pyrit.models.agent_execution import AgentExecutionState, AgentProfile, AgentTargetConfiguration, AgentTurnStatus
+from pyrit.models.agent_execution import (
+    AgentExecutionState,
+    AgentTargetConfiguration,
+    AgentTurnStatus,
+    EnvironmentTemplate,
+    HarnessProfile,
+)
 from pyrit.models.agent_setup import AgentTargetComposition
 from pyrit.models.harness_adapter import HarnessAdapterInfo
 from pyrit.prompt_target import AgentTarget
@@ -63,7 +69,7 @@ async def test_initializer_composed_target_uses_the_existing_execution_and_score
     ):
         HarnessAdapterRegistry.get_registry_singleton().register(ReceiptAdapter())
         registry = InitializerRegistry.get_registry_singleton()
-        profile = scripted_profile()
+        profile = scripted_configuration().to_profile()
         for name, params in [
             ("harness_profile", {"name": "scripted", "harness_kind": harness_kind, "command": list(profile.command)}),
             (
@@ -124,7 +130,7 @@ async def test_initializer_composed_target_uses_the_existing_execution_and_score
 
 async def test_tool_only_subprocess_completion_is_scorable(tmp_path: Path) -> None:
     async with AgentExecutionManager(root=tmp_path) as manager:
-        target = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(scripted_profile()))
+        target = AgentTarget(agent_configuration=scripted_configuration())
         target.bind_execution_manager(manager)
         attack = PromptSendingAttack(
             objective_target=target,
@@ -144,20 +150,24 @@ async def test_tool_only_subprocess_completion_is_scorable(tmp_path: Path) -> No
 pytestmark = pytest.mark.run_only_if_all_tests
 
 
-def scripted_profile() -> AgentProfile:
+def scripted_configuration() -> AgentTargetConfiguration:
     root = Path(__file__).resolve().parents[3]
-    return AgentProfile(
-        environment="local",
-        local_execution_acknowledged=True,
-        command=(sys.executable, str(Path(__file__).with_name("scripted_acp_agent.py"))),
-        fixture_directory=str(root / "assets" / "agent_receipt"),
+    return AgentTargetConfiguration(
+        harness_profile=HarnessProfile(
+            harness_kind="acp", command=(sys.executable, str(Path(__file__).with_name("scripted_acp_agent.py")))
+        ),
+        environment_template=EnvironmentTemplate(
+            environment="local",
+            local_execution_acknowledged=True,
+            fixture_directory=str(root / "assets" / "agent_receipt"),
+        ),
         artifact_paths=("receipt.json",),
     )
 
 
 async def test_atomic_attack_uses_isolated_agent_executions(tmp_path: Path) -> None:
     async with AgentExecutionManager(root=tmp_path) as manager:
-        target = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(scripted_profile()))
+        target = AgentTarget(agent_configuration=scripted_configuration())
         target.bind_execution_manager(manager)
         atomic = AtomicAttack(
             atomic_attack_name="receipt-integration",
@@ -182,11 +192,11 @@ async def test_atomic_attack_uses_isolated_agent_executions(tmp_path: Path) -> N
 
 
 async def test_real_transport_cancellation_and_expiry(tmp_path: Path) -> None:
-    profile = scripted_profile().model_copy(update={"idle_timeout_seconds": 0.1})
+    configuration = scripted_configuration().model_copy(update={"idle_timeout_seconds": 0.1})
     async with AgentExecutionManager(root=tmp_path) as manager:
         send = asyncio.create_task(
             manager.send_async(
-                profile=profile,
+                configuration=configuration,
                 target_id="test",
                 conversation_id="one",
                 request_id="one",
@@ -213,16 +223,17 @@ async def test_real_transport_cancellation_and_expiry(tmp_path: Path) -> None:
 async def test_interactive_permission_wait_pauses_work_clock_and_preserves_order(tmp_path: Path) -> None:
     from pyrit.models.agent_execution import AgentPermissionPolicy
 
-    profile = scripted_profile().model_copy(
+    base = scripted_configuration()
+    configuration = base.model_copy(
         update={
-            "permission_policy": AgentPermissionPolicy.ASK,
+            "harness_profile": base.harness_profile.model_copy(update={"permission_policy": AgentPermissionPolicy.ASK}),
             "turn_timeout_seconds": 0.3,
         }
     )
     async with AgentExecutionManager(root=tmp_path) as manager:
         send = asyncio.create_task(
             manager.send_async(
-                profile=profile,
+                configuration=configuration,
                 target_id="test",
                 conversation_id="one",
                 request_id="one",

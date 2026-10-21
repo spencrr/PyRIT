@@ -533,6 +533,7 @@ async def test_lifespan_identity_is_shared_by_guard_and_version(
         shutdown_async=AsyncMock(),
     )
     with (
+        patch("pyrit.backend.services.runtime_lifecycle.reconcile_agent_executions_async", new=AsyncMock()),
         patch.object(_compatibility, "get_compatibility_id", return_value=startup_id) as startup_reader,
         patch.object(ConfigurationLoader, "load_with_overrides", return_value=ConfigurationLoader()),
         patch.object(ConfigurationLoader, "initialize_pyrit_async", new=AsyncMock()),

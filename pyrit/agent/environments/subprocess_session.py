@@ -5,12 +5,10 @@
 
 import asyncio
 import hashlib
-import io
 import os
 import shutil
 import signal
 import stat
-import tarfile
 from pathlib import Path
 
 import psutil
@@ -178,16 +176,3 @@ class SubprocessSession(ExecutionSession):
     def _is_link(path: Path) -> bool:
         attributes = getattr(path.lstat(), "st_file_attributes", 0)
         return path.is_symlink() or bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
-
-    @staticmethod
-    def _read_tar_file(*, data: bytes, maximum_bytes: int) -> bytes:
-        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-            members = archive.getmembers()
-            if len(members) != 1 or not members[0].isfile():
-                raise ValueError("Artifact must be a single regular file, not a link or directory")
-            if members[0].size > maximum_bytes:
-                raise ValueError("Archive member exceeds its read budget")
-            stream = archive.extractfile(members[0])
-            if stream is None:
-                raise ValueError("Artifact has no file content")
-            return stream.read()

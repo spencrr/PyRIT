@@ -9,7 +9,7 @@ from tests.unit.agent.session_helpers import create_container_async, execution
 
 
 async def test_docker_passes_only_scoped_runtime_env_names(tmp_path: Path) -> None:
-    session = DockerSession(execution=execution(AgentProfile(image="image")), directory=tmp_path)
+    session = DockerSession(execution=execution(AgentProfile(environment="docker", image="image")), directory=tmp_path)
     docker = await create_container_async(
         session,
         environment={

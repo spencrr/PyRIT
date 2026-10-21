@@ -51,7 +51,7 @@ async def test_actual_save_close_restart_restore_and_continue_async(tmp_path: Pa
         agent_configuration=AgentTargetConfiguration(
             model_binding=ModelBinding(model="checkpoint-model", target_registry_name=source_name),
             harness_profile=HarnessProfile(harness_kind=harness, permission_policy="allow_once"),
-            environment_template=EnvironmentTemplate(image=image),
+            environment_template=EnvironmentTemplate(environment="docker", image=image),
             artifact_paths=("receipt.json", "effects.log"),
         )
     )

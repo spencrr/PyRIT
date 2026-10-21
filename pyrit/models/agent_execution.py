@@ -38,40 +38,25 @@ class AgentWorkspaceBase(str, Enum):
     EMPTY = "empty"
 
 
-def legacy_harness_kind(command: object) -> AgentHarnessKind:
-    """
-    Resolve old recipes without enabling new adapters for existing custom commands.
-
-    Returns:
-        AgentHarnessKind: The original Copilot configuration or an unmodified generic launch.
-    """
-    first = command[0] if isinstance(command, (tuple, list)) and command else ""
-    executable = first.replace("\\", "/").rsplit("/", 1)[-1].lower() if isinstance(first, str) else ""
-    return AgentHarnessKind.COPILOT if executable in ("copilot", "copilot.exe", "copilot.cmd") else AgentHarnessKind.ACP
-
-
-# Fields removed from persisted recipes; historical records and startup files must still decode.
-_RETIRED_PROFILE_FIELDS = frozenset({"use_github_cli_login"})
+_HARNESS_DEFAULT_COMMANDS: dict[str, tuple[str, ...]] = {
+    AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio"),
+    AgentHarnessKind.AGENT_FRAMEWORK: ("python", "-m", "pyrit.agent.hosts.agent_framework_acp"),
+}
 
 
 def _resolve_harness(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
-    values = {key: item for key, item in value.items() if key not in _RETIRED_PROFILE_FIELDS}
-    defaults = {
-        AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio"),
-        AgentHarnessKind.AGENT_FRAMEWORK: ("python", "-m", "pyrit.agent.hosts.agent_framework_acp"),
-    }
-    command = values.get("command", defaults[AgentHarnessKind.COPILOT])
-    kind = values.get("harness_kind", legacy_harness_kind(command))
+    values = dict(value)
+    kind = values.get("harness_kind", AgentHarnessKind.COPILOT)
     if not isinstance(kind, str):
         raise ValueError("harness_kind must name an installed adapter")
     validate_registry_name(kind)
     values["harness_kind"] = kind
     if "command" not in values:
-        if kind not in defaults:
+        if kind not in _HARNESS_DEFAULT_COMMANDS:
             raise ValueError("A generic or registered custom ACP harness requires an explicit command")
-        values["command"] = defaults[kind]
+        values["command"] = _HARNESS_DEFAULT_COMMANDS[kind]
     return values
 
 
@@ -135,9 +120,7 @@ def _validate_artifacts(value: tuple[str, ...]) -> tuple[str, ...]:
     return value
 
 
-def _validate_environment(*, environment: str, image: str | None, acknowledged: bool) -> None:
-    if environment == AgentEnvironment.DOCKER and not image:
-        raise ValueError("A Docker image is required")
+def _validate_environment(*, environment: str, acknowledged: bool) -> None:
     if environment == AgentEnvironment.LOCAL and not acknowledged:
         raise ValueError("Local execution is NOT sandboxed; set local_execution_acknowledged=True explicitly")
 
@@ -148,14 +131,19 @@ def _validate_environment_name(value: str) -> str:
 
 
 class AgentProfile(BaseModel):
-    """Legacy flattened launch recipe, retained for existing execution records and callers."""
+    """
+    The flattened execution profile persisted with each execution.
+
+    ``AgentTargetConfiguration`` is the authoring surface; ``to_profile()`` is the only projection into
+    this shape, which providers and the runtime read during one execution's lifetime.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(default="copilot", min_length=1, max_length=100)
     command: tuple[str, ...] = ("copilot", "--acp", "--stdio")
     harness_kind: str = AgentHarnessKind.COPILOT
-    environment: str = AgentEnvironment.DOCKER.value
+    environment: str
     environment_settings: dict[str, JsonValue] = Field(default_factory=dict)
     image: str | None = None
     fixture_directory: str | None = None
@@ -196,9 +184,7 @@ class AgentProfile(BaseModel):
 
     @model_validator(mode="after")
     def _validate_environment(self) -> "AgentProfile":
-        _validate_environment(
-            environment=self.environment, image=self.image, acknowledged=self.local_execution_acknowledged
-        )
+        _validate_environment(environment=self.environment, acknowledged=self.local_execution_acknowledged)
         return self
 
 
@@ -238,14 +224,15 @@ class HarnessProfile(BaseModel):
 
 class EnvironmentTemplate(BaseModel):
     """
-    Reusable starting filesystem and resource/access policy; never a running environment.
+    Reusable starting filesystem and access policy; never a running environment.
 
-    ``environment`` names an installed provider. The first-party ``docker`` and ``local`` providers
-    read the typed fields below; a registered provider reads its own validated ``environment_settings``.
+    ``environment`` names an installed provider. The first-party ``docker`` provider reads the typed
+    ``image``, ``workspace_base``, and ``docker_*`` fields; a registered provider reads its own
+    validated ``environment_settings``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    environment: str = AgentEnvironment.DOCKER.value
+    environment: str
     environment_settings: dict[str, JsonValue] = Field(default_factory=dict)
     image: str | None = None
     fixture_directory: str | None = None
@@ -259,13 +246,6 @@ class EnvironmentTemplate(BaseModel):
 
     _environment_validator = field_validator("environment")(_validate_environment_name)
     _working_directory_validator = field_validator("working_directory")(_validate_working_directory)
-
-    @model_validator(mode="after")
-    def _validate_template(self) -> "EnvironmentTemplate":
-        _validate_environment(environment=self.environment, image=self.image, acknowledged=True)
-        if self.environment == AgentEnvironment.LOCAL and self.workspace_base == AgentWorkspaceBase.IMAGE:
-            raise ValueError("An image-provided workspace requires a Docker environment")
-        return self
 
 
 class AgentTargetConfiguration(BaseModel, JsonParameterValue):
@@ -294,19 +274,15 @@ class AgentTargetConfiguration(BaseModel, JsonParameterValue):
     @model_validator(mode="after")
     def _validate_execution_consent(self) -> "AgentTargetConfiguration":
         template = self.environment_template
-        _validate_environment(
-            environment=template.environment,
-            image=template.image,
-            acknowledged=template.local_execution_acknowledged,
-        )
+        _validate_environment(environment=template.environment, acknowledged=template.local_execution_acknowledged)
         return self
 
     def to_profile(self) -> AgentProfile:
         """
-        Resolve into the original immutable launch representation.
+        Flatten into the execution profile persisted with each execution.
 
         Returns:
-            AgentProfile: Backward-compatible recipe with identical target identity.
+            AgentProfile: The immutable launch recipe the runtime and providers read.
         """
         values = self.model_dump(exclude={"model_binding", "harness_profile", "environment_template"})
         values.update(self.model_binding.model_dump())
@@ -317,7 +293,7 @@ class AgentTargetConfiguration(BaseModel, JsonParameterValue):
     @classmethod
     def from_profile(cls, profile: AgentProfile) -> "AgentTargetConfiguration":
         """
-        Project a legacy recipe into separate authoring concepts without changing its behavior.
+        Regroup a persisted execution profile into the authoring shape, for display.
 
         Returns:
             AgentTargetConfiguration: Immutable composed configuration.

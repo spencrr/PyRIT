@@ -67,6 +67,7 @@ def configuration() -> AgentTargetConfiguration:
         ),
         model_binding=ModelBinding(model="test-model"),
         environment_template=EnvironmentTemplate(
+            environment="docker",
             image="team-image:1",
             docker_network="none",
             docker_cpus=2,
@@ -120,7 +121,7 @@ async def test_startup_saves_credential_references_without_resolving_values_asyn
 ) -> None:
     snapshot = AgentTargetConfiguration(
         harness_profile=HarnessProfile(credential_env=("COPILOT_GITHUB_TOKEN",)),
-        environment_template=EnvironmentTemplate(image="copilot:test"),
+        environment_template=EnvironmentTemplate(environment="docker", image="copilot:test"),
     )
     _, version = await source.read_with_version_async()
     with patch.dict(os.environ, {"COPILOT_GITHUB_TOKEN": "gho_synthetic"}):
@@ -146,7 +147,9 @@ async def test_saved_yaml_preserves_strings_under_the_startup_loader_async(
             harness_kind="acp",
             command=("yes", "on", "OFF", "012", "1:20", "null"),
         ),
-        environment_template=EnvironmentTemplate(image="off", working_directory="on", docker_network="none"),
+        environment_template=EnvironmentTemplate(
+            environment="docker", image="off", working_directory="on", docker_network="none"
+        ),
         artifact_paths=("yes", "OFF", "null", "012"),
     )
     result = await save_agent_startup_async(
@@ -256,7 +259,7 @@ async def main_async():
             harness_profile=HarnessProfile(inference_requirements=InferenceRequirements(
                 input_modalities=frozenset({"text", "image"}),
             )),
-            environment_template=EnvironmentTemplate(image="test"),
+            environment_template=EnvironmentTemplate(environment="docker", image="test"),
         )
         saved = await save_agent_startup_async(
             request=SaveAgentStartupRequest(name="saved_agent", configuration=configuration,
@@ -330,7 +333,7 @@ async def test_saved_model_source_hash_survives_and_rejects_replacement_async(so
                 target_registry_name="openai_chat",
                 target_identifier_hash=model.get_identifier().hash,
             ),
-            environment_template=EnvironmentTemplate(image="test"),
+            environment_template=EnvironmentTemplate(environment="docker", image="test"),
         )
         result = await save_agent_startup_async(
             request=SaveAgentStartupRequest(
@@ -477,7 +480,8 @@ async def test_startup_rejects_drifted_expected_target_hash_async(
     await save_agent_startup_async(request=create, source=source)
     data = safe_load_yaml(await source.read_async())
     entry = next(item for item in data["initializers"] if item["name"] == "agent_target")
-    entry["args"]["lifetime_seconds"] = 999
+    # Timeouts are not identity; an artifact selection is.
+    entry["args"]["artifact_paths"] = ["drifted.json"]
     loader = ConfigurationLoader.from_dict(data)
     with patch.dict(os.environ, {"TEST_REPO_KEY": "test"}), pytest.raises(ValueError, match="pinned"):
         await loader.initialize_pyrit_async()

@@ -137,7 +137,10 @@ async def test_unsettled_or_force_killed_process_does_not_produce_checkpoint_asy
 ) -> None:
     environment = DockerSession(
         execution=AgentExecution(
-            owner_id="test", target_id="target", conversation_id="c", profile=AgentProfile(image="test")
+            owner_id="test",
+            target_id="target",
+            conversation_id="c",
+            profile=AgentProfile(environment="docker", image="test"),
         ),
         directory=probe.root,
     )
@@ -180,7 +183,10 @@ async def test_revocation_probe_uses_configured_local_interface_without_ambient_
     probe.leases.append(lease)
     environment = DockerSession(
         execution=AgentExecution(
-            owner_id="test", target_id="target", conversation_id="c", profile=AgentProfile(image="test")
+            owner_id="test",
+            target_id="target",
+            conversation_id="c",
+            profile=AgentProfile(environment="docker", image="test"),
         ),
         directory=probe.root,
     )

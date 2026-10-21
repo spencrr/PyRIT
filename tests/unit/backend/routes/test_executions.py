@@ -34,7 +34,7 @@ def test_execution_routes_return_real_records_and_events() -> None:
     manager.start_async = AsyncMock()
     manager.cancel_async = AsyncMock()
     manager.close_execution_async = AsyncMock()
-    from pyrit.memory.agent_execution_store import AgentExecutionStore
+    from pyrit.agent.execution_store import AgentExecutionStore
 
     manager.store = MagicMock(spec=AgentExecutionStore)
     manager.store.events_async = AsyncMock(return_value=AgentEventPage(events=[], next_cursor=0))
@@ -56,9 +56,9 @@ def test_execution_routes_return_real_records_and_events() -> None:
 @pytest.mark.usefixtures("patch_central_database")
 def test_conversation_access_is_scoped_without_admin_privileges() -> None:
     from pyrit.agent.execution_manager import AgentExecutionManager
+    from pyrit.agent.execution_store import AgentExecutionStore
     from pyrit.backend.services import agent_execution_service
     from pyrit.memory import CentralMemory
-    from pyrit.memory.agent_execution_store import AgentExecutionStore
     from pyrit.models import AttackResult
     from pyrit.models.agent_execution import AgentExecutionEvent
 

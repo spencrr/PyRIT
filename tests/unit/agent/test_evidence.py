@@ -56,7 +56,7 @@ async def prepare_async(*, root: Path, memory: SQLiteMemory) -> tuple[AgentEvide
         owner_id="test",
         target_id="target-hash",
         conversation_id=conversation,
-        profile=AgentProfile(image="test"),
+        profile=AgentProfile(environment="docker", image="test"),
         turns=[turn],
         state=AgentExecutionState.CLOSED,
         event_count=3,

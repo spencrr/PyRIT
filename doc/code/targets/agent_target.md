@@ -78,9 +78,10 @@ to load it. See [startup authoring](../../getting_started/pyrit_conf.md#saving-a
 for dependency, naming, and conflict behavior.
 
 Changing configuration creates a new target, not an in-place change to an active
-conversation. The original flat `AgentProfile` input and retained execution
-records are supported for compatibility. New authoring code should use
-`AgentTargetConfiguration`; equivalent old/new configurations preserve target identity.
+conversation. Target identity is the configuration without defaulted fields, timeouts,
+and evidence budgets, so tightening a deadline does not create a new target while
+changing what runs or where does. `AgentTargetConfiguration` is the authoring surface;
+the flattened `AgentProfile` is the execution profile persisted with each execution.
 
 Each new PyRIT conversation gets a fresh process, native agent session, and
 writable workspace. Subsequent turns use that same execution. Completing an
@@ -173,7 +174,7 @@ configuration = AgentTargetConfiguration(
         authentication_method="copilot-login",
         permission_policy="allow_once",
     ),
-    environment_template=EnvironmentTemplate(image="pyrit-copilot-receipt:1.0.93"),
+    environment_template=EnvironmentTemplate(environment="docker", image="pyrit-copilot-receipt:1.0.93"),
     artifact_paths=("receipt.json", "orders.json"),
 )
 
@@ -297,7 +298,7 @@ AgentTargetConfiguration(
         command=("python", "-m", "pyrit.agent.hosts.agent_framework_acp", "--agent", "my_package.agents:build"),
         permission_policy="allow_once",
     ),
-    environment_template=EnvironmentTemplate(image="my-agent-image:1"),
+    environment_template=EnvironmentTemplate(environment="docker", image="my-agent-image:1"),
 )
 ```
 
@@ -406,14 +407,16 @@ secret redaction, and the ACP protocol. A provider owns resources: it allocates 
 releases exactly what it created, seeds the workspace, passes the launch
 specification to the harness, and exposes the harness's ACP byte streams and stderr.
 `docker` (isolated, checkpoint-capable) and `local` (explicitly not a sandbox) are the
-first-party providers and are authored through the typed `EnvironmentTemplate` fields.
+first-party providers; `docker` declares the typed `image`, `workspace_base`, and
+`docker_*` template fields it reads.
 
-A registered provider is selected by name in `EnvironmentTemplate.environment` and
-reads its own validated `environment_settings`. Its `EnvironmentProviderInfo`
-declares `capabilities` (`isolated`, `checkpoint`) and an optional flat JSON
-`settings_schema` that Create Target renders as fields. A provider that is not
-isolated requires the same explicit `local_execution_acknowledged` consent as local
-execution. Checkpoint operations are refused, not emulated, for providers without the
+`EnvironmentTemplate.environment` always names the provider explicitly; there is no
+default place to run an agent. A registered provider reads its own validated
+`environment_settings`. Its `EnvironmentProviderInfo` declares `capabilities`
+(`isolated`, `checkpoint`) and an optional flat JSON `settings_schema` that Create Target
+renders as fields. `isolated` defaults to `False`: a provider must claim isolation
+explicitly, and one that does not requires the same `local_execution_acknowledged`
+consent as local execution. Checkpoint operations are refused, not emulated, for providers without the
 capability. Startup authoring persists only the first-party providers; register
 templates for other providers from a Python initializer.
 
@@ -845,19 +848,25 @@ These are administrator routes, reusing PyRIT's existing authorization. Creating
 an `AgentTarget` through `POST /api/targets` is also administrator-only: the class
 declares `requires_admin_creation = True` because every execution launches a
 process or container with credentials the server holds, regardless of the
-parameters supplied. Direct Python and initializer use are unaffected. For an
-explicitly trusted local deployment without authentication, the existing
-`PYRIT_ALLOW_UNAUTHENTICATED_ADMIN=true` setting enables administration. Do not
+parameters supplied. `fixture_directory` copies server files into the agent's
+workspace, so API-created targets follow the same rule as other file-uploading
+targets: the class declares `upload_directory_parameter = "allowed_fixture_directory"`,
+the server supplies its configured `target_upload_directory`, and a fixture directory
+must resolve inside it. Direct Python and initializer use pass no root and may name
+any path. For an explicitly trusted local deployment without authentication, the
+existing `PYRIT_ALLOW_UNAUTHENTICATED_ADMIN=true` setting enables administration. Do not
 expose such a deployment to an untrusted network.
 
 A single backend process owns its execution store. Standalone notebook/CLI
 managers are independently owned and are not remotely administered by the
 backend. A filesystem lock prevents two managers from concurrently claiming the
 same store. Do not share that directory between machines or backend workers.
-The default manager allows four live executions, including idle chats. Close idle
-executions or limit scanner concurrency to that capacity; standalone managers can
-set `max_executions` explicitly. Capacity exhaustion fails with an actionable
-error rather than sharing a used session.
+The runtime-owned manager admits `PYRIT_AGENT_MAX_EXECUTIONS` live executions
+(default four), including idle chats; standalone managers set `max_executions`
+explicitly. Executions whose release failed no longer hold a slot. A new conversation
+waits up to its `startup_timeout_seconds` for a slot before failing with an actionable
+error rather than sharing a used session. When memory results live in remote storage,
+the manager's file store falls back to the local database data directory.
 
 ## Lifetime, recreation, and retention
 
@@ -870,7 +879,8 @@ launched by target construction or registry discovery.
 - **Continue** makes a held execution available for a new turn; it does not resend
   the interrupted prompt. **Extend hold** renews the grace period but cannot exceed
   the original lifetime. **Close execution** releases its resources.
-- Automated runs retain strict predeclared deadline behavior. Unconfirmed
+- Automated runs return a deadline as an explicit `cancelled` outcome carrying
+  `agent_turn_error` and any partial text, then close the execution. Unconfirmed
   cancellation, lost connections, and execution-fatal errors still close resources.
 - A held environment is still running and consumes capacity. It is not a
   snapshot, process freeze, rollback, or provider suspend operation.
@@ -1152,8 +1162,10 @@ message/observation scoring remains the evaluation path.
 
 Prepared input is written before dispatch. Protocol frames are captured before
 delivery/processing, in local sequence order, including unknown extensions.
-Configured credential values are redacted from captured text. This is not a
-general secret-discovery service: use synthetic test data and scoped credentials.
+Configured credential values are redacted from captured frames before they are
+serialized; a value shorter than eight characters cannot be redacted without corrupting
+unrelated content, so launch refuses it. This is not a general secret-discovery service:
+use synthetic test data and scoped credentials.
 
 The event journal is mandatory and independent of live viewers. Event size and
 total evidence budgets are bounded. Capture failure stops the protocol path;

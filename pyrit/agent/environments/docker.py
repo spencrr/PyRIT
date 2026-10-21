@@ -98,7 +98,9 @@ class DockerSession(SubprocessSession):
             command = ("docker", "attach", "--sig-proxy=false", self._container)
         else:
             command = ("docker", "start", "--attach", "--interactive", self._container)
-        await self._spawn_async(command=command, cwd=self.workspace, environment=self._inherited_environment())
+        # The attach process is the docker CLI, not the harness: it needs the same daemon/context/config
+        # environment the management commands use. Credentials were already passed at `docker create`.
+        await self._spawn_async(command=command, cwd=self.workspace, environment=dict(os.environ))
         if spec.restore is not None:
             await self._docker_async("exec", self._container, "touch", "--", self._restore_marker)
 
@@ -396,6 +398,19 @@ class DockerSession(SubprocessSession):
         if process.returncode:
             raise RuntimeError(f"Docker {args[0]} failed: {stderr.decode('utf-8', errors='replace')[:2000]}")
         return stdout.decode("utf-8")
+
+    @staticmethod
+    def _read_tar_file(*, data: bytes, maximum_bytes: int) -> bytes:
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            members = archive.getmembers()
+            if len(members) != 1 or not members[0].isfile():
+                raise ValueError("Artifact must be a single regular file, not a link or directory")
+            if members[0].size > maximum_bytes:
+                raise ValueError("Archive member exceeds its read budget")
+            stream = archive.extractfile(members[0])
+            if stream is None:
+                raise ValueError("Artifact has no file content")
+            return stream.read()
 
 
 class DockerProvider(ExecutionEnvironmentProvider):

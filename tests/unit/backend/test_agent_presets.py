@@ -2,6 +2,7 @@
 # Licensed under the MIT license.
 
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -36,11 +37,10 @@ def config(*, local: bool = False) -> AgentTargetConfiguration:
         permission_policy="ask",
         credential_env=("TEST_TOOL_TOKEN",),
     )
-    template = EnvironmentTemplate(
-        environment="local" if local else "docker",
-        image=None if local else "team:1",
-        docker_network="none",
-        docker_cpus=2,
+    template = (
+        EnvironmentTemplate(environment="local")
+        if local
+        else EnvironmentTemplate(environment="docker", image="team:1", docker_network="none", docker_cpus=2)
     )
     presets.register_harness(name="team", profile=harness, initializer="PrivateHarnessInitializer")
     presets.register_environment(name="workspace", template=template, initializer="PrivateEnvironmentInitializer")
@@ -92,11 +92,15 @@ def test_catalog_is_admin_only_and_returns_detached_canonical_models() -> None:
 
 
 @pytest.mark.parametrize("local", [False, True])
-async def test_create_validates_snapshot_and_returns_provenance_without_affecting_identity_async(local: bool) -> None:
+async def test_create_validates_snapshot_and_returns_provenance_without_affecting_identity_async(
+    local: bool, tmp_path: Path
+) -> None:
     configuration = config(local=local)
     service = TargetService()
     before = peek_agent_execution_manager()
-    created = await service.create_target_async(request=request(configuration), is_admin=True)
+    created = await service.create_target_async(
+        request=request(configuration), upload_directory=str(tmp_path), is_admin=True
+    )
     assert created.agent_configuration_provenance.origin is AgentTargetOrigin.RUNTIME
     assert created.agent_configuration_provenance.presets.harness_profile == "team"
     assert (await service.get_target_async(target_registry_name="agent")) == created
@@ -107,6 +111,7 @@ async def test_create_validates_snapshot_and_returns_provenance_without_affectin
             type="AgentTarget",
             params={"agent_configuration": configuration.model_dump(mode="json")},
         ),
+        upload_directory=str(tmp_path),
         is_admin=True,
     )
     assert custom.identifier.hash == created.identifier.hash
@@ -146,7 +151,7 @@ async def test_initializer_targets_are_distinguished_from_session_copies_async()
     registry = InitializerRegistry.get_registry_singleton()
     for name, params in [
         ("harness_profile", {"name": "team", "harness_kind": "acp", "command": ["team-agent", "--stdio"]}),
-        ("environment_template", {"name": "workspace", "image": "team:1"}),
+        ("environment_template", {"name": "workspace", "environment": "docker", "image": "team:1"}),
     ]:
         await registry.create_and_configure(name, initializer_params=params).initialize_async()
     target = register_agent_target(

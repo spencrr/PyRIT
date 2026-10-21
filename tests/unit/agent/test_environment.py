@@ -4,6 +4,7 @@
 import asyncio
 import io
 import json
+import sys
 import tarfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -22,7 +23,7 @@ from pyrit.agent.environment import (
 from pyrit.agent.environments.docker import DockerSession
 from pyrit.agent.environments.local import LocalSession
 from pyrit.models.agent_checkpoint import HarnessCheckpointLayout
-from pyrit.models.agent_execution import AgentProfile, EnvironmentTemplate, HarnessProfile
+from pyrit.models.agent_execution import AgentProfile, EnvironmentTemplate
 from tests.unit.agent.session_helpers import create_container_async, execution, session_directory, spec_for
 
 
@@ -34,7 +35,7 @@ async def test_recreated_profile_rejects_changed_fixture(tmp_path: Path) -> None
         environment="local",
         local_execution_acknowledged=True,
         fixture_directory=str(fixture),
-        command=("python", "-c", "import sys; sys.stdin.read()"),
+        command=(sys.executable, "-c", "import sys; sys.stdin.read()"),
     )
     first = execution(profile)
     session = LocalSession(execution=first, directory=session_directory(tmp_path, "first"))
@@ -56,7 +57,7 @@ async def test_local_launch_uses_private_home_and_exposes_streams(tmp_path: Path
         environment="local",
         local_execution_acknowledged=True,
         command=(
-            "python",
+            sys.executable,
             "-c",
             "import os,sys; print(os.environ['HOME'], os.environ['TOKEN']); sys.stderr.write('warned')",
         ),
@@ -87,7 +88,7 @@ async def test_local_refuses_checkpoint_restore(tmp_path: Path) -> None:
 
 
 async def test_docker_creation_pins_image_and_does_not_mount_host(tmp_path: Path) -> None:
-    record = execution(AgentProfile(image="receipt:latest"))
+    record = execution(AgentProfile(environment="docker", image="receipt:latest"))
     session = DockerSession(execution=record, directory=tmp_path)
     docker = await create_container_async(session)
     command = docker.call_args_list[1].args
@@ -102,7 +103,7 @@ async def test_docker_creation_pins_image_and_does_not_mount_host(tmp_path: Path
 
 
 async def test_docker_reserve_is_deterministic_before_any_resource(tmp_path: Path) -> None:
-    record = execution(AgentProfile(image="receipt:latest"))
+    record = execution(AgentProfile(environment="docker", image="receipt:latest"))
     session = DockerSession(execution=record, directory=tmp_path)
     session.reserve()
     assert record.provider_id == f"pyrit-agent-{record.id}"
@@ -110,7 +111,7 @@ async def test_docker_reserve_is_deterministic_before_any_resource(tmp_path: Pat
 
 @pytest.mark.parametrize("url", ["http://127.0.0.1:8021/v1", "http://localhost:8021/v1", "http://[::1]:8021/v1"])
 async def test_docker_rejects_loopback_relay(tmp_path: Path, url: str) -> None:
-    session = DockerSession(execution=execution(AgentProfile(image="test")), directory=tmp_path)
+    session = DockerSession(execution=execution(AgentProfile(environment="docker", image="test")), directory=tmp_path)
     with pytest.raises(ValueError, match="reachable"):
         await session.inference_endpoint_async(relay_url=url)
     assert await session.inference_endpoint_async(relay_url="http://host.docker.internal:8021/v1") == (
@@ -140,7 +141,7 @@ def account_archive(text: str) -> bytes:
     ],
 )
 async def test_image_user_resolution_async(tmp_path: Path, user: str, uid: int, gid: int, reads: int) -> None:
-    session = DockerSession(execution=execution(AgentProfile(image="test")), directory=tmp_path)
+    session = DockerSession(execution=execution(AgentProfile(environment="docker", image="test")), directory=tmp_path)
     with patch.object(
         session,
         "_docker_archive_async",
@@ -156,7 +157,7 @@ async def test_image_user_resolution_async(tmp_path: Path, user: str, uid: int, 
 
 
 async def test_unknown_image_user_fails_before_launch_async(tmp_path: Path) -> None:
-    session = DockerSession(execution=execution(AgentProfile(image="test")), directory=tmp_path)
+    session = DockerSession(execution=execution(AgentProfile(environment="docker", image="test")), directory=tmp_path)
     with (
         patch.object(session, "_docker_archive_async", AsyncMock(return_value=account_archive(""))),
         pytest.raises(ValueError, match="not found"),
@@ -168,6 +169,7 @@ async def test_unknown_image_user_fails_before_launch_async(tmp_path: Path) -> N
 async def test_workspace_and_overlay_are_owned_by_image_user_async(tmp_path: Path, base: str) -> None:
     record = execution(
         AgentProfile(
+            environment="docker",
             image="test",
             workspace_base=base,
             working_directory="sub/work",
@@ -194,7 +196,10 @@ async def test_workspace_and_overlay_are_owned_by_image_user_async(tmp_path: Pat
 
 
 async def test_archive_preparation_budget_is_enforced_async(tmp_path: Path) -> None:
-    session = DockerSession(execution=execution(AgentProfile(image="test", workspace_base="empty")), directory=tmp_path)
+    session = DockerSession(
+        execution=execution(AgentProfile(environment="docker", image="test", workspace_base="empty")),
+        directory=tmp_path,
+    )
     await asyncio.to_thread(session.workspace.mkdir)
     with patch.object(DockerSession, "MAX_WORKSPACE_ARCHIVE_BYTES", 1024), pytest.raises(ValueError, match="budget"):
         await asyncio.to_thread(session._workspace_archive, uid=1001, gid=1002)
@@ -214,18 +219,26 @@ def test_registry_lists_first_party_providers_and_rejects_unknown_names() -> Non
 
 
 def test_template_validation_follows_provider_capabilities() -> None:
-    validate_environment_template(EnvironmentTemplate(image="test"))
+    validate_environment_template(EnvironmentTemplate(environment="docker", image="test"))
     validate_environment_template(EnvironmentTemplate(environment="local"), require_consent=False)
     with pytest.raises(ValueError, match="NOT sandboxed"):
         validate_environment_template(EnvironmentTemplate(environment="local"))
     with pytest.raises(ValueError, match="unavailable"):
-        validate_environment_template(EnvironmentTemplate(environment="aca_sandbox", image="x"))
+        validate_environment_template(EnvironmentTemplate(environment="aca_sandbox"))
+
+
+def test_providers_must_claim_isolation_explicitly() -> None:
+    from pyrit.models.agent_environment import EnvironmentCapabilities, EnvironmentProviderInfo
+
+    assert not EnvironmentCapabilities().isolated
+    info = EnvironmentProviderInfo(name="team_pool", display_name="Team pool")
+    assert not info.capabilities.isolated
 
 
 @pytest.mark.parametrize(
     "template",
     [
-        EnvironmentTemplate(image="test", environment_settings={"pool": "blue"}),
+        EnvironmentTemplate(environment="docker", image="test", environment_settings={"pool": "blue"}),
         EnvironmentTemplate(environment="local", local_execution_acknowledged=True, environment_settings={"x": 1}),
     ],
 )
@@ -239,7 +252,7 @@ async def test_local_close_is_effect_idempotent(tmp_path: Path) -> None:
         environment="local",
         local_execution_acknowledged=True,
         artifact_paths=("missing.txt",),
-        command=("python", "-c", "import sys; sys.stdin.read()"),
+        command=(sys.executable, "-c", "import sys; sys.stdin.read()"),
     )
     record = execution(profile)
     session = LocalSession(execution=record, directory=session_directory(tmp_path))
@@ -251,18 +264,21 @@ async def test_local_close_is_effect_idempotent(tmp_path: Path) -> None:
     assert record.model_dump(mode="json") == snapshot
 
 
-@pytest.mark.parametrize("model", [AgentProfile, HarnessProfile])
-def test_retired_profile_fields_still_decode(model: type[AgentProfile] | type[HarnessProfile]) -> None:
-    extra = {"image": "test"} if model is AgentProfile else {}
-    decoded = model.model_validate({**extra, "use_github_cli_login": True})
-    assert not hasattr(decoded, "use_github_cli_login")
-    assert decoded.harness_kind == "copilot"
+def test_environment_must_be_named_explicitly() -> None:
+    with pytest.raises(ValueError, match="environment"):
+        EnvironmentTemplate()  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="environment"):
+        AgentProfile()  # type: ignore[call-arg]
 
 
 def test_sessions_are_created_through_the_record_provider(tmp_path: Path) -> None:
-    docker = create_execution_session(execution=execution(AgentProfile(image="test")), directory=tmp_path)
+    docker = create_execution_session(
+        execution=execution(AgentProfile(environment="docker", image="test")), directory=tmp_path
+    )
     local = create_execution_session(
         execution=execution(AgentProfile(environment="local", local_execution_acknowledged=True)), directory=tmp_path
     )
     assert isinstance(docker, DockerSession) and docker.harness_home == "/home/agent"
     assert isinstance(local, LocalSession) and local.harness_home == str(tmp_path / "home")
+    with pytest.raises(ValueError, match="unavailable"):
+        create_execution_session(execution=execution(AgentProfile(environment="aca_sandbox")), directory=tmp_path)

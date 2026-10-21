@@ -18,7 +18,13 @@ from acp import RequestError
 from pyrit.agent.execution_manager import AgentExecutionManager
 from pyrit.agent.hosts.agent_framework_acp import AgentFrameworkAcpHost, _Session, load_factory
 from pyrit.agent.tool_calls import TOOL_NAME_META_KEY, project_agent_tools
-from pyrit.models.agent_execution import AgentExecutionEvent, AgentExecutionState, AgentProfile, AgentTurnStatus
+from pyrit.models.agent_execution import (
+    AgentExecutionEvent,
+    AgentExecutionState,
+    AgentProfile,
+    AgentTargetConfiguration,
+    AgentTurnStatus,
+)
 from pyrit.models.messages.tool_content import FunctionCallContent
 from tests.unit.agent import fake_agent_framework
 from tests.unit.agent.fake_agent_framework import FakeContent
@@ -61,7 +67,7 @@ async def test_host_serves_a_fake_agent_over_real_acp_with_named_tool_calls(
 ) -> None:
     async with AgentExecutionManager(root=tmp_path / "executions") as manager:
         record, turn = await manager.send_async(
-            profile=host_profile(fixture_directory),
+            configuration=AgentTargetConfiguration.from_profile(host_profile(fixture_directory)),
             target_id="target",
             conversation_id="one",
             request_id="1",
@@ -77,7 +83,7 @@ async def test_host_serves_a_fake_agent_over_real_acp_with_named_tool_calls(
         assert call.name == "write_file"
         assert json.loads(call.arguments)["path"] == "receipt.json"
         second, turn_two = await manager.send_async(
-            profile=host_profile(fixture_directory),
+            configuration=AgentTargetConfiguration.from_profile(host_profile(fixture_directory)),
             target_id="target",
             conversation_id="one",
             request_id="2",
@@ -95,7 +101,7 @@ async def test_host_reports_cancellation_and_agent_errors_explicitly(tmp_path: P
     async with AgentExecutionManager(root=tmp_path / "executions") as manager:
         send = asyncio.create_task(
             manager.send_async(
-                profile=host_profile(fixture_directory),
+                configuration=AgentTargetConfiguration.from_profile(host_profile(fixture_directory)),
                 target_id="target",
                 conversation_id="wait",
                 request_id="1",
@@ -118,7 +124,7 @@ async def test_host_reports_cancellation_and_agent_errors_explicitly(tmp_path: P
         # An agent failure is a protocol-level error: the execution is closed, never reported as a reply.
         with pytest.raises(RequestError, match="Internal error"):
             await manager.send_async(
-                profile=host_profile(fixture_directory),
+                configuration=AgentTargetConfiguration.from_profile(host_profile(fixture_directory)),
                 target_id="target",
                 conversation_id="wait",
                 request_id="2",

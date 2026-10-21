@@ -1,23 +1,25 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from pyrit.agent.tool_calls import AgentToolProjection
+from pyrit.exceptions import TargetResponseUnavailableError
 from pyrit.memory import CentralMemory
 from pyrit.models import MessagePiece
 from pyrit.models.agent_execution import (
     AgentExecution,
-    AgentProfile,
     AgentTargetConfiguration,
     AgentTurn,
     AgentTurnStatus,
+    EnvironmentTemplate,
+    ModelBinding,
 )
 from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_normalizer import PromptNormalizer
-from pyrit.prompt_normalizer.target_response_unavailable import TargetResponseUnavailableError
 from pyrit.prompt_target import AgentTarget
 from pyrit.registry import TargetRegistry
 
@@ -27,8 +29,10 @@ class TestAgentTarget:
     def test_composed_configuration_preserves_identity_and_registry_projection(self) -> None:
         from pyrit.backend.mappers.target_mappers import target_object_to_instance
 
-        legacy = AgentProfile(environment="local", local_execution_acknowledged=True, model="test-model")
-        configuration = AgentTargetConfiguration.from_profile(legacy)
+        configuration = AgentTargetConfiguration(
+            model_binding=ModelBinding(model="test-model"),
+            environment_template=EnvironmentTemplate(environment="local", local_execution_acknowledged=True),
+        )
         old = AgentTarget(agent_configuration=configuration)
         new = TargetRegistry.get_registry_singleton().create_instance(
             "AgentTarget", agent_configuration=configuration.model_dump(mode="json")
@@ -68,16 +72,20 @@ class TestAgentTarget:
     async def test_only_current_prompt_is_dispatched(self) -> None:
         from pyrit.agent.execution_manager import AgentExecutionManager
 
-        profile = AgentProfile(environment="local", local_execution_acknowledged=True)
+        configuration = AgentTargetConfiguration(
+            environment_template=EnvironmentTemplate(environment="local", local_execution_acknowledged=True)
+        )
         manager = MagicMock(spec=AgentExecutionManager)
         manager.tool_calls_async = AsyncMock(return_value=AgentToolProjection())
         manager.send_async = AsyncMock(
             return_value=(
-                AgentExecution(owner_id="test", conversation_id="one", target_id="target", profile=profile),
+                AgentExecution(
+                    owner_id="test", conversation_id="one", target_id="target", profile=configuration.to_profile()
+                ),
                 AgentTurn(request_id="1", prompt="next", response_text="done", status=AgentTurnStatus.COMPLETED),
             )
         )
-        target = AgentTarget(agent_configuration=AgentTargetConfiguration.from_profile(profile))
+        target = AgentTarget(agent_configuration=configuration)
         target.bind_execution_manager(manager)
         await target._send_prompt_to_target_async(
             normalized_conversation=[
@@ -87,3 +95,70 @@ class TestAgentTarget:
         )
         assert manager.send_async.call_args.kwargs["prompt"] == "next"
         assert manager.send_async.call_args.kwargs["has_history"] is True
+        assert manager.send_async.call_args.kwargs["configuration"] == configuration
+
+    async def test_turn_errors_travel_with_the_explicit_outcome(self) -> None:
+        from pyrit.agent.execution_manager import AgentExecutionManager
+
+        configuration = AgentTargetConfiguration(
+            environment_template=EnvironmentTemplate(environment="local", local_execution_acknowledged=True)
+        )
+        manager = MagicMock(spec=AgentExecutionManager)
+        manager.tool_calls_async = AsyncMock(return_value=AgentToolProjection())
+        manager.send_async = AsyncMock(
+            return_value=(
+                AgentExecution(
+                    owner_id="test", conversation_id="one", target_id="target", profile=configuration.to_profile()
+                ),
+                AgentTurn(
+                    request_id="1",
+                    prompt="slow",
+                    response_text="Partial",
+                    status=AgentTurnStatus.CANCELLED,
+                    stop_reason="cancelled",
+                    error="Turn deadline exceeded",
+                ),
+            )
+        )
+        target = AgentTarget(agent_configuration=configuration)
+        target.bind_execution_manager(manager)
+        response = await target._send_prompt_to_target_async(
+            normalized_conversation=[
+                MessagePiece(role="user", original_value="slow", conversation_id="one").to_message()
+            ]
+        )
+        assert response.outcome is TargetOutcome.CANCELLED
+        assert response.metadata["agent_turn_error"] == "Turn deadline exceeded"
+        assert response[0].get_piece().converted_value == "Partial"
+
+    def test_fixture_directory_is_confined_when_the_server_supplies_a_root(self, tmp_path: Path) -> None:
+        (tmp_path / "fixtures" / "receipt").mkdir(parents=True)
+        template = EnvironmentTemplate(
+            environment="local", local_execution_acknowledged=True, fixture_directory="receipt"
+        )
+        target = AgentTarget(
+            agent_configuration=AgentTargetConfiguration(environment_template=template),
+            allowed_fixture_directory=tmp_path / "fixtures",
+        )
+        assert target.profile.fixture_directory == str((tmp_path / "fixtures" / "receipt").resolve())
+        for escape in ("../secrets", str(tmp_path), "C:/Windows" if Path("C:/").exists() else "/etc"):
+            with pytest.raises(ValueError, match="outside the allowed directory"):
+                AgentTarget(
+                    agent_configuration=AgentTargetConfiguration(
+                        environment_template=template.model_copy(update={"fixture_directory": escape})
+                    ),
+                    allowed_fixture_directory=tmp_path / "fixtures",
+                )
+        with pytest.raises(ValueError, match="does not exist"):
+            AgentTarget(
+                agent_configuration=AgentTargetConfiguration(environment_template=template),
+                allowed_fixture_directory=tmp_path / "missing",
+            )
+        # Python callers that supply no root keep any path, resolved by the provider at launch.
+        unconfined = AgentTarget(
+            agent_configuration=AgentTargetConfiguration(
+                environment_template=template.model_copy(update={"fixture_directory": str(tmp_path)})
+            )
+        )
+        assert unconfined.profile.fixture_directory == str(tmp_path)
+        assert AgentTarget.upload_directory_parameter == "allowed_fixture_directory"

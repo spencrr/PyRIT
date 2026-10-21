@@ -91,13 +91,21 @@ class LocalProvider(ExecutionEnvironmentProvider):
 
     def validate_template(self, template: EnvironmentTemplate) -> None:
         """
-        Reject image-provided workspaces and settings this provider would silently ignore.
+        Reject settings this provider would silently ignore.
 
         Raises:
-            ValueError: The template requests an image workspace or carries provider settings.
+            ValueError: The template carries Docker or provider settings.
         """
-        if template.workspace_base == AgentWorkspaceBase.IMAGE:
-            raise ValueError("An image-provided workspace requires a Docker environment")
+        defaults = EnvironmentTemplate(environment=AgentEnvironment.LOCAL.value)
+        if (
+            template.image is not None
+            or template.workspace_base == AgentWorkspaceBase.IMAGE
+            or any(
+                getattr(template, name) != getattr(defaults, name)
+                for name in ("docker_network", "docker_memory", "docker_cpus")
+            )
+        ):
+            raise ValueError("Image and docker_* settings require the Docker environment")
         if template.environment_settings:
             raise ValueError("The local provider is configured through typed template fields, not environment_settings")
 

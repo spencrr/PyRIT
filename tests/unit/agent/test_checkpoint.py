@@ -29,6 +29,7 @@ from pyrit.models.agent_execution import (
     AgentExecution,
     AgentExecutionState,
     AgentProfile,
+    AgentTargetConfiguration,
     AgentTurn,
     AgentTurnStatus,
     AgentWorkspaceBase,
@@ -69,7 +70,7 @@ async def prepared_async(
             owner_id="test",
             conversation_id=request.conversation_id,
             target_id="target",
-            profile=AgentProfile(image="fixture", target_registry_name="source", model="model"),
+            profile=AgentProfile(environment="docker", image="fixture", target_registry_name="source", model="model"),
             image_id="sha256:pinned",
             session_id="native",
             inference_target_hash=binding.identifier_hash,
@@ -175,7 +176,7 @@ async def test_restore_creates_lineage_without_copying_old_turns_or_replaying_pr
     restored.created_at = record.created_at - timedelta(seconds=1)
     assert manager.latest_execution(conversation_id=record.conversation_id) is restored
     sent, turn = await manager.send_async(
-        profile=record.profile,
+        configuration=AgentTargetConfiguration.from_profile(record.profile),
         target_id=record.target_id,
         conversation_id=record.conversation_id,
         request_id="next-request",

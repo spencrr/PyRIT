@@ -27,7 +27,7 @@ LINE_ECHO = (
 async def test_docker_provider_conforms_with_a_real_container_async(tmp_path: Path) -> None:
     report = await verify_environment_provider_async(
         DockerProvider(),
-        template=EnvironmentTemplate(image=DOCKER_IMAGE, docker_network="none"),
+        template=EnvironmentTemplate(environment="docker", image=DOCKER_IMAGE, docker_network="none"),
         echo_command=("cat",),
         directory=tmp_path,
     )

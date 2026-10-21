@@ -194,9 +194,17 @@ class EnvironmentProviderRegistry:
     _singleton_lock: ClassVar[RLock] = RLock()
 
     def __init__(self) -> None:
-        """Create a registry with the first-party providers."""
-        from pyrit.agent.environments.docker import DockerProvider
-        from pyrit.agent.environments.local import LocalProvider
+        """
+        Create a registry with the first-party providers.
+
+        Raises:
+            ImportError: The optional agents dependencies are missing.
+        """
+        try:
+            from pyrit.agent.environments.docker import DockerProvider
+            from pyrit.agent.environments.local import LocalProvider
+        except ImportError as error:
+            raise ImportError("Agent execution requires installation of pyrit[agents]") from error
 
         self._lock = RLock()
         providers: tuple[ExecutionEnvironmentProvider, ...] = (DockerProvider(), LocalProvider())

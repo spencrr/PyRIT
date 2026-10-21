@@ -18,6 +18,7 @@ from pyrit.models.agent_execution import (
     ModelBinding,
 )
 from pyrit.models.agent_setup import AgentTargetComposition, EnvironmentTemplateDefinition, HarnessProfileDefinition
+from pyrit.prompt_target import AgentTarget
 from pyrit.registry import AgentConfigurationRegistry, InitializerRegistry, Registry, TargetRegistry
 from pyrit.setup.agent_initialization import (
     preflight_agent_initializers,
@@ -64,7 +65,14 @@ async def test_composition_uses_existing_registry_and_golden_identity_without_pr
         await initializer.initialize_async()
     registry = TargetRegistry.get_registry_singleton()
     target = registry.instances.get("example")
-    assert target.get_identifier().hash == "50113ed1071b8607e4e8e382ba28f40577ca7a13d4502782f0d7e06263f3ac08"
+    direct = AgentTarget(
+        agent_configuration=AgentTargetConfiguration(
+            harness_profile=HarnessProfile(harness_kind="acp", command=("python", "scripted-agent.py")),
+            environment_template=EnvironmentTemplate(environment="local", local_execution_acknowledged=True),
+        )
+    )
+    # Composition through the registry yields the identity a direct Python construction has.
+    assert target.get_identifier().hash == direct.get_identifier().hash
     assert target.agent_configuration.environment_template.local_execution_acknowledged
     assert not AgentConfigurationRegistry.get_registry_singleton().get_environment("local").local_execution_acknowledged
     metadata = registry.instances.get_entry("example").metadata
@@ -85,7 +93,10 @@ async def test_full_configuration_initialization_is_repeatable_async() -> None:
         env_akv_ref=[],
         initializers=[
             {"name": "harness_profile", "args": {"name": "copilot"}},
-            {"name": "environment_template", "args": {"name": "image", "image": "receipt:latest"}},
+            {
+                "name": "environment_template",
+                "args": {"name": "image", "environment": "docker", "image": "receipt:latest"},
+            },
             {
                 "name": "agent_target",
                 "args": {"name": "agent", "harness_profile": "copilot", "environment_template": "image"},
@@ -94,7 +105,12 @@ async def test_full_configuration_initialization_is_repeatable_async() -> None:
     )
     await config.initialize_pyrit_async()
     target = TargetRegistry.get_registry_singleton().instances.get("agent")
-    assert target.get_identifier().hash == "5c877a0e2dd1e8024001219e60675a3cbd23b879f089e34616f30df68ddcf508"
+    direct = AgentTarget(
+        agent_configuration=AgentTargetConfiguration(
+            environment_template=EnvironmentTemplate(environment="docker", image="receipt:latest")
+        )
+    )
+    assert target.get_identifier().hash == direct.get_identifier().hash
     await config.initialize_pyrit_async()
     assert TargetRegistry.get_registry_singleton().instances.get("agent") is target
 
@@ -149,7 +165,7 @@ def test_definition_subclasses_do_not_change_composed_target_identity(
 ) -> None:
     presets = AgentConfigurationRegistry.get_registry_singleton()
     harness = HarnessProfile()
-    environment = EnvironmentTemplate(image="receipt:latest")
+    environment = EnvironmentTemplate(environment="docker", image="receipt:latest")
     presets.register_harness(name="base_harness", profile=harness)
     presets.register_environment(name="base_environment", template=environment)
     presets.register_harness(
@@ -178,7 +194,6 @@ def test_definition_subclasses_do_not_change_composed_target_identity(
     )
     assert baseline is not None and composed is not None
     assert composed.get_identifier().hash == baseline.get_identifier().hash
-    assert composed.get_identifier().hash == "5c877a0e2dd1e8024001219e60675a3cbd23b879f089e34616f30df68ddcf508"
     assert composed.profile == baseline.profile
     assert type(presets.get_harness("private_harness")) is HarnessProfile
     assert type(presets.get_environment("private_environment")) is EnvironmentTemplate
@@ -198,7 +213,7 @@ def test_definition_subclasses_do_not_change_composed_target_identity(
 def test_base_and_named_preset_registration_is_idempotent_in_either_order(named_first: bool) -> None:
     presets = AgentConfigurationRegistry()
     harness = HarnessProfile(harness_kind="acp", command=("team-agent", "--stdio"), permission_policy="allow_once")
-    environment = EnvironmentTemplate(image="team-image", working_directory="repo", docker_cpus=2)
+    environment = EnvironmentTemplate(environment="docker", image="team-image", working_directory="repo", docker_cpus=2)
     named_harness = HarnessProfileDefinition(name="first_alias", **harness.model_dump())
     named_environment = EnvironmentTemplateDefinition(name="first_alias", **environment.model_dump())
     harnesses = (named_harness, harness) if named_first else (harness, named_harness)
@@ -229,7 +244,9 @@ async def test_model_target_composition_is_pinned_and_names_are_not_identity_asy
     presets = AgentConfigurationRegistry.get_registry_singleton()
     presets.register_harness(name="one", profile=HarnessProfile())
     presets.register_harness(name="two", profile=HarnessProfile())
-    presets.register_environment(name="docker", template=EnvironmentTemplate(image="receipt:latest"))
+    presets.register_environment(
+        name="docker", template=EnvironmentTemplate(environment="docker", image="receipt:latest")
+    )
     registry = TargetRegistry.get_registry_singleton()
     source = CustomInferenceTarget()
     registry.instances.register(source, name="source")
@@ -324,7 +341,7 @@ async def test_missing_dependencies_are_required_unless_explicitly_optional_asyn
 ) -> None:
     presets = AgentConfigurationRegistry.get_registry_singleton()
     presets.register_harness(name="copilot", profile=HarnessProfile(credential_env=("TEST_TOOL_TOKEN",)))
-    presets.register_environment(name="docker", template=EnvironmentTemplate(image="test"))
+    presets.register_environment(name="docker", template=EnvironmentTemplate(environment="docker", image="test"))
     composition = AgentTargetComposition(
         name="agent", harness_profile="copilot", environment_template="docker", model_target="source", model="model"
     )
@@ -347,7 +364,7 @@ async def test_missing_dependencies_are_required_unless_explicitly_optional_asyn
 def test_missing_source_cannot_hide_invalid_byok_authentication() -> None:
     presets = AgentConfigurationRegistry.get_registry_singleton()
     presets.register_harness(name="copilot", profile=HarnessProfile(credential_env=("GITHUB_TOKEN",)))
-    presets.register_environment(name="docker", template=EnvironmentTemplate(image="test"))
+    presets.register_environment(name="docker", template=EnvironmentTemplate(environment="docker", image="test"))
     with pytest.raises(ValueError, match="native model credentials"):
         register_agent_target(
             AgentTargetComposition(
@@ -363,7 +380,7 @@ def test_missing_source_cannot_hide_invalid_byok_authentication() -> None:
 def test_optional_missing_source_does_not_hide_unsupported_harness_adapter() -> None:
     presets = AgentConfigurationRegistry.get_registry_singleton()
     presets.register_harness(name="custom", profile=HarnessProfile(harness_kind="acp", command=("custom-agent",)))
-    presets.register_environment(name="image", template=EnvironmentTemplate(image="test"))
+    presets.register_environment(name="image", template=EnvironmentTemplate(environment="docker", image="test"))
     with pytest.raises(ValueError, match="provider-configuration adapter"):
         register_agent_target(
             AgentTargetComposition(
@@ -399,7 +416,7 @@ def test_missing_optional_credential_does_not_hide_incompatible_registered_model
 
     presets = AgentConfigurationRegistry.get_registry_singleton()
     presets.register_harness(name="copilot", profile=HarnessProfile(credential_env=("TEST_TOOL_TOKEN",)))
-    presets.register_environment(name="image", template=EnvironmentTemplate(image="test"))
+    presets.register_environment(name="image", template=EnvironmentTemplate(environment="docker", image="test"))
     TargetRegistry.get_registry_singleton().instances.register(TextTarget(), name="not_inference")
     with patch.dict(os.environ, {}, clear=True), pytest.raises(ValueError, match="single-inference"):
         register_agent_target(
@@ -453,7 +470,7 @@ async def test_live_apply_refuses_opaque_model_construction_before_reset_async()
     config = ConfigurationLoader(
         initializers=[
             {"name": "harness_profile", "args": {"name": "copilot"}},
-            {"name": "environment_template", "args": {"name": "docker", "image": "test"}},
+            {"name": "environment_template", "args": {"name": "docker", "environment": "docker", "image": "test"}},
             {
                 "name": "agent_target",
                 "args": {
@@ -520,7 +537,9 @@ class PrivateAgentInitializer(PyRITInitializer):
     async def initialize_async(self):
         registry = AgentConfigurationRegistry.get_registry_singleton()
         registry.register_harness(name="private", profile=HarnessProfile(harness_kind="acp", command=("team-agent",)))
-        registry.register_environment(name="team_image", template=EnvironmentTemplate(image="private.example/agent:1"))
+        registry.register_environment(
+            name="team_image", template=EnvironmentTemplate(environment="docker", image="private.example/agent:1")
+        )
         register_agent_target(AgentTargetComposition(name="team_agent", harness_profile="private",
                                                      environment_template="team_image"))
 """,

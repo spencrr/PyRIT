@@ -35,9 +35,15 @@ class EnvironmentTemplateInitializer(AgentConfigurationInitializer):
         return EnvironmentTemplateDefinition.model_validate(initializer_values(self))
 
     def validate_params(self) -> None:
-        """Validate parameters without provisioning or contacting Docker."""
+        """Validate parameters, including the provider's own checks, without provisioning."""
         super().validate_params()
-        self.definition()
+        self._template()
+
+    def _template(self) -> tuple[EnvironmentTemplateDefinition, EnvironmentTemplate]:
+        definition = self.definition()
+        template = EnvironmentTemplate.model_validate(definition.model_dump(exclude={"name"}))
+        validate_environment_template(template, require_consent=False)
+        return definition, template
 
     async def initialize_async(self) -> None:
         """Register the template without acquiring resources."""
@@ -45,7 +51,5 @@ class EnvironmentTemplateInitializer(AgentConfigurationInitializer):
 
     def preflight(self, presets: AgentConfigurationRegistry) -> None:
         """Register the inert definition in the supplied namespace after its provider accepts it."""
-        definition = self.definition()
-        template = EnvironmentTemplate.model_validate(definition.model_dump(exclude={"name"}))
-        validate_environment_template(template, require_consent=False)
+        definition, template = self._template()
         presets.register_environment(name=definition.name, template=template, initializer=type(self).__name__)

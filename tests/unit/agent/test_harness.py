@@ -27,13 +27,16 @@ from tests.unit.agent.session_helpers import create_container_async
 
 
 @pytest.mark.parametrize("model", [AgentProfile, HarnessProfile])
-def test_explicit_harness_and_legacy_decode(model: type[AgentProfile] | type[HarnessProfile]) -> None:
-    extra = {"image": "test"} if model is AgentProfile else {}
-    assert model(**extra, command=OPENCODE_COMMAND).harness_kind == AgentHarnessKind.ACP
+def test_harness_kind_is_explicit_and_only_copilot_has_a_default_command(
+    model: type[AgentProfile] | type[HarnessProfile],
+) -> None:
+    extra = {"environment": "local", "local_execution_acknowledged": True} if model is AgentProfile else {}
+    # A custom command never changes the adapter on its own.
+    assert model(**extra, command=OPENCODE_COMMAND).harness_kind == AgentHarnessKind.COPILOT
     explicit = model(**extra, harness_kind="opencode", command=OPENCODE_COMMAND)
     assert explicit.command == OPENCODE_COMMAND
     assert explicit.harness_kind == "opencode"
-    assert model(**extra).harness_kind == AgentHarnessKind.COPILOT
+    assert model(**extra).command == ("copilot", "--acp", "--stdio")
     for kind in ("acp", "opencode"):
         with pytest.raises(ValueError, match="explicit command"):
             model(**extra, harness_kind=kind)
@@ -42,42 +45,64 @@ def test_explicit_harness_and_legacy_decode(model: type[AgentProfile] | type[Har
 @pytest.mark.parametrize("directory", ["/host", "../escape", "C:\\host", "foo\\bar"])
 def test_working_directory_is_workspace_relative(directory: str) -> None:
     with pytest.raises(ValueError, match="relative"):
-        EnvironmentTemplate(image="test", working_directory=directory)
+        EnvironmentTemplate(environment="local", working_directory=directory)
 
 
-def test_profile_roundtrip_keeps_new_fields_and_groups_disjoint() -> None:
+def test_profile_flattening_keeps_groups_disjoint() -> None:
     configuration = AgentTargetConfiguration(
         harness_profile=HarnessProfile(harness_kind="team_v1", command=("renamed-agent", "acp")),
-        environment_template=EnvironmentTemplate(image="test", workspace_base="empty", working_directory="repo"),
+        environment_template=EnvironmentTemplate(
+            environment="local", local_execution_acknowledged=True, working_directory="repo"
+        ),
     )
-    assert AgentTargetConfiguration.from_profile(configuration.to_profile()) == configuration
+    profile = configuration.to_profile()
+    assert profile.harness_kind == "team_v1" and profile.command == ("renamed-agent", "acp")
+    assert profile.environment == "local" and profile.working_directory == "repo"
     assert not (ModelBinding.model_fields.keys() & HarnessProfile.model_fields.keys())
     assert not (EnvironmentTemplate.model_fields.keys() & HarnessProfile.model_fields.keys())
 
 
 @pytest.mark.usefixtures("patch_central_database")
-@pytest.mark.parametrize(
-    ("profile", "expected"),
-    [
-        (
-            {"environment": "local", "local_execution_acknowledged": True, "command": ("python", "scripted-agent.py")},
-            "50113ed1071b8607e4e8e382ba28f40577ca7a13d4502782f0d7e06263f3ac08",
-        ),
-        ({"image": "receipt:latest"}, "5c877a0e2dd1e8024001219e60675a3cbd23b879f089e34616f30df68ddcf508"),
-    ],
-)
-def test_pre_adapter_identity_is_stable(profile: dict, expected: str) -> None:
-    target = AgentTarget(
-        agent_configuration=AgentTargetConfiguration.from_profile(AgentProfile.model_validate(profile))
+def test_identity_ignores_defaults_and_execution_policy() -> None:
+    template = EnvironmentTemplate(environment="local", local_execution_acknowledged=True)
+    harness = HarnessProfile(command=("python", "scripted-agent.py"))
+    terse = AgentTarget(
+        agent_configuration=AgentTargetConfiguration(environment_template=template, harness_profile=harness)
     )
-    assert target.get_identifier().hash == expected
-    original_base = "empty" if target.profile.environment == "local" else "image"
     explicit = AgentTarget(
-        agent_configuration=AgentTargetConfiguration.from_profile(
-            AgentProfile.model_validate({**profile, "workspace_base": original_base})
+        agent_configuration=AgentTargetConfiguration(
+            environment_template=template.model_copy(update={"working_directory": "."}),
+            harness_profile=harness.model_copy(update={"harness_kind": "copilot", "permission_policy": "deny"}),
+            turn_timeout_seconds=5,
+            max_evidence_bytes=4096,
         )
     )
-    assert explicit.get_identifier().hash == expected
+    assert explicit.get_identifier().hash == terse.get_identifier().hash
+    different = AgentTarget(
+        agent_configuration=AgentTargetConfiguration(
+            environment_template=template.model_copy(update={"working_directory": "repo"}), harness_profile=harness
+        )
+    )
+    assert different.get_identifier().hash != terse.get_identifier().hash
+    assert "turn_timeout_seconds" not in str(terse.get_identifier().params)
+
+
+@pytest.mark.usefixtures("patch_central_database")
+def test_harness_profile_is_validated_at_construction() -> None:
+    template = EnvironmentTemplate(environment="local", local_execution_acknowledged=True)
+    with pytest.raises(ValueError, match="not registered|unavailable|adapter"):
+        AgentTarget(
+            agent_configuration=AgentTargetConfiguration(
+                environment_template=template,
+                harness_profile=HarnessProfile(harness_kind="not_installed", command=("agent", "acp")),
+            )
+        )
+    with pytest.raises(ValueError, match="cannot override"):
+        AgentTarget(
+            agent_configuration=AgentTargetConfiguration(
+                environment_template=template, harness_profile=HarnessProfile(credential_env=("HOME",))
+            )
+        )
 
 
 @pytest.mark.usefixtures("patch_central_database")
@@ -92,13 +117,17 @@ async def test_pinned_byok_identity_is_stable_async() -> None:
         },
     )
     try:
-        target = AgentTarget(
-            agent_configuration=AgentTargetConfiguration(
-                model_binding=ModelBinding(target_registry_name="baseline-model"),
-                environment_template=EnvironmentTemplate(image="receipt:latest"),
-            )
+        configuration = AgentTargetConfiguration(
+            model_binding=ModelBinding(target_registry_name="baseline-model"),
+            environment_template=EnvironmentTemplate(environment="docker", image="receipt:latest"),
         )
-        assert target.get_identifier().hash == "ca31715c4b76b7cc1038a7ecb929f4628264221bce1dd9cb409f7107992729c2"
+        target = AgentTarget(agent_configuration=configuration)
+        again = AgentTarget(agent_configuration=configuration)
+        # The identity pins the resolved source target, not just its registry name.
+        assert again.get_identifier().hash == target.get_identifier().hash
+        binding = target.get_identifier().params["configuration"]["model_binding"]
+        assert binding["target_identifier_hash"] == source.get_identifier().hash
+        assert binding["target_registry_name"] == "baseline-model"
     finally:
         await source.cleanup_target_async()
 
@@ -156,7 +185,9 @@ async def test_docker_workspace_is_not_implicitly_overlaid_async(tmp_path: Path,
         owner_id="test",
         conversation_id="one",
         target_id="target",
-        profile=AgentProfile(image="test", harness_kind="opencode", command=OPENCODE_COMMAND, workspace_base=base),
+        profile=AgentProfile(
+            environment="docker", image="test", harness_kind="opencode", command=OPENCODE_COMMAND, workspace_base=base
+        ),
     )
     session = DockerSession(execution=record, directory=tmp_path)
     docker = await create_container_async(session, environment=launch_environment(kind="opencode", home="/home/agent"))
