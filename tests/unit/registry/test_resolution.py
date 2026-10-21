@@ -10,10 +10,11 @@ from enum import Enum
 from typing import Any, Literal
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from pyrit.common import REQUIRED_VALUE, forward_init_parameters
 from pyrit.common.apply_defaults import _RequiredValueSentinel
-from pyrit.models import Message, MessagePiece
+from pyrit.models import JsonParameterValue, Message, MessagePiece
 from pyrit.models.identifiers import ConverterIdentifier, TargetIdentifier
 from pyrit.models.parameter import ComponentType, Parameter
 from pyrit.prompt_target import PromptTarget
@@ -459,6 +460,13 @@ class _Handle:
     """A Python object no external caller can supply."""
 
 
+class _Settings(BaseModel, JsonParameterValue):
+    """A JSON object external callers may supply; the model validates it."""
+
+    model_config = ConfigDict(extra="forbid")
+    size: int
+
+
 class _Mixed:
     """Helper whose constructor mixes external inputs with Python-object parameters."""
 
@@ -470,12 +478,14 @@ class _Mixed:
         key: str | Callable[[], str] | None = None,
         handle: _Handle | None = None,
         options: dict[str, Any] | None = None,
+        settings: _Settings | dict[str, Any] | None = None,
     ) -> None:
         self.count = count
         self.words = words
         self.key = key
         self.handle = handle
         self.options = options
+        self.settings = settings
 
 
 @pytest.mark.usefixtures("patch_central_database")
@@ -507,6 +517,16 @@ class TestExternalInput:
         assert resolved["handle"] is handle
         assert resolved["options"] is options
         assert resolved["key"] is print
+
+    def test_external_json_parameter_value_is_validated_from_a_json_object(self) -> None:
+        resolved = resolve_constructor_args(cls=_Mixed, raw_args={"settings": {"size": 2}}, external_input=True)
+        assert resolved == {"settings": _Settings(size=2)}
+        with pytest.raises(ValueError, match="Parameter 'settings' of '_Mixed'"):
+            resolve_constructor_args(cls=_Mixed, raw_args={"settings": {"size": 2, "x": 1}}, external_input=True)
+
+    def test_in_process_json_parameter_value_dict_is_left_to_the_constructor(self) -> None:
+        raw = {"size": 2}
+        assert _resolve(_Mixed, {"settings": raw})["settings"] is raw
 
     def test_external_values_of_supported_parameters_reach_the_constructor(self) -> None:
         assert resolve_constructor_args(cls=_Mixed, raw_args={"words": "a, b"}, external_input=True) == {
