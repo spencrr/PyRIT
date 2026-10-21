@@ -120,9 +120,7 @@ class OpenAITarget(PromptTarget):
             effective.pop("max_tokens")
             overridden.append("max_tokens")
         if overridden:
-            logger.warning(
-                "Target settings override caller-supplied inference parameters: %s", ", ".join(overridden)
-            )
+            logger.warning("Target settings override caller-supplied inference parameters: %s", ", ".join(overridden))
         effective["model"] = self._model_name
         return effective
 
