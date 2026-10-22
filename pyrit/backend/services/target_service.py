@@ -392,17 +392,17 @@ class TargetService:
                         params.pop(parameter.name, None)
 
         params.update(target_cls.get_auth_mode_parameters(auth_mode=request.auth_mode))
+        if target_cls.requires_admin_creation and not is_admin:
+            raise PermissionError(
+                f"Creating '{request.type}' launches processes with this server's stored credentials and requires "
+                "administrator access."
+            )
         if request.agent_presets is not None:
             if not issubclass(target_cls, AgentTarget) or "agent_configuration" not in params:
                 raise ValueError("Preset references require an AgentTarget with resolved agent_configuration")
             AgentConfigurationRegistry.get_registry_singleton().validate_selection(
                 selection=request.agent_presets,
                 configuration=AgentTargetConfiguration.model_validate(params["agent_configuration"]),
-            )
-        if target_cls.requires_admin_creation and not is_admin:
-            raise PermissionError(
-                f"Creating '{request.type}' launches processes with this server's stored credentials and requires "
-                "administrator access."
             )
         self._apply_upload_directory(
             target_type=request.type, target_cls=target_cls, params=params, upload_directory=upload_directory

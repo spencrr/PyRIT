@@ -136,6 +136,17 @@ async def test_changed_or_removed_preset_is_rejected_without_registration_async(
     assert TargetRegistry.get_registry_singleton().instances.get("agent") is None
 
 
+@pytest.mark.parametrize("name", ["team", "missing"])
+async def test_non_admin_cannot_probe_agent_presets_async(name: str) -> None:
+    create = request(config()).model_copy(update={"agent_presets": AgentPresetSelection(harness_profile=name)})
+    presets = AgentConfigurationRegistry.get_registry_singleton()
+    with patch.object(presets, "validate_selection") as validate:
+        with pytest.raises(PermissionError, match="administrator access"):
+            await TargetService().create_target_async(request=create, is_admin=False)
+    validate.assert_not_called()
+    assert TargetRegistry.get_registry_singleton().instances.get("agent") is None
+
+
 async def test_ordinary_target_cannot_claim_agent_preset_provenance_async() -> None:
     with pytest.raises(ValueError, match="require an AgentTarget"):
         await TargetService().create_target_async(
