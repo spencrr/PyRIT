@@ -208,6 +208,16 @@ For harness-managed access, `model_binding.model`, when set, requires the agent 
 option. Otherwise configure the model explicitly in its launch command. Do not
 assume the model selected by one harness is available in another.
 
+Without a running manager of your own, `AgentTarget` uses the runtime-owned manager
+(`pyrit.agent.runtime`), rooted in the memory results directory or, when results live in
+remote storage, the local database data directory. The Co-PyRIT backend reconciles it at
+startup, waits for its executions before shutting down, and closes it with the other services.
+One manager exclusively owns its directory through a file lock; records left by an interrupted
+runtime are reconciled and released at the next start, or marked `cleanup_failed` with the
+reason when their provider is no longer installed. A record this version cannot decode (another
+PyRIT version's schema, truncated evidence) is logged and skipped rather than blocking the
+runtime; its directory is left untouched and listed in `store.unreadable_records`.
+
 ## BYOK through an existing PyRIT target
 
 ```text
