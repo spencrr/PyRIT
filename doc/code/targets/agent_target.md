@@ -151,15 +151,21 @@ target, and a source that no longer matches is refused rather than silently rebo
 The relay serves only the bound model and wire API, a bounded request body, and
 harness-executed tools; caller-supplied routing or authentication overrides, provider-hosted
 tools, background inference, and server-side continuation or file references are rejected. Each
-execution allows `max_inference_requests` calls (default 100), 16 MiB per response, and the turn
+execution allows `max_inference_requests` admission attempts over its lifetime (default and
+maximum 100, including invalid requests), at most four concurrent requests, 16 MiB per response, and the turn
 deadline per request. Closing the execution revokes its lease and cancels in-flight inference;
 the runtime stops the listener at shutdown, and the backend closes every registered target's
 transport (`cleanup_target_async`) with its other services.
 
 Every relayed request is journaled beside the ACP frames (`direction="inference"`): source
 target identity, request identity, provider status and outcome, and byte counts.
-`capture_inference_content=True` additionally retains request bodies and response chunks; it is
+`capture_inference_content=True` additionally retains request bodies and decoded response text; it is
 off by default because content is sensitive, and provider request headers are never recorded.
+Response content is buffered within the response byte limit and journaled as an
+`inference.content` event when the stream settles (a partial prefix on failure), so known
+literal credential values spanning transport chunks pass through runtime redaction together.
+It is decoded UTF-8 text, not a byte-exact replay archive. Delivery to the harness is still
+streamed unchanged; status and outcome events remain live.
 A model requesting a tool is not evidence that the tool ran; see [tool calls](#tool-calls).
 
 The listener binds `127.0.0.1` on an ephemeral port. A container cannot reach that address, so
