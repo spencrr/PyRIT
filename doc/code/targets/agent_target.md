@@ -495,3 +495,55 @@ follow the same rule as other file-uploading targets: the class declares
 `upload_directory_parameter = "allowed_fixture_directory"`, the server supplies its configured
 `target_upload_directory`, and a fixture directory must resolve inside it. Direct Python and
 initializer use pass no root and may name any path.
+
+`CreateTargetRequest.agent_presets` may name the registered harness profile and environment
+template the configuration was copied from; the service verifies the current preset values
+still match before registering and records the names as provenance. A changed or removed
+preset is refused rather than silently resolved to new values. `GET /api/config/agent-presets`
+lists the registered presets, installed harness adapters and environment providers, and the
+template fields each first-party provider accepts; it never resolves credentials.
+
+### Co-PyRIT API
+
+Start the backend from the repository root with the explicit demo configuration, which
+overlays the shared `~/.pyrit/.pyrit_conf` for this process only and loads no environment
+files or Key Vault references:
+
+```powershell
+$env:PYRIT_AUTH_MODE = 'local'                   # Loopback-only development
+$env:PYRIT_ALLOW_UNAUTHENTICATED_ADMIN = 'true'  # Trusted local use only
+# Set COPILOT_GITHUB_TOKEN in this terminal using your approved credential source.
+uv run --extra agents pyrit_backend --config-file docker\agent_receipt\pyrit.yaml --host 127.0.0.1 --port 8000
+```
+
+The demo configuration sets `target_upload_directory: assets`, so API-created targets may name
+`fixture_directory: agent_receipt`; other fixture directories must live under that folder.
+
+Conversation-scoped routes under
+`/api/attacks/{attack_id}/conversations/{conversation_id}/execution` reuse the attack access
+boundary of the chat transcript; they expose the execution's state and journal without its
+infrastructure identities or credential references, and never another conversation's execution:
+
+- `GET /` returns the current execution's operator-visible state, or `null` before provisioning.
+- `GET /stream?after=0&execution_id=...` is an authenticated, fetch-based SSE feed of state
+  snapshots and retained event pages with an execution-scoped resume cursor. A connection lasts
+  at most 60 seconds before the client reconnects through the normal authorization checks;
+  reconnects catch up from the journal, each observer has one coalesced wakeup, and observing
+  neither renews an execution's lifetime nor counts as active runtime work.
+- `GET /{execution_id}/events?after=0&limit=100` pages the retained session updates, lifecycle,
+  and inference events.
+- `POST /{execution_id}/cancel` cancels this conversation's active turn, never the environment.
+
+Administrator routes under `/api/executions` are the resource view:
+
+- `GET /` lists bounded execution pages (`conversation_id` filters a chat); `GET /{id}` reads
+  resource state separately from turn outcomes.
+- `GET /{id}/events?after=0&limit=100` reads the next retained event page; polling never
+  renews the lease.
+- `POST /{id}/cancel` cancels the active turn; `POST /{id}/close` releases resources,
+  including retrying failed cleanup.
+
+Each manual send bumps the execution's `transcript_revision` after its memory write, so a
+reconnected viewer knows when to reload the transcript. A single backend process owns its
+execution store; standalone managers are independently owned and are not administered by the
+backend. Do not share a store directory between machines or backend workers.

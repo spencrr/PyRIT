@@ -267,6 +267,24 @@ class AgentTargetConfiguration(BaseModel, JsonParameterValue):
         values.update(self.environment_template.model_dump())
         return AgentProfile.model_validate(values)
 
+    @classmethod
+    def from_profile(cls, profile: AgentProfile) -> "AgentTargetConfiguration":
+        """
+        Regroup a persisted execution profile into the authoring shape, for display.
+
+        Returns:
+            AgentTargetConfiguration: The composed configuration the profile was flattened from.
+        """
+        values = profile.model_dump()
+        groups: dict[str, dict[str, JsonValue]] = {}
+        for name, model in (
+            ("model_binding", ModelBinding),
+            ("harness_profile", HarnessProfile),
+            ("environment_template", EnvironmentTemplate),
+        ):
+            groups[name] = {key: values.pop(key) for key in model.model_fields if key in values}
+        return cls.model_validate({**values, **groups})
+
 
 class AgentExecutionState(str, Enum):
     """Resource status, separate from turn outcome and attack score."""
@@ -341,6 +359,7 @@ class AgentExecution(BaseModel):
     cleanup_error: str | None = None
     artifacts: list[str] = Field(default_factory=list)
     artifact_errors: list[str] = Field(default_factory=list)
+    transcript_revision: int = 0
     inference_target_hash: str | None = None
     inference_protocol: InferenceWireApi | None = None
     source_coverage: str = "ACP-exposed events only; internal tool coverage is not guaranteed."

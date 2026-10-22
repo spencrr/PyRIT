@@ -31,12 +31,13 @@ from pyrit.backend.services.component_lifecycle import release_component_async
 from pyrit.common import REQUIRED_VALUE, default_values
 from pyrit.common.auth_mode import AUTH_MODES, AuthMode
 from pyrit.models import TargetIdentifier
+from pyrit.models.agent_execution import AgentTargetConfiguration
 from pyrit.models.agent_setup import AgentPresetSelection, AgentTargetOrigin, AgentTargetProvenance
 from pyrit.models.catalog.target import TargetInstance
 from pyrit.models.component_spec import SourceInstanceSpec, TargetBinding
 from pyrit.models.parameter import Parameter
 from pyrit.prompt_target import AgentTarget, GitHubCopilotTarget, PromptTarget
-from pyrit.registry import TargetRegistry
+from pyrit.registry import AgentConfigurationRegistry, TargetRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +392,13 @@ class TargetService:
                         params.pop(parameter.name, None)
 
         params.update(target_cls.get_auth_mode_parameters(auth_mode=request.auth_mode))
+        if request.agent_presets is not None:
+            if not issubclass(target_cls, AgentTarget) or "agent_configuration" not in params:
+                raise ValueError("Preset references require an AgentTarget with resolved agent_configuration")
+            AgentConfigurationRegistry.get_registry_singleton().validate_selection(
+                selection=request.agent_presets,
+                configuration=AgentTargetConfiguration.model_validate(params["agent_configuration"]),
+            )
         if target_cls.requires_admin_creation and not is_admin:
             raise PermissionError(
                 f"Creating '{request.type}' launches processes with this server's stored credentials and requires "
@@ -460,7 +468,7 @@ class TargetService:
             registration_metadata = (
                 {
                     "agent_configuration_provenance": AgentTargetProvenance(
-                        origin=AgentTargetOrigin.RUNTIME, presets=AgentPresetSelection()
+                        origin=AgentTargetOrigin.RUNTIME, presets=request.agent_presets or AgentPresetSelection()
                     ).model_dump(mode="json")
                 }
                 if issubclass(target_cls, AgentTarget)

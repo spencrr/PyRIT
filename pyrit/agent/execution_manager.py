@@ -728,6 +728,13 @@ class AgentExecutionManager:
             if persistence_errors:
                 raise ExceptionGroup("Execution evidence persistence failed during cleanup", persistence_errors)
 
+    async def transcript_updated_async(self, conversation_id: str) -> None:
+        """Publish the caller's completed memory write so reconnected viewers can reload safely."""
+        record = self.latest_execution(conversation_id=conversation_id)
+        if record is not None:
+            record.transcript_revision += 1
+            await self.store.save_async(record)
+
     async def close_conversation_async(self, *, target_id: str, conversation_id: str) -> None:
         """Release the execution associated with an attack-owned conversation."""
         for record in tuple(self.records.values()):

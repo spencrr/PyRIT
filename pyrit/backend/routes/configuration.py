@@ -12,6 +12,8 @@ import yaml
 from azure.core.exceptions import AzureError
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from pyrit.agent.environment import EnvironmentProviderRegistry
+from pyrit.agent.harness import HarnessAdapterRegistry
 from pyrit.backend.middleware.auth import AuthenticatedUser, require_admin
 from pyrit.backend.models.common import IdentifierStr, ProblemDetail
 from pyrit.backend.models.configuration import (
@@ -29,10 +31,39 @@ from pyrit.backend.services.configuration_file_service import (
 from pyrit.backend.services.environment_file_service import EnvironmentFileConflictError, EnvironmentFileService
 from pyrit.common.yaml_helper import safe_load_yaml
 from pyrit.exceptions import KeyVaultInitializationException
+from pyrit.models.agent_execution import AgentEnvironment, EnvironmentTemplate
+from pyrit.models.agent_setup import AgentPresetCatalog
+from pyrit.registry import AgentConfigurationRegistry
+from pyrit.setup.agent_initialization import initializer_parameters
 from pyrit.setup.configuration_loader import ConfigurationLoader
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/config", tags=["config"], dependencies=[Depends(require_admin)])
+
+
+@router.get("/agent-presets")
+async def get_agent_presets_async() -> AgentPresetCatalog:
+    """
+    List runtime presets and their origins; never provision or resolve credentials.
+
+    Returns:
+        AgentPresetCatalog: A detached snapshot of the current setup registry.
+    """
+    catalog = AgentConfigurationRegistry.get_registry_singleton().catalog()
+    catalog.harness_adapters = HarnessAdapterRegistry.get_registry_singleton().list_adapters()
+    catalog.environment_providers = EnvironmentProviderRegistry.get_registry_singleton().list_providers()
+    # The first-party providers are authored through typed template fields; others declare a settings schema.
+    fields = initializer_parameters(model=EnvironmentTemplate)
+    catalog.environment_parameters = {
+        environment.value: [
+            parameter
+            for parameter in fields
+            if parameter.name == "working_directory"
+            or (environment == AgentEnvironment.DOCKER and parameter.name.startswith("docker_"))
+        ]
+        for environment in AgentEnvironment
+    }
+    return catalog
 
 
 @router.get("/runtime")
