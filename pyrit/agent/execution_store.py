@@ -156,7 +156,9 @@ class AgentExecutionStore:
                     "permission.resolved",
                 ):
                     approval = AgentApproval.model_validate(event.payload["approval"])
-                    approvals[approval.id] = approval
+                    previous = approvals.get(approval.id)
+                    if previous is None or previous.decision is None or approval.decision is not None:
+                        approvals[approval.id] = approval
             cursor = page.next_cursor
             record.last_event_at = page.events[-1].timestamp
         record.approvals = list(approvals.values())

@@ -787,10 +787,13 @@ requires this view.
 New UI configurations default to **Deny requests** in both Chat and Registry.
 Choose **Ask me** explicitly for operator-approved chat; automated attacks require
 **Deny requests** or **Allow requests**. Copied profiles retain their policy.
+`ask` requires the harness to offer `reject_once` before requesting operator input;
+unsupported refusal fails explicitly instead of masquerading as cancellation.
 Permissions are server-owned pending requests with an expiry and one recorded decision, so refreshing a page
 does not lose the approval. Allow once / Deny controls appear in the turn activity.
 Conflicting decisions from two tabs cannot both win. Timeout denials and cancelled
 permissions are distinguished from operator decisions.
+Identical decision retries are idempotent; conflicting or expired decisions return 409.
 
 A flushed permission journal event is the decision's commit point. Timeout and
 cancellation wait for an in-flight decision rather than contradicting it.
