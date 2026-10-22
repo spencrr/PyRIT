@@ -293,7 +293,7 @@ class AgentFrameworkAcpHost(Agent):
             tool_call_id=call_id,
             title=name or "tool",
             kind=self._tool_kind(name),
-            status="in_progress",
+            status="pending",
             field_meta={self.TOOL_NAME_META_KEY: name} if name else None,
         )
 

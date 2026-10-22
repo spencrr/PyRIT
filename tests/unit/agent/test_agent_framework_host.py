@@ -146,7 +146,13 @@ def test_factory_references_are_validated() -> None:
         load_factory("tests.unit.agent.fake_agent_framework:FIXTURE_CONSTANT_MISSING")
 
 
-async def test_streamed_argument_fragments_are_reported_complete_on_the_final_update() -> None:
+@pytest.mark.parametrize(
+    ("tool_name", "exception"),
+    [("write_file", None), ("nonexistent_tool", "Requested function not found"), ("write_file", "Invalid arguments")],
+)
+async def test_streamed_argument_fragments_are_reported_complete_on_the_final_update(
+    tool_name: str, exception: str | None
+) -> None:
     """Real models stream `name` with empty arguments first; the start must not freeze `{}` as the input."""
     updates: list[tuple[str, Any]] = []
 
@@ -159,18 +165,19 @@ async def test_streamed_argument_fragments_are_reported_complete_on_the_final_up
     session = _Session(agent=None, session=None, cwd=".")  # type: ignore[arg-type]
     arguments = json.dumps({"path": "receipt.json", "content": '{"total": 31}'})
     stream = [
-        FakeContent(type="function_call", call_id="c1", name="write_file", arguments=""),
+        FakeContent(type="function_call", call_id="c1", name=tool_name, arguments=""),
         FakeContent(type="function_call", call_id="c1", arguments=arguments[:7]),
         FakeContent(type="function_call", call_id="c1", arguments=arguments[7:]),
-        FakeContent(type="function_result", call_id="c1", result="ok"),
+        FakeContent(type="function_result", call_id="c1", result=exception or "ok", exception=exception),
     ]
     for content in stream:
         await host._emit_content_async("s", session, content)
     start, final = (update for _, update in updates)
     assert start["sessionUpdate"] == "tool_call" and "rawInput" not in start
-    assert start["_meta"] == {TOOL_NAME_META_KEY: "write_file"}
-    assert final["sessionUpdate"] == "tool_call_update" and final["status"] == "completed"
-    assert final["rawInput"] == json.loads(arguments) and final["rawOutput"] == "ok"
+    assert start["_meta"] == {TOOL_NAME_META_KEY: tool_name} and start["status"] == "pending"
+    assert final["sessionUpdate"] == "tool_call_update"
+    assert final["status"] == ("failed" if exception else "completed")
+    assert final["rawInput"] == json.loads(arguments) and final["rawOutput"] == (exception or "ok")
     execution_id, turn_id = uuid4(), uuid4()
     projection = project_agent_tools(
         events=[
@@ -187,9 +194,14 @@ async def test_streamed_argument_fragments_are_reported_complete_on_the_final_up
         turn_id=turn_id,
         conversation_id="one",
     )
-    assert not projection.omitted
+    if exception:
+        assert projection.omitted == {"c1": "invocation_or_result_not_established"}
+        assert len(projection.messages) == 1
+    else:
+        assert not projection.omitted
+        assert len(projection.messages) == 2
     call = FunctionCallContent.model_validate_json(projection.messages[0].get_piece().original_value)
-    assert call.name == "write_file" and json.loads(call.arguments) == json.loads(arguments)
+    assert call.name == tool_name and json.loads(call.arguments) == json.loads(arguments)
     updates.clear()
     await host._emit_content_async(
         "s", session, FakeContent(type="function_call", call_id="c2", name="list_directory", arguments="{bad")

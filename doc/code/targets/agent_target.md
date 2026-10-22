@@ -375,11 +375,14 @@ its client from the same variables, or it bypasses the relay. Chat Completions i
 end to end with synthetic streamed inference, including fragmented tool-call arguments; the
 Responses client path is wired but not covered by tests.
 
-The host reports each executed function's exact name under the namespaced
+The host reports each requested function's exact name under the namespaced
 `_meta["pyrit.tool_name"]` key of its `tool_call` update, and the complete arguments as
 `rawInput` on the final `tool_call_update` once the model has finished streaming them, so the
 canonical tool projection names these calls precisely instead of inferring from titles. Only
-that namespaced key is trusted; other `_meta` content never stands in for a name. Agent
+that namespaced key is trusted; other `_meta` content never stands in for a name. A streamed
+request remains pending until a successful function result establishes invocation. Unknown
+functions and exception results retain their reports but never become confirmed invocations.
+Agent
 failures surface as JSON-RPC errors, which PyRIT records as an operation failure and closes
 the execution; they are never presented as a reply. Session loading, modes, MCP attachment,
 and authentication methods are refused explicitly.
