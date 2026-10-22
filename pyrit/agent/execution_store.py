@@ -15,6 +15,8 @@ from pathlib import Path
 from threading import Lock
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.models.agent_execution import AgentEventPage, AgentExecution, AgentExecutionEvent
 
@@ -34,6 +36,8 @@ class AgentExecutionStore:
     def __init__(self, *, root: Path) -> None:
         """Bind storage without creating directories or starting processes."""
         self.root = root
+        # Record directories this version cannot decode; their resources may remain allocated.
+        self.unreadable_records: dict[str, str] = {}
         self._save_lock = asyncio.Lock()
         self._listeners: set[asyncio.Event] = set()
         self._indexes: dict[UUID, _JournalIndex] = {}
@@ -110,7 +114,7 @@ class AgentExecutionStore:
 
     async def load_all_async(self) -> list[AgentExecution]:
         """
-        Load retained records; corrupt evidence fails explicitly.
+        Load retained records; a record this version cannot decode is reported and skipped, not hidden.
 
         Returns:
             list[AgentExecution]: Persisted records.
@@ -120,8 +124,20 @@ class AgentExecutionStore:
     def _load_all(self) -> list[AgentExecution]:
         records: list[AgentExecution] = []
         for path in sorted(self.root.glob("*/record.json")):
-            record = AgentExecution.model_validate_json(path.read_text(encoding="utf-8"))
-            self._recover_journal_state(record)
+            try:
+                record = AgentExecution.model_validate_json(path.read_text(encoding="utf-8"))
+                self._recover_journal_state(record)
+            except (ValidationError, ValueError, OSError) as error:
+                # One unreadable record (another version's schema, truncated evidence) must not block the runtime.
+                reason = f"{type(error).__name__}: {str(error).splitlines()[0]}"
+                self.unreadable_records[path.parent.name] = reason
+                logger.error(
+                    "Agent execution record %s cannot be read by this version and was skipped; its resources may "
+                    "remain allocated (%s)",
+                    path.parent,
+                    reason,
+                )
+                continue
             records.append(record)
         return records
 

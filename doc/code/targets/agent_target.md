@@ -99,7 +99,9 @@ remote storage, the local database data directory. The Co-PyRIT backend reconcil
 startup, waits for its executions before shutting down, and closes it with the other services.
 One manager exclusively owns its directory through a file lock; records left by an interrupted
 runtime are reconciled and released at the next start, or marked `cleanup_failed` with the
-reason when their provider is no longer installed.
+reason when their provider is no longer installed. A record this version cannot decode (another
+PyRIT version's schema, truncated evidence) is logged and skipped rather than blocking the
+runtime; its directory is left untouched and listed in `store.unreadable_records`.
 
 A manager admits at most `max_executions` concurrent executions (`PYRIT_AGENT_MAX_EXECUTIONS`
 for the runtime-owned manager, default 4). A new conversation waits up to

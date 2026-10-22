@@ -125,3 +125,29 @@ async def test_recorded_evidence_is_bounded(tmp_path: Path) -> None:
     assert record.capture_error is not None
     assert record.event_count == 0
     assert json.loads((tmp_path / str(record.id) / "record.json").read_text())["state"] == "starting"
+
+
+async def test_records_from_another_version_are_reported_and_skipped_at_startup(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    manager, record = make_manager(tmp_path)
+    record.state = AgentExecutionState.CLOSED
+    await manager.store.save_async(record)
+    foreign = tmp_path / "11111111-1111-1111-1111-111111111111"
+    foreign.mkdir()
+    (foreign / "record.json").write_text(
+        json.dumps({**json.loads(record.model_dump_json()), "id": foreign.name, "profile": {"from_the_future": 1}}),
+        encoding="utf-8",
+    )
+    truncated = tmp_path / "22222222-2222-2222-2222-222222222222"
+    truncated.mkdir()
+    (truncated / "record.json").write_text('{"id": "22222222-2222', encoding="utf-8")
+    fresh = AgentExecutionManager(root=tmp_path)
+    with caplog.at_level("ERROR"):
+        async with fresh:
+            assert set(fresh.records) == {record.id}
+            assert set(fresh.store.unreadable_records) == {foreign.name, truncated.name}
+            assert "ValidationError" in fresh.store.unreadable_records[foreign.name]
+    assert sum("cannot be read by this version" in message for message in caplog.messages) == 2
+    # Skipping never rewrites or removes what it could not read.
+    assert (foreign / "record.json").exists() and (truncated / "record.json").exists()
