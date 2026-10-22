@@ -2,18 +2,22 @@
 # Licensed under the MIT license.
 
 import asyncio
+import json
 import socket
 import ssl
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
+from pyrit.agent.execution_manager import AgentExecutionManager
 from pyrit.agent.inference_relay import InferenceLease, InferenceRelay
 from pyrit.agent.model_binding import ResolvedModelBinding
+from pyrit.models.agent_execution import AgentExecution, AgentProfile
 from pyrit.models.model_inference import InferenceCapabilities, InferenceRequirements, InferenceWireApi
 from pyrit.prompt_target import TextTarget
 from pyrit.prompt_target.common.model_inference import InferenceResponse
@@ -96,6 +100,65 @@ async def test_invalid_binding_request_never_invokes_target(
         )
         assert response.status_code == 400
         lease.record.assert_not_awaited()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+async def test_captured_response_is_redacted_across_transport_chunks_without_changing_delivery(
+    relay: tuple[InferenceRelay, InferenceLease], tmp_path: Path, fail: bool
+) -> None:
+    from unittest.mock import patch
+
+    instance, lease = relay
+    manager = AgentExecutionManager(root=tmp_path)
+    record = AgentExecution(
+        owner_id="test",
+        conversation_id="conversation",
+        target_id="target",
+        profile=AgentProfile(environment="local", local_execution_acknowledged=True),
+    )
+    await manager.store.save_async(record)
+    live = manager._make_live(record)
+    secret = "synthetic-harness-credential"
+    live.secrets = (secret, lease.token)
+    lease.capture_content = True
+
+    async def record_async(payload: dict[str, Any]) -> None:
+        await manager._record_async(live, direction="inference", payload=payload)
+
+    lease.record = record_async
+    wire = json.dumps({"text": f"{secret} {lease.token} \u20ac"}, ensure_ascii=False).encode()
+
+    @asynccontextmanager
+    async def response_async(**kwargs: Any) -> AsyncGenerator[InferenceResponse, None]:
+        async def chunks_async() -> AsyncIterator[bytes]:
+            for index in range(0, len(wire), 3):
+                yield wire[index : index + 3]
+            if fail:
+                raise ConnectionError("upstream closed")
+
+        yield InferenceResponse(status_code=200, headers={"content-type": "application/json"}, body=chunks_async())
+
+    with patch.object(lease.binding.target, "open_inference_async", response_async):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=instance.app), base_url="http://relay"
+        ) as client:
+            request = client.post(
+                "/v1/chat/completions",
+                headers={"authorization": f"Bearer {lease.token}"},
+                json={"model": "bound-model", "messages": []},
+            )
+            if fail:
+                with pytest.raises(ConnectionError, match="upstream closed"):
+                    await request
+            else:
+                response = await request
+                assert response.content == wire
+    page = await manager.store.events_async(execution_id=record.id)
+    [content] = [event.payload for event in page.events if event.payload.get("type") == "inference.content"]
+    assert content["text"] == wire.decode().replace(secret, "[REDACTED]").replace(lease.token, "[REDACTED]")
+    assert content["complete"] is not fail
+    assert secret not in page.model_dump_json() and lease.token not in page.model_dump_json()
+    assert not lease.tasks
 
 
 async def test_missing_revoked_and_exhausted_credentials(relay: tuple[InferenceRelay, InferenceLease]) -> None:

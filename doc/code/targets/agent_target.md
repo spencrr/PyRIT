@@ -654,8 +654,8 @@ The relay permits only the bound model/protocol, a bounded request body, and
 harness-executed tools. Caller-supplied routing/authentication overrides,
 provider-hosted tools, background inference, and server-side continuation IDs are
 rejected, including provider-side item/file references. Each execution allows up
-to 100 inference requests, at most 16 MiB per
-response, and the configured turn deadline per request.
+to 100 inference admission attempts over its lifetime (including invalid requests), at most
+four concurrent requests, at most 16 MiB per response, and the configured turn deadline per request.
 
 On execution closure the binding is revoked and in-flight inference is cancelled.
 The backend stops the listener and closes target-owned transports at runtime
@@ -691,8 +691,12 @@ cycle must be validated in the deployment using that identity.
 Inference metadata (source target identity, request identity, provider status,
 outcome, response bytes) appears beside ACP evidence. Chat displays a separate
 model-inference summary: a model requesting a tool is not evidence it executed.
-`capture_inference_content=True` additionally retains request bodies and response
-chunks (base64) in the journal. It is off by default because content is sensitive.
+`capture_inference_content=True` additionally retains request bodies and decoded response
+text in the journal. It is off by default because content is sensitive. Response text is
+buffered within the response byte limit and journaled as `inference.content` when the stream
+settles (a partial prefix on failure), so known literal credential values spanning transport
+chunks pass through runtime redaction together. It is decoded UTF-8 text, not a byte-exact
+replay archive; delivery to the harness is still streamed unchanged.
 Provider request headers are never copied into these records.
 
 Inference turn correlation uses the execution's active-turn window, not a

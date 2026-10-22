@@ -4,7 +4,6 @@
 """A bounded inference-only listener whose execution credentials never grant provider access."""
 
 import asyncio
-import base64
 import codecs
 import hashlib
 import json
@@ -334,6 +333,7 @@ class _InferenceResponse(Response):
         started = False
         count = 0
         outcome = "unknown"
+        captured = bytearray()
         record: dict[str, Any] = {
             "type": "inference.started",
             "request_id": request_id,
@@ -379,16 +379,11 @@ class _InferenceResponse(Response):
                         if count > lease.max_response_bytes:
                             raise ValueError("Inference response exceeded its byte budget")
                         if lease.capture_content:
-                            await lease.record(
-                                {
-                                    "type": "inference.chunk",
-                                    "request_id": request_id,
-                                    "base64": base64.b64encode(chunk).decode("ascii"),
-                                }
-                            )
+                            captured.extend(chunk)
                         self._observe_terminal(chunk)
                         await send({"type": "http.response.body", "body": chunk, "more_body": True})
                     outcome = "completed" if 200 <= response.status_code < 300 else "provider_error"
+            await self._record_content_async(request_id=request_id, captured=captured, complete=True)
             await lease.record(
                 {"type": "inference.finished", "request_id": request_id, "outcome": outcome, "bytes": count}
             )
@@ -403,6 +398,7 @@ class _InferenceResponse(Response):
                 type(error).__name__,
                 f": {connection_failure[1]}" if connection_failure else "",
             )
+            await self._record_content_async(request_id=request_id, captured=captured, complete=False)
             await lease.record(
                 {
                     "type": "inference.finished",
@@ -434,3 +430,12 @@ class _InferenceResponse(Response):
                 response.headers["retry-after"] = "5"
             await send({"type": "http.response.start", "status": status, "headers": response.raw_headers})
             await send({"type": "http.response.body", "body": response.body})
+
+    async def _record_content_async(self, *, request_id: str, captured: bytearray, complete: bool) -> None:
+        if not self.lease.capture_content or not captured:
+            return
+        text = captured.decode("utf-8", errors="replace")
+        captured.clear()
+        await self.lease.record(
+            {"type": "inference.content", "request_id": request_id, "text": text, "complete": complete}
+        )
