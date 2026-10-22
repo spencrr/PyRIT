@@ -780,8 +780,10 @@ inspect resolved configuration and raw evidence, close resources, retry cleanup,
 or copy a configuration for a new target. Normal chat observation no longer
 requires this view.
 
-New UI configurations default to **Ask operator**. Permissions are server-owned
-pending requests with an expiry and one recorded decision, so refreshing a page
+New UI configurations default to **Deny requests** in both Chat and Registry.
+Choose **Ask me** explicitly for operator-approved chat; automated attacks require
+**Deny requests** or **Allow requests**. Copied profiles retain their policy.
+Permissions are server-owned pending requests with an expiry and one recorded decision, so refreshing a page
 does not lose the approval. Allow once / Deny controls appear in the turn activity.
 Conflicting decisions from two tabs cannot both win. Timeout denials and cancelled
 permissions are distinguished from operator decisions.

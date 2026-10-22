@@ -80,7 +80,7 @@ export default function AgentTargetForm({
     initialConfiguration?.harness_profile.credential_env.join('\n') ?? '',
   )
   const [permissionPolicy, setPermissionPolicy] = useState<'ask' | 'deny' | 'allow_once'>(
-    initialConfiguration?.harness_profile.permission_policy ?? 'ask',
+    initialConfiguration?.harness_profile.permission_policy ?? 'deny',
   )
   const [acknowledged, setAcknowledged] = useState(false)
   const [turnTimeout, setTurnTimeout] = useState(String(initialConfiguration?.turn_timeout_seconds ?? 180))
