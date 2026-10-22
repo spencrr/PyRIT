@@ -1,18 +1,22 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import json
 from collections.abc import Iterator
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from pyrit.agent.environments.docker import DockerSession
+from pyrit.agent.execution_manager import AgentExecutionManager
 from pyrit.agent.harness import (
     HarnessAdapter,
     HarnessAdapterRegistry,
     launch_environment,
     validate_harness_authentication,
 )
-from pyrit.models.agent_execution import AgentProfile, HarnessProfile
+from pyrit.models.agent_execution import AgentExecution, AgentExecutionState, AgentProfile, HarnessProfile
 from pyrit.models.harness_adapter import HarnessAdapterInfo
 from pyrit.setup.initialization import reset_setup_registries
 
@@ -62,6 +66,44 @@ def test_unknown_adapter_data_roundtrips_without_import_or_fallback(adapter_regi
         launch_environment(kind=profile.harness_kind, home="private")
     with pytest.raises(ValueError, match="unavailable"):
         validate_harness_authentication(harness=HarnessProfile(harness_kind="team_v1", command=("agent",)))
+
+
+async def test_interrupted_cleanup_does_not_require_missing_adapter_async(
+    tmp_path: Path,
+    adapter_registry: HarnessAdapterRegistry,
+) -> None:
+    record = AgentExecution(
+        owner_id="previous",
+        conversation_id="conversation",
+        target_id="target",
+        profile=AgentProfile(environment="docker", image="test", harness_kind="team_v1", command=("team-agent",)),
+        state=AgentExecutionState.IDLE,
+        provider_id="owned-container",
+    )
+    manager = AgentExecutionManager(root=tmp_path)
+    await manager.store.save_async(record)
+    info = {
+        "Config": {"Labels": {"pyrit.execution": str(record.id), "pyrit.owner": record.owner_id}},
+        "State": {"Running": True},
+    }
+    with patch.object(
+        DockerSession,
+        "_docker_async",
+        new_callable=AsyncMock,
+        side_effect=["container-id", json.dumps([info]), "", ""],
+    ) as docker:
+        await manager.start_async()
+        try:
+            assert manager.records[record.id].state == AgentExecutionState.CLOSED
+            assert [call.args[:1] for call in docker.call_args_list] == [
+                ("container",),
+                ("inspect",),
+                ("stop",),
+                ("rm",),
+            ]
+            assert all(not call.kwargs.get("credentials") for call in docker.call_args_list)
+        finally:
+            await manager.close_async()
 
 
 @pytest.mark.usefixtures("patch_central_database")
