@@ -110,6 +110,10 @@ class _AcpClient(Client):
         if self.policy == AgentPermissionPolicy.ASK:
             if self.approvals is None:
                 raise RequestError.invalid_params({"details": "Interactive approval owner is not available"})
+            if not any(option.kind == "reject_once" for option in options):
+                raise RequestError.invalid_params(
+                    {"details": "Agent did not offer required permission option: reject_once"}
+                )
             option_id = await self.approvals.request_async(
                 tool_call_id=tool_call.tool_call_id,
                 title=tool_call.title or "Tool permission requested",

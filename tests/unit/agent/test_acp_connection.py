@@ -17,6 +17,7 @@ from acp.schema import (
 )
 
 from pyrit.agent.acp_connection import AcpConnection, RecordingTransport, _AcpClient
+from pyrit.agent.approvals import AgentApprovals
 from pyrit.models.agent_execution import AgentPermissionPolicy
 
 
@@ -91,3 +92,17 @@ async def test_native_auth_required_explains_private_home_without_retrying_async
             await connection.initialize_async(cwd="/workspace", model="gpt-6-astra")
         assert caught.value.code == -32000
         sdk.new_session.assert_awaited_once()
+
+
+async def test_ask_requires_a_one_time_refusal_before_requesting_operator_input() -> None:
+    approvals = MagicMock(spec=AgentApprovals)
+    approvals.request_async = AsyncMock()
+    client = _AcpClient(AgentPermissionPolicy.ASK, approvals=approvals)
+    with pytest.raises(RequestError, match="Invalid params") as caught:
+        await client.request_permission(
+            session_id="session",
+            tool_call=ToolCallUpdate(tool_call_id="tool"),
+            options=[PermissionOption(option_id="yes", name="Allow", kind="allow_once")],
+        )
+    assert caught.value.data == {"details": "Agent did not offer required permission option: reject_once"}
+    approvals.request_async.assert_not_awaited()

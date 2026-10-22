@@ -255,7 +255,9 @@ raises. Interactive sends (below) keep the environment instead of closing it.
 ACP lets a harness ask before running a tool. `permission_policy` answers deterministically:
 `deny` refuses (the default), `allow_once` accepts the single-use option the harness offers,
 and `ask` forwards the request to the operator who owns the conversation. A harness that
-offers neither single-use option fails the request explicitly. Policy answers are journaled
+omits the policy's required single-use option fails the request explicitly. `ask` requires
+`reject_once` before requesting operator input, so denial and timeout cannot be mistaken
+for cancellation. Policy answers are journaled
 like every other frame. This is a protocol-level answer, not a tool sandbox or an allowlist:
 what a permitted tool can reach is decided by the environment.
 
@@ -569,7 +571,8 @@ which are redacted before frames are written.
   and inference events.
 - `POST /{execution_id}/cancel` cancels this conversation's active turn, never the environment.
 - `POST /{execution_id}/permissions/{approval_id}` with `{"allow": true|false}` (strict
-  booleans) decides a pending approval; a stale or duplicate decision is a 409.
+  booleans) decides a pending approval. Identical retries are idempotent; conflicting or
+  expired decisions return 409.
 - `POST /{execution_id}/control/{continue|extend|close}` acts on an interactive execution; it
   is a 409 for automated executions or an expired hold.
 

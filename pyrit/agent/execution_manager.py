@@ -236,8 +236,6 @@ class AgentExecutionManager:
                 raise RuntimeError("Agent execution manager is closing")
             existing = self.latest_execution(target_id=target_id, conversation_id=conversation_id)
             if existing:
-                if existing.interactive != interactive:
-                    raise ValueError("Execution interaction mode cannot change within a conversation")
                 if existing.state == AgentExecutionState.CLEANUP_FAILED and existing.id not in self._live:
                     raise RuntimeError(
                         f"Execution cleanup failed and cannot be retried here ({existing.cleanup_error}); "
@@ -245,6 +243,8 @@ class AgentExecutionManager:
                     )
                 if existing.state != AgentExecutionState.IDLE:
                     raise RuntimeError(f"Execution is {existing.state.value}; close or start a new conversation")
+                if existing.interactive != interactive:
+                    raise ValueError("Execution interaction mode cannot change within a conversation")
                 if existing.session_id and existing.connection_state in (
                     AgentConnectionState.DISCONNECTED,
                     AgentConnectionState.FAILED,

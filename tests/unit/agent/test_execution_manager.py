@@ -86,6 +86,17 @@ async def test_fresh_execution_multiturn_and_no_implicit_resurrection(
             )
             assert second.id == first.id
             assert connection.initialize_async.await_count == 1
+            with pytest.raises(ValueError, match="interaction mode cannot change"):
+                await manager.send_async(
+                    configuration=configuration,
+                    target_id="target",
+                    conversation_id="one",
+                    request_id="mode-change",
+                    prompt="Do not change mode",
+                    has_history=True,
+                    interactive=True,
+                )
+            assert len(first.turns) == 2
             third, _ = await manager.send_async(
                 configuration=configuration,
                 target_id="target",
@@ -104,6 +115,7 @@ async def test_fresh_execution_multiturn_and_no_implicit_resurrection(
                     request_id="4",
                     prompt="Do not replay",
                     has_history=True,
+                    interactive=True,
                 )
         assert environment.close_async.await_count == 2
         retained = await manager.store.load_all_async()

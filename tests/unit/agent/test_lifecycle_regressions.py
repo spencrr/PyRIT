@@ -4,6 +4,7 @@
 import asyncio
 import json
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
@@ -14,7 +15,13 @@ pytest.importorskip("acp")
 
 from pyrit.agent.environment import ExecutionSession
 from pyrit.agent.execution_manager import AgentExecutionManager
-from pyrit.models.agent_execution import AgentExecution, AgentExecutionState, AgentProfile
+from pyrit.models.agent_execution import (
+    AgentApproval,
+    AgentExecution,
+    AgentExecutionEvent,
+    AgentExecutionState,
+    AgentProfile,
+)
 
 
 def make_manager(tmp_path: Path) -> tuple[AgentExecutionManager, AgentExecution]:
@@ -179,6 +186,35 @@ async def test_approval_journal_commit_survives_snapshot_failure(
     with patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment):
         async with AgentExecutionManager(root=tmp_path) as restarted:
             assert restarted.records[record.id].approvals[0].decision == "operator_allow"
+
+
+async def test_interrupted_approval_stays_cancelled_across_repeated_restarts(tmp_path: Path) -> None:
+    manager, record = make_manager(tmp_path)
+    approval = AgentApproval(
+        tool_call_id="read",
+        title="Read orders",
+        options=[{"option_id": "no", "name": "Deny", "kind": "reject_once"}],
+        expires_at=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    record.approvals.append(approval)
+    await manager.store.save_async(record)
+    await manager.store.append_async(
+        AgentExecutionEvent(
+            execution_id=record.id,
+            sequence=1,
+            direction="lifecycle",
+            payload={"type": "permission.pending", "approval": approval.model_dump(mode="json")},
+        )
+    )
+    environment = MagicMock(spec=ExecutionSession)
+    environment.close_async = AsyncMock()
+    with patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment):
+        for _ in range(2):
+            async with AgentExecutionManager(root=tmp_path) as restarted:
+                recovered = restarted.records[record.id]
+                assert recovered.state == AgentExecutionState.CLOSED
+                assert recovered.approvals[0].decision == "cancelled"
+                assert recovered.approvals[0].actor == "interrupted_runtime"
 
 
 async def test_records_from_another_version_are_reported_and_skipped_at_startup(
