@@ -3,18 +3,20 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 pytest.importorskip("acp")
 
+from acp import RequestError
 from acp.schema import (
+    InitializeResponse,
     PermissionOption,
     ToolCallUpdate,
 )
 
-from pyrit.agent.acp_connection import RecordingTransport, _AcpClient
+from pyrit.agent.acp_connection import AcpConnection, RecordingTransport, _AcpClient
 from pyrit.models.agent_execution import AgentPermissionPolicy
 
 
@@ -72,3 +74,20 @@ async def test_permission_policy_and_cancel(policy: AgentPermissionPolicy, expec
     assert response.outcome.option_id == expected
     client.cancelled = True
     assert (await client.request_permission(**arguments)).outcome.outcome == "cancelled"
+
+
+async def test_native_auth_required_explains_private_home_without_retrying_async() -> None:
+    sdk = MagicMock()
+    sdk.initialize = AsyncMock(return_value=InitializeResponse(protocol_version=1))
+    sdk.new_session = AsyncMock(side_effect=RequestError.auth_required())
+    with patch("pyrit.agent.acp_connection.connect_to_agent", return_value=sdk):
+        connection = AcpConnection(
+            transport=RecordingTransport(
+                reader=asyncio.StreamReader(), writer=MagicMock(spec=asyncio.StreamWriter), record=AsyncMock()
+            ),
+            permission_policy=AgentPermissionPolicy.DENY,
+        )
+        with pytest.raises(RequestError, match="COPILOT_GITHUB_TOKEN") as caught:
+            await connection.initialize_async(cwd="/workspace", model="gpt-6-astra")
+        assert caught.value.code == -32000
+        sdk.new_session.assert_awaited_once()
