@@ -1,4 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
   Text,
   Avatar,
@@ -36,6 +37,9 @@ import { useMessageListStyles } from './MessageList.styles'
 import { formatStructuredMessage, getRenderMessagePieces } from './messageViewModel'
 
 interface MessageListProps {
+  isTextInActivity?: (message: Message) => boolean
+  renderAfterMessage?: (message: Message, index: number) => ReactNode
+  trailingContent?: ReactNode
   onEditConversation?: () => void
   messages: Message[]
   /** Copy this message to the input box of the current conversation */
@@ -437,6 +441,7 @@ function MessageScores({ scores, groupId }: { scores: DisplayScore[]; groupId: s
 export default function MessageList({
   messages, onCopyToInput, onCopyToNewConversation, onCopyToNewAttack, onUseInTechnique, copyConversationDisabled = false,
   newConversationDisabledReason, getBranchConversationDisabledReason, isLoading, globalMarkdown = false, onEditConversation,
+  renderAfterMessage, trailingContent, isTextInActivity,
 }: MessageListProps) {
   const styles = useMessageListStyles()
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -474,7 +479,7 @@ export default function MessageList({
     )
   }
 
-  if (messages.length === 0) {
+  if (messages.length === 0 && !trailingContent) {
     return (
       <div className={styles.emptyState} data-testid="message-list" onDoubleClick={onEditConversation}>
         <Text size={300} style={{ color: tokens.colorNeutralForeground3 }}>
@@ -501,8 +506,8 @@ export default function MessageList({
         const renderPieces = getRenderMessagePieces(message, index)
 
         return (
+          <Fragment key={index}>
           <div
-            key={index}
             className={mergeClasses(styles.message, isUser && styles.userMessage)}
           >
             <Avatar
@@ -585,7 +590,16 @@ export default function MessageList({
                           className={styles.pieceRow}
                           data-testid={`message-piece-${index}-${piece.pieceIndex}`}
                         >
-                          {message.isLoading ? (
+                          {message.agentToolCalls ? (
+                            <details>
+                              <summary>{message.role.startsWith('simulated_') ? 'Simulated tool history' : 'Stored tool calls'}
+                                {` · ${message.agentToolCalls.source_call_id} · journal event ${message.agentToolCalls.event_sequence}`}
+                              </summary>
+                              <pre className={styles.messageJsonBlock}>{formatted ?? piece.content}</pre>
+                            </details>
+                          ) : isTextInActivity?.(message) ? (
+                            <Text size={200}>Response shown in the ordered agent activity above.</Text>
+                          ) : message.isLoading ? (
                             <Text className={styles.loadingEllipsis}>{piece.content}</Text>
                           ) : globalMarkdown ? (
                             <MarkdownContent content={piece.content} testId={markdownTestId} />
@@ -726,8 +740,11 @@ export default function MessageList({
               </div>
             </div>
           </div>
+          {renderAfterMessage?.(message, index)}
+          </Fragment>
         )
       })}
+      {trailingContent}
       <div ref={messagesEndRef} />
     </div>
   )

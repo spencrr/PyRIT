@@ -430,6 +430,13 @@ describe("api service", () => {
   });
 
   describe("targetsApi", () => {
+    it("loads agent presets from the existing admin configuration surface", async () => {
+      const response = { data: { harness_profiles: [], environment_templates: [], unavailable_targets: {} } };
+      (apiClient.get as jest.Mock).mockResolvedValueOnce(response);
+      await expect(targetsApi.listAgentPresets()).resolves.toEqual(response.data);
+      expect(apiClient.get).toHaveBeenCalledWith("/config/agent-presets");
+    });
+
     it("should list target types from registry metadata", async () => {
       const response = { data: { items: [] } };
       (apiClient.get as jest.Mock).mockResolvedValueOnce(response);

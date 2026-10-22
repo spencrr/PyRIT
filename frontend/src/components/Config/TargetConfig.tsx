@@ -16,6 +16,7 @@ import TargetTable from './TargetTable'
 import { useTargetConfigStyles } from './TargetConfig.styles'
 
 interface TargetConfigProps {
+  canConfigureAgents?: boolean
   defaultObjectiveTarget: TargetInstance | null
   defaultAdversarialTarget: TargetInstance | null
   onSetDefaultObjectiveTarget: (target: TargetInstance | null) => void
@@ -29,6 +30,7 @@ export default function TargetConfig({
   onSetDefaultObjectiveTarget,
   onSetDefaultAdversarialTarget,
   onTargetsLoaded,
+  canConfigureAgents = false,
 }: TargetConfigProps) {
   const { generation, ready } = useRuntime()
   const styles = useTargetConfigStyles()
@@ -171,6 +173,7 @@ export default function TargetConfig({
         onClose={() => setDialogOpen(false)}
         onCreated={handleTargetCreated}
         existingTargets={targets}
+        canConfigureAgents={canConfigureAgents}
       />
     </div>
   )

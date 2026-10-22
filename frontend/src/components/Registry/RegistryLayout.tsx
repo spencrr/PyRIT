@@ -10,6 +10,7 @@ const REGISTRY_TABS = [
   'techniques',
   'scenario-presets',
   'scenario-suites',
+  'executions',
 ] as const
 
 /**
@@ -44,6 +45,7 @@ export default function RegistryLayout() {
         <Tab value="techniques">Techniques</Tab>
         <Tab value="scenario-presets">Scenario presets</Tab>
         <Tab value="scenario-suites">Suites</Tab>
+        <Tab value="executions">Agent executions</Tab>
       </TabList>
       <div className={styles.content}>
         <Outlet />

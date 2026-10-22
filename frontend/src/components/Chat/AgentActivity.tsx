@@ -1,0 +1,76 @@
+import { Badge, MessageBar, Text } from '@fluentui/react-components'
+import MarkdownContent from '@/components/Markdown/MarkdownContent'
+
+import type { AgentToolActivity, AgentTurn, AgentTurnActivity } from '@/types'
+
+import { useAgentActivityStyles } from './AgentActivity.styles'
+
+interface AgentActivityProps {
+  readonly turn: AgentTurn
+  readonly activity?: AgentTurnActivity
+}
+
+function details(value: unknown): string {
+  if (value === undefined) return 'Not reported by the harness.'
+  const text = JSON.stringify(value, null, 2)
+  return text.length > 12000 ? `${text.slice(0, 12000)}\n[Display truncated; retained evidence contains the full report.]` : text
+}
+
+export default function AgentActivity({ turn, activity }: AgentActivityProps) {
+  const styles = useAgentActivityStyles()
+  const inferences = Object.values(activity?.inference ?? {})
+  const failures = inferences.filter((item) => item.status === 'failed' || item.status === 'provider_error')
+  const toolCard = (tool: AgentToolActivity) => (
+    <details key={tool.id} className={styles.tool}>
+      <summary>{tool.title} — {tool.status}</summary>
+      <Text block size={200}>Tool name: {tool.name ?? 'not reported'} · ID: {tool.id}</Text>
+      {turn.status !== 'running' && <Text block size={200}>
+        Scoring evidence: {turn.tool_call_omissions?.[tool.id]?.replace(/_/g, ' ')
+          ?? (turn.tool_call_messages ? 'canonical tool messages; see transcript evidence below' : 'not established')}
+      </Text>}
+      <Text block size={200}>Observed {new Date(tool.firstSeen).toLocaleTimeString()} – {new Date(tool.lastSeen).toLocaleTimeString()}</Text>
+      <Text block weight="semibold">Input</Text><pre className={styles.raw}>{details(tool.rawInput)}</pre>
+      <Text block weight="semibold">Output</Text><pre className={styles.raw}>{details(tool.rawOutput !== undefined ? tool.rawOutput : tool.content)}</pre>
+      {tool.locations !== undefined && <><Text block>Affected locations (agent-reported)</Text><pre className={styles.raw}>{details(tool.locations)}</pre></>}
+    </details>
+  )
+  return (
+    <section className={styles.root} aria-label="Agent turn activity">
+      <Text weight="semibold">Agent activity <Badge appearance="tint">{turn.status}</Badge></Text>
+      {failures.length > 0 && <MessageBar intent={inferences.some((item) => item.status === 'completed') ? 'warning' : 'error'}>
+        {failures.length} model request(s) failed during this turn.{' '}
+        {failures[failures.length - 1].error ?? 'Inspect model inference details below.'}
+        {turn.status === 'completed' && ' Harness completion does not mean the model requests succeeded.'}
+      </MessageBar>}
+      {activity?.inference && <details>
+        <summary>Model inference through PyRIT ({Object.keys(activity.inference).length} requests)</summary>
+        {Object.entries(activity.inference).map(([id, inference]) => <Text key={id} block size={200}>
+          {id.slice(0, 8)} · {inference.status} · target {inference.target?.slice(0, 8) ?? 'not reported'}
+          {inference.bytes !== undefined ? ` · ${inference.bytes} bytes` : ''}
+          {inference.statusCode !== undefined ? ` · HTTP ${inference.statusCode}` : ''}
+          {inference.error ? ` · ${inference.error}` : ''}
+        </Text>)}
+      </details>}
+      {activity?.blocks ? activity.blocks.map((block) => {
+        if (block.kind === 'text') return <div key={block.id}><MarkdownContent content={block.text} /></div>
+        if (block.kind === 'plan') return <details key={block.id}><summary>Agent plan</summary><pre className={styles.raw}>{details(block.entries)}</pre></details>
+        const tool = activity.tools.find((item) => item.id === block.toolId)
+        return tool ? toolCard(tool) : null
+      }) : activity?.tools.map(toolCard)}
+      {!activity?.blocks && activity?.text && (turn.status === 'running' || !turn.response_text) && <>
+        {turn.status !== 'running' && <Text size={200}>Retained streamed output (not a completed reply)</Text>}
+        <pre className={styles.raw}>{activity.text}</pre>
+      </>}
+      {activity?.blocks && activity.text && turn.status !== 'running' && !turn.response_text && <Text size={200}>
+        Retained streamed output (not a completed reply)
+      </Text>}
+      {turn.status === 'completed' && !turn.response_text && <Text>Completed without a text reply. Inspect tool activity and retained artifacts.</Text>}
+      {turn.status === 'cancelled' && <Text>Turn cancelled. Earlier tool effects are not rolled back.</Text>}
+      {turn.error && <Text>{turn.error}</Text>}
+      {turn.status !== 'running' && <Text size={200}>
+        {turn.capture_complete ? 'Exposed ACP events retained; internal tool coverage is not guaranteed.' : 'Capture is incomplete. Missing events do not establish that an action did not occur.'}
+        {turn.tool_call_messages != null && ` ${turn.tool_call_messages} canonical tool messages projected. Missing tool calls are undetermined, not false.`}
+      </Text>}
+    </section>
+  )
+}

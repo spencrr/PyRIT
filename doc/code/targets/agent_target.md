@@ -553,3 +553,34 @@ Each manual send bumps the execution's `transcript_revision` after its memory wr
 reconnected viewer knows when to reload the transcript. A single backend process owns its
 execution store; standalone managers are independently owned and are not administered by the
 backend. Do not share a store directory between machines or backend workers.
+
+### Co-PyRIT UI
+
+The frontend exposes the same three configuration primitives and the same two views, and
+nothing more than the API grants:
+
+- **New target → Agent (ACP)** (administrators only) is a form with three sections, *Model*,
+  *Harness*, and *Environment*, in that order. *Model* picks a registered connection for BYOK
+  (the inference protocol is inferred when only one is compatible) or leaves the harness to
+  authenticate on its own. *Harness* and *Environment* each offer the registered presets from
+  `GET /api/config/agent-presets`; selecting a preset locks its fields and sends the preset names
+  as provenance, while *Customize profile* / *Customize template* copies the values into
+  editable fields and drops the provenance. Choosing a provider that is not isolated requires
+  checking *I understand local tools can access the host*. The form never resolves credentials:
+  *Harness credential references* holds environment variable names only. Timeouts are editable
+  but excluded from target identity. *Refresh options* reloads
+  the catalog after the backend reinitializes; edits made in the meantime are kept but cannot be
+  submitted until the catalog verifies them.
+- **Chat** with an agent target adds a status strip (feed, ACP connection, environment/state,
+  *Cancel turn* while a turn is working) above the transcript and renders each turn's streamed
+  activity, tool calls, and the scoring status of its tool messages beneath the stored message.
+  A request whose transcript has not arrived yet is shown as retained execution evidence rather
+  than invented history. Model, harness profile, and environment template are fixed for the
+  conversation; a closed execution tells the operator to start a new conversation. The strip
+  follows the upstream operator, target, and resolution locks and becomes read-only with them.
+- **Registry → Agent executions** (administrators only) lists the executions the backend owns,
+  shows one record's state and configuration, and offers *Cancel turn*, *Close execution* /
+  *Retry cleanup*, and *Copy configuration to new target*, which opens the agent form prefilled
+  with the record's configuration. The copy starts a fresh execution on its next conversation;
+  it never resumes the original. Chat links here with `?conversation=` so an operator can reach
+  the resource view of the execution behind a transcript.

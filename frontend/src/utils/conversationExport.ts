@@ -154,6 +154,13 @@ export function conversationToMarkdown(
 
   for (const message of exported) {
     lines.push('', `## ${ROLE_LABELS[message.role]} — ${inlineText(message.timestamp)}`, '', fencedBlock(message.content))
+    if (message.agentToolCalls) {
+      lines.push('', '**Canonical tool call provenance:**', '', fencedBlock(JSON.stringify(message.agentToolCalls, null, 2)))
+    }
+    if (message.agentActivity) {
+      lines.push('', '**Agent-reported activity (display snapshot, not proof of invocation or complete coverage):**',
+        '', fencedBlock(JSON.stringify(message.agentActivity, null, 2)))
+    }
 
     if (message.originalContent != null && message.originalContent !== message.content) {
       lines.push('', '**Original (before conversion):**', '', fencedBlock(message.originalContent))
@@ -281,6 +288,11 @@ export function buildExportFilename(
  */
 export function downloadTextFile(content: string, filename: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType })
+  downloadBlob(blob, filename)
+}
+
+/** Download bytes without converting binary evidence to text. */
+export function downloadBlob(blob: Blob, filename: string): void {
   const objectUrl = URL.createObjectURL(blob)
   try {
     const link = document.createElement('a')
@@ -670,6 +682,13 @@ function renderMessage(message: Message, resolved: ResolvedMedia['perMessage'][n
       `<span class="timestamp">${escapeHtml(message.timestamp)}</span></header>`,
   ]
   parts.push(...renderBody(message, resolved.attachments))
+  if (message.agentToolCalls) {
+    parts.push(labelled('Canonical tool call provenance:', `<pre>${escapeHtml(JSON.stringify(message.agentToolCalls, null, 2))}</pre>`))
+  }
+  if (message.agentActivity) {
+    parts.push(labelled('Agent-reported activity (display snapshot, not proof of invocation or complete coverage):',
+      `<pre>${escapeHtml(JSON.stringify(message.agentActivity, null, 2))}</pre>`))
+  }
   if (message.originalContent != null && message.originalContent !== message.content) {
     parts.push(labelled('Original (before conversion):', `<pre>${escapeHtml(message.originalContent)}</pre>`))
   }

@@ -8,6 +8,8 @@ import { makeTarget } from "@/test-utils/targetFixtures";
 import { UserPreferencesProvider } from "@/hooks/useUserPreferences";
 import * as runtimeHooks from "@/hooks/useRuntime";
 import { readUserPreferences } from "@/utils/userPreferences";
+import { useAgentExecution } from "@/hooks/useAgentExecution";
+import type { ConversationExecution } from "@/types";
 import {
   AddMessageResponse,
   AddMessageRequest,
@@ -54,6 +56,19 @@ const buildCapabilities = (
 
 // Fluent UI Combobox portal interactions are slow in JSDOM under full test load
 jest.setTimeout(60000);
+
+jest.mock("@/hooks/useAgentExecution", () => ({ useAgentExecution: jest.fn() }));
+
+function makeManagedAgentTarget() {
+  return {
+    ...makeTarget({ target_type: "CustomManagedAgent" }),
+    agent_configuration: {
+      name: "test", model_binding: {}, harness_profile: { command: ["agent"], credential_env: [],
+        authentication_method: null, permission_policy: "deny" as const },
+      environment_template: { environment: "docker" as const, image: "test", local_execution_acknowledged: false },
+    },
+  };
+}
 
 jest.mock("@/services/api", () => ({
   attacksApi: {
@@ -451,6 +466,10 @@ describe("ChatWindow Integration", () => {
         if (jest.isMockFunction(mock)) mock.mockReset();
       }
     }
+    jest.mocked(useAgentExecution).mockReturnValue({
+      execution: null, turns: {}, error: null, cancelling: false, cancel: jest.fn(),
+      feed: 'live',
+    });
     mockSendResult.mockReset();
     mockedAttacksApi.createAttack.mockResolvedValue({
       attack_result_id: "default-created-attack",
@@ -572,6 +591,47 @@ describe("ChatWindow Integration", () => {
       await waitFor(() => expect(screen.getByRole("button", { name: /send message/i })).not.toHaveAttribute("aria-disabled"));
       await user.click(screen.getByRole("button", { name: /send message/i }));
     }
+
+    it("uses asynchronous sends for agent targets and anchors ordered activity to the saved request", async () => {
+      const user = userEvent.setup();
+      const execution: ConversationExecution = {
+        id: "execution", conversation_id: props.conversationId, state: "idle", environment: "docker",
+        model: "", capture_error: null, close_reason: null, artifacts: [], event_count: 1,
+        source_coverage: "ACP only",
+        turns: [{ id: "agent-turn", request_id: "agent-request", prompt: "Draft to send",
+          status: "completed", response_text: "Async reply", capture_complete: true, error: null }],
+      };
+      jest.mocked(useAgentExecution).mockReturnValue({
+        execution, error: null, cancelling: false, cancel: jest.fn(),
+        feed: "live",
+        turns: { "agent-turn": { text: "Async reply", tools: [],
+          blocks: [{ id: "text", kind: "text", text: "Async reply" }] } },
+      });
+      mockedAttacksApi.getMessages.mockResolvedValueOnce(empty).mockResolvedValue({
+        ...reply,
+        messages: [{
+          role: "user", turn_number: 0, created_at: "2026-01-01T00:00:00Z",
+          message_pieces: [{
+            id: "agent-request", original_value_data_type: "text", converted_value_data_type: "text",
+            original_value: "Draft to send", converted_value: "Draft to send", scores: [], response_error: "none",
+          }],
+        }, {
+          ...reply.messages[0],
+          message_pieces: reply.messages[0].message_pieces.map((piece) => ({
+            ...piece, prompt_metadata: { agent_turn_id: "agent-turn" },
+          })),
+        }],
+      });
+      render(<TestWrapper><ChatWindow {...props} activeTarget={makeManagedAgentTarget()} /></TestWrapper>);
+      await sendDraft(user);
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Execution awaiting transcript" })).not.toBeInTheDocument());
+      expect(screen.getAllByText("Async reply")).toHaveLength(1);
+      expect(screen.getByText("Response shown in the ordered agent activity above.")).toBeInTheDocument();
+      expect(mockedAttacksApi.submitMessageSend).toHaveBeenCalledWith(props.attackResultId, expect.objectContaining({
+        submission_id: expect.any(String), target_conversation_id: props.conversationId, send: true,
+      }));
+      expect(mockedAttacksApi.getMessageSend).toHaveBeenCalledTimes(1);
+    });
 
     it("keeps a newer conversation refresh when an older completion read returns late", async () => {
       const user = userEvent.setup();
@@ -2026,6 +2086,107 @@ describe("ChatWindow Integration", () => {
     if (destination === "Same attack") expect(onSelectConversation).toHaveBeenCalledWith("saved");
     else expect(onConversationCreated).toHaveBeenCalledWith("new", "saved", "Draft goal", mockTarget);
     expect(mockedAttacksApi.submitMessageSend).not.toHaveBeenCalled();
+  });
+
+  it("shows active execution tools after reopening before the request enters the transcript", async () => {
+    const execution: ConversationExecution = {
+      id: "execution", conversation_id: "conversation", state: "working", environment: "docker",
+      model: "", capture_error: null, close_reason: null, artifacts: [], event_count: 1,
+      source_coverage: "ACP only",
+      turns: [{ id: "turn", request_id: "request", prompt: "Wait for cancellation",
+        status: "running", response_text: "", capture_complete: false, error: null }],
+    };
+    jest.mocked(useAgentExecution).mockReturnValue({
+      execution, error: null, cancelling: false, cancel: jest.fn(),
+      feed: 'live',
+      turns: { turn: { text: "", tools: [{
+        id: "tool", title: "Reading orders", status: "in_progress",
+        firstSeen: "2026-10-08T00:00:00Z", lastSeen: "2026-10-08T00:00:00Z",
+      }] } },
+    });
+
+    mockedAttacksApi.getMessages.mockResolvedValue({ conversation_id: "conversation", messages: [] });
+    mockedMapper.backendMessagesToFrontend.mockReturnValue([]);
+    render(<TestWrapper><ChatWindow {...defaultProps}
+      activeTarget={makeManagedAgentTarget()}
+      attackResultId="attack" conversationId="conversation" activeConversationId="conversation"
+    /></TestWrapper>);
+    expect(await screen.findByText("Reading orders — in_progress")).toBeInTheDocument();
+    expect(screen.getByText(/Request retained in execution evidence: Wait for cancellation/)).toBeInTheDocument();
+
+    mockedAttacksApi.getMessages.mockClear();
+    const callback = jest.mocked(useAgentExecution).mock.calls.slice(-1)[0][3];
+    await act(async () => {
+      await callback?.({ ...execution, state: "idle",
+        turns: [{ ...execution.turns[0], status: "completed", response_text: "Done", capture_complete: true }],
+      });
+    });
+    expect(mockedAttacksApi.getMessages).toHaveBeenCalledWith("attack", "conversation");
+  });
+
+  it("does not treat copied simulated agent history as a managed execution", async () => {
+    mockedAttacksApi.getMessages.mockResolvedValue({ conversation_id: "conversation", messages: [] });
+    mockedMapper.backendMessagesToFrontend.mockReturnValue([
+      { role: "user", agentTurnId: "old", content: "Copied request", timestamp: "" },
+      { role: "simulated_assistant", agentTurnId: "old", content: "Copied response", timestamp: "" },
+      { role: "simulated_tool", agentTurnId: "old", content: "Copied output", timestamp: "" },
+    ]);
+    render(<TestWrapper><ChatWindow {...defaultProps}
+      attackResultId="attack" conversationId="conversation" activeConversationId="conversation" /></TestWrapper>);
+    await screen.findByText("Copied response");
+    expect(jest.mocked(useAgentExecution).mock.calls.slice(-1)[0][2]).toBe(false);
+    expect(screen.queryByText(/environment template are fixed/)).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])("refreshes missing tool-only evidence or a final text reply (text: %s)", async (textReply: boolean) => {
+    const reference: NonNullable<Message["agentToolCalls"]> = {
+      source: "acp", execution_id: "execution", turn_id: "turn", source_call_id: "call", event_sequence: 1,
+    };
+    const execution: ConversationExecution = {
+      id: "execution", conversation_id: "conversation", state: "idle", environment: "docker",
+      model: "", capture_error: null, close_reason: null, artifacts: [], event_count: 2, source_coverage: "ACP only",
+      turns: [{ id: "turn", request_id: "request", status: "completed", response_text: textReply ? "Final reply" : "",
+        capture_complete: true, error: null, tool_call_messages: 2 }],
+    };
+    const transcript: Message[] = [
+      { role: "user", pieceIds: ["request"], content: "Stored request", timestamp: "" },
+      { role: "assistant", agentTurnId: "turn", agentToolCalls: reference, content: "Function call", timestamp: "" },
+    ];
+    if (textReply) {
+      transcript.push({ role: "tool", agentTurnId: "turn", agentToolCalls: reference, content: "Output", timestamp: "" });
+    }
+    mockedAttacksApi.getMessages.mockResolvedValue({ conversation_id: "conversation", messages: [] });
+    mockedMapper.backendMessagesToFrontend.mockReturnValue(transcript);
+    render(<TestWrapper><ChatWindow {...defaultProps} activeTarget={makeManagedAgentTarget()}
+      attackResultId="attack" conversationId="conversation" activeConversationId="conversation" /></TestWrapper>);
+    await screen.findByText("Stored request");
+    mockedAttacksApi.getMessages.mockClear();
+    const callback = jest.mocked(useAgentExecution).mock.calls.slice(-1)[0][3];
+    await act(async () => { await callback?.(execution); });
+    expect(mockedAttacksApi.getMessages).toHaveBeenCalledWith("attack", "conversation");
+  });
+
+  it.each(["operator", "target", "resolution"])("keeps agent controls read-only under the upstream %s lock", async (lock: string) => {
+    const activeTarget = makeManagedAgentTarget();
+    const execution: ConversationExecution = {
+      id: "execution", conversation_id: "conversation", state: "working", environment: "docker",
+      model: "", capture_error: null, close_reason: null, artifacts: [], event_count: 1,
+      source_coverage: "ACP only",
+      turns: [{ id: "turn", request_id: "request", status: "running", response_text: "",
+        capture_complete: false, error: null }],
+    };
+    jest.mocked(useAgentExecution).mockReturnValue({
+      execution, turns: {}, error: null, cancelling: false, cancel: jest.fn(), feed: "live",
+    });
+    mockedAttacksApi.getMessages.mockResolvedValue({ conversation_id: "conversation", messages: [] });
+    mockedMapper.backendMessagesToFrontend.mockReturnValue([]);
+    render(<TestWrapper><ChatWindow {...defaultProps} activeTarget={activeTarget}
+      attackResultId="attack" conversationId="conversation" activeConversationId="conversation"
+      attackOperator={lock === "operator" ? "other-operator" : "testuser"}
+      attackTarget={lock === "target" ? { target_type: "AgentTarget", identifier_hash: "other-target" } : null}
+      targetResolutionStatus={lock === "resolution" ? "unavailable" : "resolved"}
+    /></TestWrapper>);
+    expect(await screen.findByRole("button", { name: "Cancel turn" })).toBeDisabled();
   });
 
   it("should render chat window with all components", () => {
