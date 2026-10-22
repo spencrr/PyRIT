@@ -7,6 +7,9 @@ allow_custom_initializers: false
 enable_live_reinitialization: false
 max_concurrent_scenario_runs: 1
 
+# Fixture directories named by API-created agent targets must resolve inside this folder.
+target_upload_directory: assets
+
 # Use credentials explicitly supplied to the backend process, not shared bootstrap sources.
 env_files: []
 env_akv_ref: []
