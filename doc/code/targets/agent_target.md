@@ -292,9 +292,9 @@ excluded from target identity like the other timeouts.
 ## Harness adapters
 
 `HarnessAdapter` and `HarnessAdapterRegistry` in `pyrit.agent.harness` separate trusted
-implementation code from inert profiles. `copilot` and generic `acp` are the built-in
-registrations. A trusted Python initializer can register another adapter before composing
-targets that select its name in `harness_kind`.
+implementation code from inert profiles. `copilot`, `agent_framework`, and generic `acp` are
+the built-in registrations. A trusted Python initializer can register another adapter before
+composing targets that select its name in `harness_kind`.
 
 An adapter supplies immutable `HarnessAdapterInfo` (name, label, default command, and the
 environment variable names it reserves for its own configuration) and the private-home
@@ -336,6 +336,53 @@ Setup reset removes custom registrations, so the initializer must run again on e
 Profile commands are always persisted explicitly, so decoding saved records never imports a
 plugin. A missing adapter blocks new target use but not record decoding or interrupted
 resource cleanup. Like other trusted Python components, an adapter is not a security boundary.
+
+### Testing a Microsoft Agent Framework agent
+
+Agent Framework does not speak ACP, so PyRIT ships a small host that serves any
+`SupportsAgentRun` over ACP stdio: `python -m pyrit.agent.hosts.agent_framework_acp`, from
+the optional `agent_framework` extra. The host process is the system under test: it owns the
+agent, its session, and its tools; PyRIT stays the ACP client. Select
+`harness_kind="agent_framework"`.
+
+```bash
+uv sync --extra agents --extra agent_framework
+```
+
+```python
+AgentTargetConfiguration(
+    model_binding=ModelBinding(model="gpt-4.1", target_registry_name="openai_chat"),
+    harness_profile=HarnessProfile(
+        harness_kind="agent_framework",
+        command=("python", "-m", "pyrit.agent.hosts.agent_framework_acp", "--agent", "my_package.agents:build"),
+        permission_policy="allow_once",
+    ),
+    environment_template=EnvironmentTemplate(environment="docker", image="my-agent-image:1"),
+)
+```
+
+`--agent module:function` names a factory `(cwd: str) -> SupportsAgentRun`; the module must
+be importable inside the execution environment. Without `--agent`, the host builds a default
+agent on an OpenAI-compatible client with `read_file`, `write_file`, and `list_directory`
+tools confined to the working directory, plus `run_command`, which starts a shell in the
+working directory and is **not** confined by it; the execution environment is the boundary,
+as for any harness. The default agent takes its model from a PyRIT model binding, so a
+profile without one is rejected at configuration time unless it names a custom `--agent`.
+Under BYOK the adapter supplies `OPENAI_BASE_URL`, `OPENAI_API_KEY` (the execution-scoped
+relay credential), `OPENAI_MODEL`, and `PYRIT_WIRE_API`; the default agent picks the
+Responses or Chat Completions client from the bound wire API. A custom factory should build
+its client from the same variables, or it bypasses the relay. Chat Completions is verified
+end to end with synthetic streamed inference, including fragmented tool-call arguments; the
+Responses client path is wired but not covered by tests.
+
+The host reports each executed function's exact name under the namespaced
+`_meta["pyrit.tool_name"]` key of its `tool_call` update, and the complete arguments as
+`rawInput` on the final `tool_call_update` once the model has finished streaming them, so the
+canonical tool projection names these calls precisely instead of inferring from titles. Only
+that namespaced key is trusted; other `_meta` content never stands in for a name. Agent
+failures surface as JSON-RPC errors, which PyRIT records as an operation failure and closes
+the execution; they are never presented as a reply. Session loading, modes, MCP attachment,
+and authentication methods are refused explicitly.
 
 ## Execution environment providers
 

@@ -278,7 +278,10 @@ target**, a recipe that owns no resources. The runtime owns policy (timeouts, bu
 cancellation, approvals, redaction, the ACP protocol); an **environment provider** owns resources
 (allocate, seed, expose streams, release) behind `ExecutionEnvironmentProvider`, and a
 **harness adapter** owns launch translation behind `HarnessAdapter`. Both seams have
-executable conformance suites in `pyrit.agent.conformance`. Canonical tool calls use the
+executable conformance suites in `pyrit.agent.conformance`. The built-in Copilot adapter,
+PyRIT's ACP host for Microsoft Agent Framework agents, and any registered adapter reuse the
+same target, manager, and relay; the Agent Framework host is itself the tested process,
+owning the agent and its tools while PyRIT stays the ACP client. Canonical tool calls use the
 existing `FunctionCallContent`, `FunctionOutputContent`, and `ToolExecutionMetadata`: the
 target projects retained reports, the normalizer persists them, and the existing
 `MessageToolCallScorer` interprets `ToolsCalled`. Missing reports remain unknown, not false.

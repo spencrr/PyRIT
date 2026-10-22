@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from pyrit.agent.execution_manager import AgentExecutionManager
-from pyrit.agent.tool_calls import project_agent_tools
+from pyrit.agent.tool_calls import TOOL_NAME_META_KEY, project_agent_tools
 from pyrit.executor.attack import AttackScoringConfig, PromptSendingAttack
 from pyrit.memory import SQLiteMemory
 from pyrit.models import (
@@ -121,18 +121,21 @@ def test_arguments_reported_on_the_final_update_are_accepted() -> None:
     assert json.loads(call.arguments) == {"path": "receipt.json"}
 
 
-def test_title_and_meta_never_stand_in_for_a_tool_name() -> None:
+def test_meta_name_identifies_tools_without_inferring_from_title() -> None:
     execution_id, turn_id = uuid4(), uuid4()
     events = tool_events(execution_id=execution_id, turn_id=turn_id, name=None)
     first = events[0].payload["params"]["update"]
     first["title"] = "Friendly title that must not be trusted"
-    for meta in (None, {"name": "write_file"}, {"pyrit.tool_name": "write_file"}):
-        if meta is not None:
-            first["_meta"] = meta
+    first["_meta"] = {TOOL_NAME_META_KEY: "write_file"}
+    projection = project_agent_tools(events=events, execution_id=execution_id, turn_id=turn_id, conversation_id="one")
+    assert not projection.omitted
+    call = FunctionCallContent.model_validate_json(projection.messages[0].get_piece().original_value)
+    assert call.name == "write_file"
+    for untrusted in ({"name": "write_file"}, {TOOL_NAME_META_KEY: 7}):
+        first["_meta"] = untrusted
         projection = project_agent_tools(
             events=events, execution_id=execution_id, turn_id=turn_id, conversation_id="one"
         )
-        assert not projection.messages
         assert projection.omitted == {"call-1": "name_not_reported"}
 
 
