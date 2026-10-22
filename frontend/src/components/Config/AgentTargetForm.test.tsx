@@ -8,7 +8,7 @@ import { targetsApi } from '@/services/api'
 import { listRegisteredTargets } from '@/services/targetRegistry'
 import { useRuntime } from '@/hooks/useRuntime'
 import { makeTarget } from '@/test-utils/targetFixtures'
-import type { AgentPresetCatalog, AgentTargetConfiguration, HarnessAdapterInfo, TargetInstance } from '@/types'
+import type { AgentPresetCatalog, AgentTargetConfiguration, HarnessAdapterInfo, HarnessProfile, TargetInstance } from '@/types'
 
 import AgentTargetForm from './AgentTargetForm'
 import { BUILTIN_ENVIRONMENT_PROVIDERS } from './environmentProviders'
@@ -692,44 +692,46 @@ describe('AgentTargetForm', () => {
     jest.mocked(listRegisteredTargets).mockResolvedValue([])
   })
 
-  it('registers separate configuration primitives and selects the result for chat', async () => {
+  it.each([false, true])('registers separate configuration primitives with Deny by default (select for chat: %s)', async (selectForChat: boolean) => {
     const target = makeTarget({ target_type: 'AgentTarget', target_registry_name: 'receipt' })
     jest.mocked(targetsApi.createTarget).mockResolvedValue(target)
     const onCreated = jest.fn()
     const user = userEvent.setup()
-    render(<TestWrapper><AgentTargetForm selectForChat onClose={jest.fn()} onCreated={onCreated} /></TestWrapper>)
+    render(<TestWrapper><AgentTargetForm selectForChat={selectForChat} onClose={jest.fn()} onCreated={onCreated} /></TestWrapper>)
     expect(screen.getByRole('region', { name: 'Model' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Harness' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Environment' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Tool permission policy')).toHaveValue('deny')
     await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'receipt')
     await user.type(screen.getByRole('textbox', { name: /Docker image/ }), 'test-image')
     await user.type(screen.getByLabelText('Model ID'), 'test-model')
-    await user.click(screen.getByRole('button', { name: 'Create and select' }))
+    await user.click(screen.getByRole('button', { name: selectForChat ? 'Create and select' : 'Create Target' }))
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(target))
     expect(targetsApi.createTarget).toHaveBeenCalledWith({
       name: 'receipt', type: 'AgentTarget', params: { agent_configuration: expect.objectContaining({
         model_binding: { model: 'test-model' },
-        harness_profile: expect.objectContaining({ permission_policy: 'ask' }),
+        harness_profile: expect.objectContaining({ permission_policy: 'deny' }),
         environment_template: expect.objectContaining({ environment: 'docker' }),
       }) },
     })
   })
 
-  it('requires explicit local acknowledgement and preserves a copied harness without authentication', async () => {
+  it.each(['deny', 'allow_once', 'ask'] as const)('requires explicit local acknowledgement and preserves a copied %s policy', async (permissionPolicy: HarnessProfile['permission_policy']) => {
     const initial: AgentTargetConfiguration = {
       name: 'custom', model_binding: { model: 'same' },
-      harness_profile: { command: ['test-agent', '--stdio'], credential_env: [], authentication_method: null, permission_policy: 'deny' },
+      harness_profile: { command: ['test-agent', '--stdio'], credential_env: [], authentication_method: null, permission_policy: permissionPolicy },
       environment_template: { environment: 'local', image: null, local_execution_acknowledged: true },
     }
     const user = userEvent.setup()
     jest.mocked(targetsApi.createTarget).mockResolvedValue(makeTarget({ target_type: 'AgentTarget' }))
     render(<TestWrapper><AgentTargetForm initialConfiguration={initial} onClose={jest.fn()} onCreated={jest.fn()} /></TestWrapper>)
+    expect(screen.getByLabelText('Tool permission policy')).toHaveValue(permissionPolicy)
     expect(screen.getByRole('button', { name: 'Create Target' })).toBeDisabled()
     await user.click(screen.getByLabelText('I understand local tools can access the host'))
     await user.click(screen.getByRole('button', { name: 'Create Target' }))
     await waitFor(() => expect(targetsApi.createTarget).toHaveBeenCalled())
     expect(jest.mocked(targetsApi.createTarget).mock.calls[0][0].params.agent_configuration).toMatchObject({
-      harness_profile: { command: ['test-agent', '--stdio'], authentication_method: null },
+      harness_profile: { command: ['test-agent', '--stdio'], authentication_method: null, permission_policy: permissionPolicy },
     })
     expect(initial.name).toBe('custom')
   })

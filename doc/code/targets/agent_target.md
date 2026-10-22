@@ -601,8 +601,10 @@ nothing more than the API grants:
   editable fields and drops the provenance. Choosing a provider that is not isolated requires
   checking *I understand local tools can access the host*. The form never resolves credentials:
   *Harness credential references* holds environment variable names only. New configurations
-  default the tool permission policy to *Ask me*; choose *Deny* or *Allow* for a target that
-  attacks will drive. Timeouts are editable but excluded from target identity. *Refresh options* reloads
+  default the tool permission policy to *Deny requests* in both Chat and Registry. Choose
+  *Ask me* explicitly for operator-approved chat; automated attacks require *Deny requests*
+  or *Allow requests*. Copied profiles retain their policy. Timeouts are editable but excluded
+  from target identity. *Refresh options* reloads
   the catalog after the backend reinitializes; edits made in the meantime are kept but cannot be
   submitted until the catalog verifies them.
 - **Chat** with an agent target adds a status strip (feed, ACP connection, environment/state,
