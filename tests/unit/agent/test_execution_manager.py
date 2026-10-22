@@ -305,8 +305,13 @@ async def test_cancel_during_provisioning_does_not_dispatch_and_next_turn_can_co
             connection.prompt_async.assert_awaited_once()
 
 
-async def test_deadline_is_an_explicit_cancelled_turn_and_closes_the_execution(
-    tmp_path: Path, configuration: AgentTargetConfiguration, connection: MagicMock, environment: MagicMock
+@pytest.mark.parametrize("interactive", [True, False])
+async def test_deadline_holds_interactive_but_closes_automated(
+    tmp_path: Path,
+    configuration: AgentTargetConfiguration,
+    connection: MagicMock,
+    environment: MagicMock,
+    interactive: bool,
 ) -> None:
     cancelled = asyncio.Event()
 
@@ -319,26 +324,57 @@ async def test_deadline_is_an_explicit_cancelled_turn_and_closes_the_execution(
 
     connection.prompt_async.side_effect = prompt_async
     connection.cancel_async.side_effect = cancel_async
-    configuration = configuration.model_copy(update={"turn_timeout_seconds": 0.03})
+    configuration = configuration.model_copy(update={"turn_timeout_seconds": 0.03, "interactive_hold_seconds": 1})
     with (
         patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment),
         patch("pyrit.agent.acp_connection.AcpConnection", return_value=connection),
     ):
         async with AgentExecutionManager(root=tmp_path) as manager:
-            record, turn = await manager.send_async(
-                configuration=configuration,
-                target_id="target",
-                conversation_id="one",
-                request_id="first",
-                prompt="Wait",
-                has_history=False,
-            )
+            arguments = {
+                "configuration": configuration,
+                "target_id": "target",
+                "conversation_id": "one",
+                "request_id": "first",
+                "prompt": "Wait",
+                "has_history": False,
+                "interactive": interactive,
+            }
+            record, turn = await manager.send_async(**arguments)
             assert turn.status == AgentTurnStatus.CANCELLED
-            assert turn.error == "Turn deadline exceeded"
             assert turn.response_text == "Partial"
-            assert record.state == AgentExecutionState.CLOSED
-            assert record.close_reason == "turn_timeout"
-            environment.close_async.assert_awaited()
+            if interactive:
+                assert record.state == AgentExecutionState.HELD
+                assert record.held_until is not None
+                environment.close_async.assert_not_awaited()
+                await manager.control_held_async(execution_id=record.id, action="extend", actor="operator")
+                await manager.control_held_async(execution_id=record.id, action="continue", actor="operator")
+                assert record.state == AgentExecutionState.IDLE
+            else:
+                # Automated runs get an explicit cancelled outcome and the execution is released.
+                assert turn.error == "Turn deadline exceeded"
+                assert record.state == AgentExecutionState.CLOSED
+                assert record.close_reason == "turn_timeout"
+                environment.close_async.assert_awaited()
+
+
+async def test_automation_rejects_ask_before_provisioning(
+    tmp_path: Path, configuration: AgentTargetConfiguration
+) -> None:
+    from pyrit.models.agent_execution import AgentPermissionPolicy
+
+    manager = AgentExecutionManager(root=tmp_path)
+    with pytest.raises(ValueError, match="Automated"):
+        await manager.send_async(
+            configuration=configuration.model_copy(
+                update={"harness_profile": HarnessProfile(permission_policy=AgentPermissionPolicy.ASK)}
+            ),
+            target_id="target",
+            conversation_id="one",
+            request_id="one",
+            prompt="Hi",
+            has_history=False,
+        )
+    assert not manager.records
 
 
 async def test_unconfirmed_deadline_cancellation_raises_and_closes(

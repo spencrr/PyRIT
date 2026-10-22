@@ -18,7 +18,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from pyrit.common.asyncio_task import await_task_completion_async
-from pyrit.models.agent_execution import AgentEventPage, AgentExecution, AgentExecutionEvent
+from pyrit.models.agent_execution import AgentApproval, AgentEventPage, AgentExecution, AgentExecutionEvent
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,7 @@ class AgentExecutionStore:
         return records
 
     def _recover_journal_state(self, record: AgentExecution) -> None:
+        approvals = {approval.id: approval for approval in record.approvals}
         cursor = 0
         while True:
             page = self._events(execution_id=record.id, after=cursor, limit=500)
@@ -162,8 +163,15 @@ class AgentExecutionStore:
             for event in page.events:
                 if event.execution_id != record.id:
                     raise ValueError("Execution journal identity does not match its record")
+                if event.direction == "lifecycle" and event.payload.get("type") in (
+                    "permission.pending",
+                    "permission.resolved",
+                ):
+                    approval = AgentApproval.model_validate(event.payload["approval"])
+                    approvals[approval.id] = approval
             cursor = page.next_cursor
             record.last_event_at = page.events[-1].timestamp
+        record.approvals = list(approvals.values())
         if cursor:
             record.event_count = cursor
             with self._index_lock:

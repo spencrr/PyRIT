@@ -130,6 +130,8 @@ class AgentTargetComposition(BaseModel):
     idle_timeout_seconds: float = Field(default=300, gt=0, le=86400)
     lifetime_seconds: float = Field(default=900, gt=0, le=86400)
     cancellation_grace_seconds: float = Field(default=10, gt=0, le=60)
+    approval_timeout_seconds: float = Field(default=120, gt=0, le=600)
+    interactive_hold_seconds: float = Field(default=300, gt=0, le=3600)
     max_evidence_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=256 * 1024 * 1024)
     artifact_paths: tuple[str, ...] = ()
     max_artifact_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)

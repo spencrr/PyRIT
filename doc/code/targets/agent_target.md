@@ -248,15 +248,44 @@ Timeouts are core policy and apply to every provider and harness: `startup_timeo
 `cancellation_grace_seconds`. A turn that exceeds its deadline is cancelled with the harness and
 returned as a `cancelled` outcome carrying `agent_turn_error`, with any partial text, and its
 execution is closed; only a cancellation the harness does not confirm within the grace period
-raises.
+raises. Interactive sends (below) keep the environment instead of closing it.
 
 ## Permission policy
 
 ACP lets a harness ask before running a tool. `permission_policy` answers deterministically:
-`deny` refuses (the default), `allow_once` accepts the single-use option the harness offers.
-A harness that offers neither option fails the request explicitly. Policy answers are
-journaled like every other frame. This is a protocol-level answer, not a tool sandbox: what
-a permitted tool can reach is decided by the environment.
+`deny` refuses (the default), `allow_once` accepts the single-use option the harness offers,
+and `ask` forwards the request to the operator who owns the conversation. A harness that
+offers neither single-use option fails the request explicitly. Policy answers are journaled
+like every other frame. This is a protocol-level answer, not a tool sandbox or an allowlist:
+what a permitted tool can reach is decided by the environment.
+
+### Interactive sends
+
+`ask` needs someone to answer, so it is only valid for an *interactive* send: a dispatch made
+inside `pyrit.agent.send_context.interactive_agent_send(conversation_id)`, which the Co-PyRIT
+manual send wraps around each chat turn. The scope is a context variable keyed by conversation,
+never target state; an attack running the same target concurrently stays automated. Automated
+sends reject `ask` before anything is provisioned
+(`Automated agent runs require an explicit allow_once or deny permission policy`), and a
+conversation cannot switch mode once its execution exists.
+
+A permission request becomes a journaled `AgentApproval` on the execution (`permission.pending`),
+with the harness's options and an expiry of `approval_timeout_seconds` (default 120). Exactly
+one decision wins: an operator `allow`/`deny`, the timeout, or cancellation; it is journaled as
+`permission.resolved` with the actor, and the flushed journal event is the commit point. A
+failed record snapshot afterwards is logged and recovered from the journal at the next start,
+and unresolved approvals left by an interrupted runtime are marked cancelled. While requests
+wait, the turn's active-work clock pauses; the absolute lifetime does not. Denials, timeouts,
+and cancellations project as `permission_not_granted` omissions in tool scoring, never as
+invocations.
+
+When an interactive turn exceeds its deadline and the harness confirms cancellation, the
+execution is **held** rather than closed: the environment keeps running (and keeps consuming
+capacity) for `interactive_hold_seconds` (default 300), bounded by the original lifetime.
+*Continue* makes it available for a new turn without resending anything, *Extend* renews the
+hold within the lifetime, and *Close* releases it; an expired hold is closed by the reaper. A
+hold is not a snapshot, freeze, or rollback. Approval and hold timeouts are execution policy,
+excluded from target identity like the other timeouts.
 
 ## Harness adapters
 
@@ -539,6 +568,10 @@ which are redacted before frames are written.
 - `GET /{execution_id}/events?after=0&limit=100` pages the retained session updates, lifecycle,
   and inference events.
 - `POST /{execution_id}/cancel` cancels this conversation's active turn, never the environment.
+- `POST /{execution_id}/permissions/{approval_id}` with `{"allow": true|false}` (strict
+  booleans) decides a pending approval; a stale or duplicate decision is a 409.
+- `POST /{execution_id}/control/{continue|extend|close}` acts on an interactive execution; it
+  is a 409 for automated executions or an expired hold.
 
 Administrator routes under `/api/executions` are the resource view:
 
@@ -567,13 +600,18 @@ nothing more than the API grants:
   as provenance, while *Customize profile* / *Customize template* copies the values into
   editable fields and drops the provenance. Choosing a provider that is not isolated requires
   checking *I understand local tools can access the host*. The form never resolves credentials:
-  *Harness credential references* holds environment variable names only. Timeouts are editable
-  but excluded from target identity. *Refresh options* reloads
+  *Harness credential references* holds environment variable names only. New configurations
+  default the tool permission policy to *Ask me*; choose *Deny* or *Allow* for a target that
+  attacks will drive. Timeouts are editable but excluded from target identity. *Refresh options* reloads
   the catalog after the backend reinitializes; edits made in the meantime are kept but cannot be
   submitted until the catalog verifies them.
 - **Chat** with an agent target adds a status strip (feed, ACP connection, environment/state,
-  *Cancel turn* while a turn is working) above the transcript and renders each turn's streamed
-  activity, tool calls, and the scoring status of its tool messages beneath the stored message.
+  pending approvals, *Cancel turn* while a turn is working, *Close execution* for interactive
+  executions) above the transcript and renders each turn's streamed activity, tool calls, and
+  the scoring status of its tool messages beneath the stored message. A pending permission
+  shows *Allow once* / *Deny* under its tool call; decisions are server-owned, so a refresh or
+  a second tab cannot lose or double-answer one. A held execution shows the remaining hold with
+  *Continue* and *Extend hold*, and the composer stays disabled until it is continued.
   A request whose transcript has not arrived yet is shown as retained execution evidence rather
   than invented history. Model, harness profile, and environment template are fixed for the
   conversation; a closed execution tells the operator to start a new conversation. The strip

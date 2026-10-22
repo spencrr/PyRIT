@@ -447,7 +447,7 @@ describe('AgentTargetForm', () => {
     await user.selectOptions(screen.getByLabelText('Environment template'), 'team_workspace')
     await user.click(screen.getByRole('button', { name: 'Customize profile' }))
     await user.click(screen.getByRole('button', { name: 'Customize template' }))
-    await user.selectOptions(screen.getByLabelText('Tool permission policy'), 'allow_once')
+    await user.selectOptions(screen.getByLabelText('Tool permission policy'), 'ask')
     await user.clear(screen.getByRole('textbox', { name: /Docker image/ }))
     await user.type(screen.getByRole('textbox', { name: /Docker image/ }), 'team:2')
     await user.type(screen.getByRole('textbox', { name: /Target name/ }), 'custom')
@@ -456,7 +456,7 @@ describe('AgentTargetForm', () => {
     const sent = jest.mocked(targetsApi.createTarget).mock.calls[0][0]
     expect(sent.agent_presets).toBeUndefined()
     expect(sent.params.agent_configuration).toMatchObject({
-      harness_profile: { ...catalog.harness_profiles[0].profile, permission_policy: 'allow_once' },
+      harness_profile: { ...catalog.harness_profiles[0].profile, permission_policy: 'ask' },
       environment_template: { ...catalog.environment_templates[0].template, image: 'team:2' },
     })
     expect(catalog).toEqual(presetCatalog())
@@ -709,7 +709,7 @@ describe('AgentTargetForm', () => {
     expect(targetsApi.createTarget).toHaveBeenCalledWith({
       name: 'receipt', type: 'AgentTarget', params: { agent_configuration: expect.objectContaining({
         model_binding: { model: 'test-model' },
-        harness_profile: expect.objectContaining({ permission_policy: 'deny' }),
+        harness_profile: expect.objectContaining({ permission_policy: 'ask' }),
         environment_template: expect.objectContaining({ environment: 'docker' }),
       }) },
     })

@@ -162,3 +162,67 @@ def test_conversation_routes_never_resolve_another_conversations_execution() -> 
         assert client.get(f"{crossed}/{foreign}/events").status_code == 404
     manager.cancel_async.assert_not_awaited()
     manager.store.events_async.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("patch_central_database")
+def test_permission_and_hold_routes_require_an_interactive_execution() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from pyrit.agent.execution_manager import AgentExecutionManager
+    from pyrit.backend.services import agent_execution_service
+    from pyrit.memory import CentralMemory
+    from pyrit.models import AttackResult
+    from pyrit.models.agent_execution import AgentApproval, AgentExecutionState
+
+    attack = AttackResult(conversation_id=str(uuid4()), objective="receipt")
+    asyncio.run(CentralMemory.get_memory_instance().add_attack_results_to_memory_async(attack_results=[attack]))
+    approval = AgentApproval(
+        tool_call_id="call",
+        title="Read orders",
+        options=[{"option_id": "yes", "name": "Allow", "kind": "allow_once"}],
+        expires_at=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    record = AgentExecution(
+        owner_id="owner",
+        conversation_id=attack.conversation_id,
+        target_id="target",
+        profile=AgentProfile(environment="local", local_execution_acknowledged=True, permission_policy="ask"),
+        state=AgentExecutionState.HELD,
+        interactive=True,
+        approvals=[approval],
+    )
+    manager = MagicMock(spec=AgentExecutionManager)
+    manager.records = {record.id: record}
+    manager.latest_execution.return_value = record
+    manager.start_async = AsyncMock()
+    manager.decide_permission_async = AsyncMock()
+    manager.control_held_async = AsyncMock(side_effect=[None, ValueError("Hold expired; start a fresh execution")])
+    manager.close_execution_async = AsyncMock()
+    app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
+    app.include_router(executions.conversation_router)
+    client = TestClient(app)
+    path = f"/attacks/{attack.attack_result_id}/conversations/{attack.conversation_id}/execution/{record.id}"
+    with (
+        patch.object(agent_execution_service, "get_agent_execution_manager", return_value=manager),
+        patch.object(executions, "get_agent_execution_manager", return_value=manager),
+    ):
+        decided = client.post(f"{path}/permissions/{approval.id}", json={"allow": True})
+        assert decided.status_code == 200
+        assert decided.json()["approvals"][0]["tool_call_id"] == "call"
+        assert "owner_id" not in decided.json()
+        manager.decide_permission_async.assert_awaited_once_with(
+            execution_id=record.id, approval_id=approval.id, allow=True, actor="local-operator"
+        )
+        # Only strict booleans decide; nothing is coerced into an approval.
+        assert client.post(f"{path}/permissions/{approval.id}", json={"allow": "yes"}).status_code == 422
+        assert client.post(f"{path}/control/extend").status_code == 200
+        assert client.post(f"{path}/control/extend").status_code == 409
+        assert client.post(f"{path}/control/close").status_code == 200
+        manager.close_execution_async.assert_awaited_once_with(execution_id=record.id, reason="operator:local-operator")
+        assert client.post(f"{path}/control/resume").status_code == 422
+        manager.decide_permission_async.side_effect = ValueError("Execution cannot accept permission decisions")
+        assert client.post(f"{path}/permissions/{approval.id}", json={"allow": False}).status_code == 409
+        record.interactive = False
+        assert client.post(f"{path}/control/continue").status_code == 409
+    manager.control_held_async.assert_awaited_with(execution_id=record.id, action="extend", actor="local-operator")

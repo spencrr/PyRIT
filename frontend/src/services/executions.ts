@@ -7,6 +7,16 @@ export const executionsApi = {
     if (executionId) query.set('execution_id', executionId)
     return openApiEventStream(`${conversationPath(attackId, conversationId)}/stream?${query}`, signal)
   },
+  async permission(attackId: string, conversationId: string, executionId: string, approvalId: string, allow: boolean): Promise<ConversationExecution | null> {
+    return (await apiClient.post<ConversationExecution | null>(
+      `${conversationPath(attackId, conversationId)}/${executionId}/permissions/${approvalId}`, { allow },
+    )).data
+  },
+  async control(attackId: string, conversationId: string, executionId: string, action: 'continue' | 'extend' | 'close'): Promise<ConversationExecution | null> {
+    return (await apiClient.post<ConversationExecution | null>(
+      `${conversationPath(attackId, conversationId)}/${executionId}/control/${action}`,
+    )).data
+  },
   async conversation(attackId: string, conversationId: string): Promise<ConversationExecution | null> {
     return (await apiClient.get<ConversationExecution | null>(conversationPath(attackId, conversationId))).data
   },
