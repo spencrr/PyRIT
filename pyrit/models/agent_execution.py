@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, computed_field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from pyrit.models.identifiers.class_name_utils import validate_registry_name
 from pyrit.models.model_inference import InferenceRequirements, InferenceWireApi
@@ -393,12 +393,6 @@ class AgentExecution(BaseModel):
     inference_protocol: InferenceWireApi | None = None
     artifact_errors: list[str] = Field(default_factory=list)
     source_coverage: str = "ACP-exposed events only; internal tool coverage is not guaranteed."
-
-    @computed_field
-    @property
-    def configuration(self) -> AgentTargetConfiguration:
-        """The resolved configuration, independent of this execution's mutable state."""
-        return AgentTargetConfiguration.from_profile(self.profile)
 
 
 class AgentExecutionEvent(BaseModel):

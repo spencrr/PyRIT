@@ -31,6 +31,7 @@ from pyrit.models.agent_execution import (
     AgentEventPage,
     AgentExecution,
     AgentExecutionState,
+    AgentTargetConfiguration,
     AgentTurn,
 )
 from pyrit.prompt_target import AgentTarget
@@ -39,6 +40,24 @@ from pyrit.registry import TargetRegistry
 router = APIRouter(prefix="/executions", tags=["executions"], dependencies=[Depends(require_admin)])
 conversation_router = APIRouter(prefix="/attacks", tags=["attacks"])
 logger = logging.getLogger(__name__)
+
+
+class ExecutionView(AgentExecution):
+    """An execution record for administrators, with its profile regrouped into the authoring shape."""
+
+    configuration: AgentTargetConfiguration
+
+    @classmethod
+    def from_record(cls, record: AgentExecution) -> "ExecutionView":
+        """
+        Project a record without mutating or re-persisting it.
+
+        Returns:
+            ExecutionView: A detached copy carrying the composed configuration.
+        """
+        return cls(**record.model_dump(), configuration=AgentTargetConfiguration.from_profile(record.profile))
+
+
 _evidence_slots = asyncio.Semaphore(2)
 
 
@@ -332,28 +351,28 @@ async def list_executions_async(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     conversation_id: str | None = None,
-) -> list[AgentExecution]:
+) -> list[ExecutionView]:
     """
     List executions owned by this backend.
 
     Returns:
-        list[AgentExecution]: A bounded page, newest first.
+        list[ExecutionView]: A bounded page, newest first.
     """
     manager = get_agent_execution_manager()
     await manager.start_async()
     records = sorted(manager.records.values(), key=lambda record: record.created_at, reverse=True)
     if conversation_id:
         records = [record for record in records if record.conversation_id == conversation_id]
-    return [record.model_copy(deep=True) for record in records[offset : offset + limit]]
+    return [ExecutionView.from_record(record) for record in records[offset : offset + limit]]
 
 
 @router.get("/{execution_id}")
-async def get_execution_async(execution_id: UUID) -> AgentExecution:
+async def get_execution_async(execution_id: UUID) -> ExecutionView:
     """
     Get a retained execution.
 
     Returns:
-        AgentExecution: Resource state, outcome, and configuration.
+        ExecutionView: Resource state, outcome, and configuration.
 
     Raises:
         HTTPException: The execution is unknown.
@@ -363,7 +382,7 @@ async def get_execution_async(execution_id: UUID) -> AgentExecution:
     record = manager.records.get(execution_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Execution not found")
-    return record.model_copy(deep=True)
+    return ExecutionView.from_record(record)
 
 
 @router.get("/{execution_id}/events")
@@ -469,12 +488,12 @@ async def save_checkpoint_async(
 
 
 @router.post("/{execution_id}/checkpoint/restore")
-async def restore_checkpoint_async(execution_id: UUID) -> AgentExecution:
+async def restore_checkpoint_async(execution_id: UUID) -> ExecutionView:
     """
     Restore the unchanged chat using its currently registered original target.
 
     Returns:
-        AgentExecution: A fresh allocation with immutable source lineage.
+        ExecutionView: A fresh allocation with immutable source lineage.
     """
     record = await get_execution_async(execution_id)
     if record.checkpoint_id is None:
@@ -495,13 +514,14 @@ async def restore_checkpoint_async(execution_id: UUID) -> AgentExecution:
             binding = resolve_model_binding(target.agent_configuration)
             if binding is None:
                 raise ValueError("Checkpoint restoration requires its original BYOK model target")
-            return await get_agent_execution_manager().restore_checkpoint_async(
+            restored = await get_agent_execution_manager().restore_checkpoint_async(
                 checkpoint_id=record.checkpoint_id,
                 profile=target.profile,
                 target_id=record.target_id,
                 memory=CentralMemory.get_memory_instance(),
                 model_binding=binding,
             )
+            return ExecutionView.from_record(restored)
     except (ValueError, RuntimeError) as error:
         logger.warning("Checkpoint restore failed for %s: %s", execution_id, type(error).__name__)
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -557,12 +577,12 @@ async def download_execution_evidence_async(execution_id: UUID) -> Response:
 
 
 @router.post("/{execution_id}/cancel")
-async def cancel_execution_turn_async(execution_id: UUID) -> AgentExecution:
+async def cancel_execution_turn_async(execution_id: UUID) -> ExecutionView:
     """
     Cancel active work without silently recreating or closing a settled session.
 
     Returns:
-        AgentExecution: Current execution state.
+        ExecutionView: Current execution state.
 
     Raises:
         HTTPException: Cancellation cannot be confirmed.
@@ -576,12 +596,12 @@ async def cancel_execution_turn_async(execution_id: UUID) -> AgentExecution:
 
 
 @router.post("/{execution_id}/close")
-async def close_execution_async(execution_id: UUID) -> AgentExecution:
+async def close_execution_async(execution_id: UUID) -> ExecutionView:
     """
     Close resources or retry previously failed cleanup.
 
     Returns:
-        AgentExecution: Verified closure or an explicit cleanup-failed state.
+        ExecutionView: Verified closure or an explicit cleanup-failed state.
     """
     await get_execution_async(execution_id)
     await get_agent_execution_manager().close_execution_async(execution_id=execution_id)

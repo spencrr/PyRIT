@@ -205,6 +205,8 @@ async def test_explicit_operation_outcomes_are_not_processing_errors(
     assert piece.prompt_metadata["target_outcome"] == status
     assert piece.prompt_metadata["operation_id"] == "operation"
     assert not piece.has_error()
+    [stored] = await sqlite_instance.get_attack_results_async(attack_result_ids=[attack.attack_result_id])
+    assert stored.last_response is None
 
 
 @pytest.mark.parametrize(
@@ -252,6 +254,8 @@ async def test_cancelled_partial_response_is_retained_without_conversion(
     assert messages[-1].get_piece().converted_value == "Partial output"
     assert messages[-1].get_piece().prompt_metadata["target_outcome"] == "cancelled"
     assert not messages[-1].get_piece().has_error()
+    [stored] = await sqlite_instance.get_attack_results_async(attack_result_ids=[attack.attack_result_id])
+    assert stored.last_response is None
 
 
 @pytest.mark.parametrize("final_text", [False, True])
@@ -267,7 +271,6 @@ async def test_manual_tool_call_pieces_score_through_the_final_response_async(
         ToolExecutionMetadata,
         ToolsCalled,
     )
-    from pyrit.models.target_response import TargetOutcome, TargetResponse
     from pyrit.score import MessageToolCallScorer
 
     service, attack, target, _ = real_send_context
