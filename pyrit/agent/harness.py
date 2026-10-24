@@ -10,6 +10,7 @@ from typing import ClassVar
 
 from pyrit.models.agent_execution import HarnessProfile
 from pyrit.models.harness_adapter import HarnessAdapterInfo
+from pyrit.models.model_inference import InferenceWireApi
 
 
 class HarnessAdapter(ABC):
@@ -31,6 +32,7 @@ class HarnessAdapter(ABC):
             "WINDIR",
             "TEMP",
             "TMP",
+            "PYRIT_RELAY_TOKEN",
         }
     )
 
@@ -43,7 +45,7 @@ class HarnessAdapter(ABC):
     def launch_environment(self, *, home: str) -> dict[str, str]:
         """Supply harness-specific settings for its private home."""
 
-    def validate_profile(self, *, harness: HarnessProfile) -> None:
+    def validate_profile(self, *, harness: HarnessProfile, target_backed: bool) -> None:
         """
         Reject profiles this adapter cannot run, before any target or execution exists.
 
@@ -51,6 +53,22 @@ class HarnessAdapter(ABC):
             ValueError: The profile is incompatible with this adapter.
         """
         return
+
+    def inference_environment(
+        self,
+        *,
+        model: str,
+        wire_api: InferenceWireApi,
+        base_url: str,
+        token: str,
+    ) -> dict[str, str]:
+        """
+        Translate a scoped relay connection, without access to provider credentials.
+
+        Raises:
+            ValueError: The adapter does not support target-backed model access.
+        """
+        raise ValueError("This harness needs a provider-configuration adapter for target-backed BYOK")
 
 
 class _CopilotAdapter(HarnessAdapter):
@@ -60,11 +78,36 @@ class _CopilotAdapter(HarnessAdapter):
             name="copilot",
             display_name="GitHub Copilot",
             default_command=("copilot", "--acp", "--stdio"),
-            reserved_environment=("COPILOT_HOME",),
+            wire_apis=(InferenceWireApi.CHAT_COMPLETIONS, InferenceWireApi.RESPONSES),
+            native_model_credentials=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+            reserved_environment=(
+                "COPILOT_HOME",
+                "COPILOT_PROVIDER_BASE_URL",
+                "COPILOT_PROVIDER_TYPE",
+                "COPILOT_PROVIDER_WIRE_API",
+                "COPILOT_PROVIDER_API_KEY",
+                "COPILOT_MODEL",
+            ),
         )
 
     def launch_environment(self, *, home: str) -> dict[str, str]:
         return {"COPILOT_HOME": f"{home}/.copilot"}
+
+    def inference_environment(
+        self,
+        *,
+        model: str,
+        wire_api: InferenceWireApi,
+        base_url: str,
+        token: str,
+    ) -> dict[str, str]:
+        return {
+            "COPILOT_PROVIDER_BASE_URL": base_url,
+            "COPILOT_PROVIDER_TYPE": "openai",
+            "COPILOT_PROVIDER_WIRE_API": wire_api.value,
+            "COPILOT_PROVIDER_API_KEY": token,
+            "COPILOT_MODEL": model,
+        }
 
 
 class _GenericAcpAdapter(HarnessAdapter):
@@ -149,7 +192,7 @@ class HarnessAdapterRegistry:
             return [adapter.info.model_copy(deep=True) for _, adapter in sorted(self._adapters.items())]
 
 
-def validate_harness_authentication(*, harness: HarnessProfile) -> None:
+def validate_harness_authentication(*, harness: HarnessProfile, target_backed: bool) -> None:
     """
     Validate credential delivery consistently across all caller surfaces.
 
@@ -157,7 +200,7 @@ def validate_harness_authentication(*, harness: HarnessProfile) -> None:
         ValueError: Settings override execution configuration or conflict with the adapter.
     """
     adapter = HarnessAdapterRegistry.get_registry_singleton().get(harness.harness_kind)
-    adapter.validate_profile(harness=harness)
+    adapter.validate_profile(harness=harness, target_backed=target_backed)
     reserved = HarnessAdapter.EXECUTION_RESERVED_ENVIRONMENT | {
         name.upper() for name in adapter.info.reserved_environment
     }
@@ -165,6 +208,17 @@ def validate_harness_authentication(*, harness: HarnessProfile) -> None:
     if conflicts:
         raise ValueError(
             f"Credential references cannot override execution configuration: {', '.join(sorted(conflicts))}"
+        )
+    if not target_backed:
+        return
+    if harness.authentication_method is not None:
+        raise ValueError("The current BYOK adapters do not support ACP authentication_method; remove it explicitly")
+    native = {name.upper() for name in adapter.info.native_model_credentials}
+    conflicts = {name for name in harness.credential_env if name.upper() in native}
+    if conflicts:
+        raise ValueError(
+            "BYOK cannot forward native model credentials: "
+            f"{', '.join(sorted(conflicts))}. Use separately scoped, tool-specific references."
         )
 
 
@@ -187,6 +241,20 @@ def resolve_credential_values(*, credential_env: tuple[str, ...]) -> dict[str, s
     return values
 
 
+def validate_inference_adapter(*, kind: str, wire_api: InferenceWireApi) -> None:
+    """
+    Reject unsupported model access before provisioning.
+
+    Raises:
+        ValueError: No compatible model adapter is installed.
+    """
+    adapter = HarnessAdapterRegistry.get_registry_singleton().get(kind)
+    if not adapter.info.wire_apis:
+        raise ValueError("This harness requires a provider-configuration adapter for target-backed BYOK")
+    if wire_api not in adapter.info.wire_apis:
+        raise ValueError(f"{adapter.info.display_name} adapter does not support {wire_api.value} model inference")
+
+
 def launch_environment(*, kind: str, home: str) -> dict[str, str]:
     """
     Build harness-specific settings using the installed adapter.
@@ -195,3 +263,30 @@ def launch_environment(*, kind: str, home: str) -> dict[str, str]:
         dict[str, str]: Settings for the private execution environment.
     """
     return HarnessAdapterRegistry.get_registry_singleton().get(kind).launch_environment(home=home)
+
+
+def inference_environment(
+    *,
+    kind: str,
+    model: str,
+    wire_api: InferenceWireApi,
+    base_url: str,
+    token: str,
+) -> dict[str, str]:
+    """
+    Pass only the scoped relay connection to the adapter, not upstream credentials.
+
+    Returns:
+        dict[str, str]: Ephemeral provider settings for the tested process.
+    """
+    validate_inference_adapter(kind=kind, wire_api=wire_api)
+    return (
+        HarnessAdapterRegistry.get_registry_singleton()
+        .get(kind)
+        .inference_environment(
+            model=model,
+            wire_api=wire_api,
+            base_url=base_url,
+            token=token,
+        )
+    )

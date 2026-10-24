@@ -12,6 +12,24 @@ from pyrit.models.agent_execution import (
     HarnessProfile,
     ModelBinding,
 )
+from pyrit.models.model_inference import InferenceRequirements
+
+
+def test_inference_requirement_json_has_canonical_order_without_changing_runtime_set() -> None:
+    requirements = InferenceRequirements(input_modalities=frozenset({"text", "image", "audio"}))
+    assert requirements.model_dump()["input_modalities"] == frozenset({"text", "image", "audio"})
+    assert requirements.model_dump(mode="json")["input_modalities"] == ["audio", "image", "text"]
+    profile = HarnessProfile(inference_requirements=requirements)
+    config = AgentTargetConfiguration(
+        harness_profile=profile, environment_template=EnvironmentTemplate(environment="docker", image="test")
+    )
+    assert config.to_profile().model_dump(mode="json")["inference_requirements"]["input_modalities"] == [
+        "audio",
+        "image",
+        "text",
+    ]
+    assert AgentTargetConfiguration.model_validate_json(config.model_dump_json()) == config
+
 
 _LOCAL = {"environment": "local", "local_execution_acknowledged": True}
 
@@ -52,6 +70,17 @@ def test_flattened_profile_persists_with_the_execution() -> None:
     record = AgentExecution(owner_id="test", conversation_id="conversation", target_id="target", profile=profile)
     reloaded = AgentExecution.model_validate_json(record.model_dump_json())
     assert reloaded.profile == profile
+
+
+def test_inference_request_budget_is_bounded() -> None:
+    for maximum in (0, 1001):
+        with pytest.raises(ValidationError):
+            AgentProfile(environment="local", local_execution_acknowledged=True, max_inference_requests=maximum)
+        with pytest.raises(ValidationError):
+            AgentTargetConfiguration(
+                environment_template=EnvironmentTemplate(environment="docker", image="test"),
+                max_inference_requests=maximum,
+            )
 
 
 @pytest.mark.parametrize(

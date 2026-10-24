@@ -282,6 +282,11 @@ executable conformance suites in `pyrit.agent.conformance`. Canonical tool calls
 existing `FunctionCallContent`, `FunctionOutputContent`, and `ToolExecutionMetadata`: the
 target projects retained reports, the normalizer persists them, and the existing
 `MessageToolCallScorer` interprets `ToolsCalled`. Missing reports remain unknown, not false.
+A model binding may reference another registered target's single-inference capability: an
+execution-scoped relay invokes that target's transport and authentication while the harness
+keeps its own tools and conversation. That path never runs a target's tool loop, replays
+history, or applies converters; eligibility is capability-based, and inference evidence is
+distinct from agent-reported tool execution.
 
 **Contributing (difficulty low)**:
 - The pattern is well-defined.

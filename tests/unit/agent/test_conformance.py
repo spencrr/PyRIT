@@ -22,6 +22,7 @@ from pyrit.agent.harness import HarnessAdapter, HarnessAdapterRegistry
 from pyrit.models.agent_environment import EnvironmentCapabilities, EnvironmentProviderInfo
 from pyrit.models.agent_execution import AgentExecution, EnvironmentTemplate
 from pyrit.models.harness_adapter import HarnessAdapterInfo
+from pyrit.models.model_inference import InferenceWireApi
 from tests.unit.agent.example_adapters import OpenCodeAdapter
 
 ECHO_COMMAND = (
@@ -35,10 +36,15 @@ ECHO_COMMAND = (
 class LeakyAdapter(HarnessAdapter):
     @property
     def info(self) -> HarnessAdapterInfo:
-        return HarnessAdapterInfo(name="leaky", display_name="Leaky")
+        return HarnessAdapterInfo(name="leaky", display_name="Leaky", wire_apis=(InferenceWireApi.CHAT_COMPLETIONS,))
 
     def launch_environment(self, *, home: str) -> dict[str, str]:
         return {"LEAKY_API_KEY": "from-launch"}
+
+    def inference_environment(
+        self, *, model: str, wire_api: InferenceWireApi, base_url: str, token: str
+    ) -> dict[str, str]:
+        return {"LEAKY_MODEL": model}
 
 
 class LeakySession(LocalSession):
@@ -85,6 +91,7 @@ def test_adapter_conformance_names_each_broken_promise() -> None:
     failures = {check.name for check in report.failures}
     assert "launch settings only use declared reserved names" in failures
     assert "launch settings do not look like provider credentials" in failures
+    assert "inference settings for completions deliver the relay token and base URL" in failures
     with pytest.raises(AssertionError, match="failed conformance"):
         report.raise_for_failures()
 

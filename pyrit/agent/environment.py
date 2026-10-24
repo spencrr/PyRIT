@@ -52,8 +52,9 @@ class ExecutionSpec(BaseModel):
     """
     Everything a provider needs to start one harness; built by the runtime, never persisted.
 
-    ``environment`` carries adapter launch settings. ``credentials`` are explicit credential
-    values; providers pass them to the harness and must never log, journal, or store them.
+    ``environment`` carries adapter launch settings and the scoped inference connection.
+    ``credentials`` are explicit credential values; providers pass them to the harness and
+    must never log, journal, or store them.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -98,6 +99,21 @@ class ExecutionSession(ABC):
     def reserve(self) -> None:
         """Record deterministic resource identifiers so a crash during allocation stays reconcilable."""
         return
+
+    async def inference_endpoint_async(self, *, relay_url: str) -> str:
+        """
+        Translate the backend relay URL into one the harness can reach.
+
+        This must not acquire resources: it runs before the record is persisted. A provider that
+        needs a forward or tunnel records the decision here and establishes it in ``launch_async``.
+
+        Returns:
+            str: The relay base URL inside the environment's network namespace.
+
+        Raises:
+            ValueError: The relay is not reachable from this environment as configured.
+        """
+        return relay_url
 
     @abstractmethod
     async def launch_async(self, spec: ExecutionSpec) -> None:

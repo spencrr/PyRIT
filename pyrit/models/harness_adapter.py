@@ -6,6 +6,7 @@
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from pyrit.models.identifiers.class_name_utils import validate_registry_name
+from pyrit.models.model_inference import InferenceWireApi
 
 
 class HarnessAdapterInfo(BaseModel):
@@ -15,6 +16,8 @@ class HarnessAdapterInfo(BaseModel):
     name: str
     display_name: str
     default_command: tuple[str, ...] = ()
+    wire_apis: tuple[InferenceWireApi, ...] = ()
+    native_model_credentials: tuple[str, ...] = ()
     reserved_environment: tuple[str, ...] = ()
 
     @field_validator("name")

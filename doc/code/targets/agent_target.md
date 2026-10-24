@@ -19,8 +19,9 @@ Attack / chat -> Owned execution -> ACP -> Tested harness
 
 ## Terminology
 
-- **Model binding** says which model answers. In this release it is a harness-managed
-  selection by name; a later release binds registered PyRIT targets.
+- **Model binding** says which model answers: a harness-managed selection by name, or a
+  registered PyRIT target whose single-inference capability the harness reaches through a
+  scoped relay (see [Bring your own model](#bring-your-own-model)).
 - **Harness profile** describes the executable, its credential references, and its tool
   permission policy. It is independent of the model and of where the harness runs.
 - **Environment template** describes where the harness runs: the starting filesystem and the
@@ -111,6 +112,78 @@ A manager admits at most `max_executions` concurrent executions (`PYRIT_AGENT_MA
 for the runtime-owned manager, default 4). A new conversation waits up to
 `startup_timeout_seconds` for a slot before failing explicitly, so attacks with higher
 concurrency queue rather than error.
+
+## Bring your own model
+
+A harness normally brings its own model access (for Copilot, a GitHub login). To test the
+harness against a model PyRIT already knows how to reach, bind a **registered target** instead:
+
+```text
+PyRIT -- ACP --> harness
+                   |  standard model API + execution-scoped relay credential
+                   v
+          inference-only relay  --->  registered PyRIT target  --->  provider
+                                      (auth, token refresh, transport)
+```
+
+```python
+from pyrit.models.agent_execution import ModelBinding
+from pyrit.registry import TargetRegistry
+
+TargetRegistry.get_registry_singleton().create_named_instance(
+    name="judge-model", type_name="OpenAIChatTarget", params={"endpoint": "...", "model_name": "...", "api_key": "..."}
+)
+configuration = configuration.model_copy(
+    update={"model_binding": ModelBinding(target_registry_name="judge-model")}
+)
+```
+
+This is not an endpoint-settings exporter. Every model request the harness makes invokes the
+bound target's `open_inference_async` (see [single inference](./0_prompt_targets.md#single-inference)),
+so the source target keeps its provider credential or token callback; the harness receives only a
+revocable, execution-scoped relay token, delivered through the adapter's declared provider
+settings (`COPILOT_PROVIDER_*` for Copilot). Eligibility is decided by `inference_capabilities`
+against the harness profile's `inference_requirements` (wire API, streaming, tool-call
+passthrough, input modalities), never by target class name. Construction resolves the source and
+pins its identifier hash into the configuration: a changed source yields a different agent
+target, and a source that no longer matches is refused rather than silently rebound.
+
+The relay serves only the bound model and wire API, a bounded request body, and
+harness-executed tools; caller-supplied routing or authentication overrides, provider-hosted
+tools, background inference, and server-side continuation or file references are rejected. Each
+execution allows `max_inference_requests` admission attempts over its lifetime (default 100,
+maximum 1000, counting invalid requests), at most four concurrent requests, 16 MiB per response, and the turn
+deadline per request. Closing the execution revokes its lease and cancels in-flight inference;
+the runtime stops the listener at shutdown, and the backend closes every registered target's
+transport (`cleanup_target_async`) with its other services.
+
+Every relayed request is journaled beside the ACP frames (`direction="inference"`): source
+target identity, request identity, provider status and outcome, and byte counts.
+`capture_inference_content=True` additionally retains request bodies and decoded response text; it is
+off by default because content is sensitive, and provider request headers are never recorded.
+Response content is buffered within the response byte limit and journaled as an
+`inference.content` event when the stream settles (a partial prefix on failure), so known
+literal credential values spanning transport chunks pass through runtime redaction together.
+It is decoded UTF-8 text, not a byte-exact replay archive. Delivery to the harness is still
+streamed unchanged; status and outcome events remain live.
+A model requesting a tool is not evidence that the tool ran; see [tool calls](#tool-calls).
+
+The listener binds `127.0.0.1` on an ephemeral port. A container cannot reach that address, so
+the Docker provider refuses a loopback relay; on a trusted Docker Desktop machine set
+`PYRIT_INFERENCE_RELAY_HOST=0.0.0.0` and `PYRIT_INFERENCE_RELAY_ADVERTISED_HOST=host.docker.internal`
+on the PyRIT process, and restrict the host interface with a firewall. Providers that need a
+tunnel translate the address in `ExecutionSession.inference_endpoint_async`. The HTTP relay is
+for local or private networking, not untrusted networks.
+
+`build_scripts/agent_byok_demo.py` verifies the routing with a real Copilot CLI, a registered
+`OpenAIChatTarget`, and a synthetic provider that requires a secret only the target holds and
+returns a streamed tool call; it needs no GitHub login and no real model:
+
+```powershell
+uv run --extra agents python -m build_scripts.agent_byok_demo --results dbdata\byok-local
+uv run --extra agents python -m build_scripts.agent_byok_demo --docker --results dbdata\byok-docker
+uv run --extra agents python -m build_scripts.agent_byok_demo --permission-policy deny --results dbdata\byok-denied
+```
 
 ## What is recorded
 
@@ -382,6 +455,14 @@ not authenticate it. A process under the local provider may still discover keych
 login state belonging to the same OS user (observed with Copilot CLI 1.0.95): a private
 directory is not credential isolation. Do not treat an exported personal token on a shared
 backend as a deployment design.
+
+Under a model binding the harness must not be able to bypass the relay: the adapter's declared
+native model credentials (for Copilot, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`) are
+rejected as credential references, as are names that override the private home, command search
+path, or relay settings, and an ACP `authentication_method` is refused rather than ignored.
+Tool-specific credentials still travel as ordinary references. The source target's provider
+key is never forwarded; this is a delivery contract, not a claim that a local process running
+as the same OS user cannot reach host secrets.
 
 The target catalog shows an agent target's full `agent_configuration` to every authenticated
 user, like the endpoints of other targets: credential environment variable *names* (never

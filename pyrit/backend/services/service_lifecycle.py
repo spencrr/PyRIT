@@ -18,6 +18,7 @@ from pyrit.backend.services.scenario_service import get_scenario_service
 from pyrit.backend.services.scorer_service import get_scorer_service
 from pyrit.backend.services.target_service import get_target_service
 from pyrit.backend.services.technique_service import get_technique_service
+from pyrit.registry import TargetRegistry
 
 
 def outstanding_estimates() -> int:
@@ -54,6 +55,12 @@ async def close_services_async() -> None:
 
 
 async def _close_cached_services_async() -> None:
+    """
+    Close cached services and release every registered target transport.
+
+    Raises:
+        ExceptionGroup: One or more target transports could not be closed.
+    """
     if get_manual_send_scheduler.cache_info().currsize:
         get_manual_send_scheduler().stop_admission()
     try:
@@ -67,6 +74,22 @@ async def _close_cached_services_async() -> None:
                 await get_converter_service().close_async()
             await reset_scenario_run_service_async()
             await close_agent_execution_manager_async()
+            errors: list[Exception] = []
+            for entry in TargetRegistry.get_registry_singleton().instances.get_all_instances():
+                try:
+                    await entry.instance.cleanup_target_async()
+                except (Exception, BaseExceptionGroup, asyncio.CancelledError) as error:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise asyncio.CancelledError from error
+                    if isinstance(error, Exception):
+                        errors.append(error)
+                    else:
+                        wrapped = RuntimeError(f"{type(entry.instance).__name__} failed during cleanup")
+                        wrapped.__cause__ = error
+                        errors.append(wrapped)
+            if errors:
+                raise ExceptionGroup("Target transport cleanup failed", errors)
         finally:
             for factory in (
                 get_attack_service,

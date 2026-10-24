@@ -1,9 +1,11 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import json
+
 import pytest
 
-from pyrit.agent.harness import launch_environment
+from pyrit.agent.harness import inference_environment, launch_environment, validate_inference_adapter
 from pyrit.models.agent_execution import (
     AgentHarnessKind,
     AgentProfile,
@@ -12,7 +14,9 @@ from pyrit.models.agent_execution import (
     HarnessProfile,
     ModelBinding,
 )
+from pyrit.models.model_inference import InferenceWireApi
 from pyrit.prompt_target import AgentTarget
+from pyrit.registry import TargetRegistry
 from tests.unit.agent.example_adapters import OPENCODE_COMMAND, OpenCodeAdapter
 
 
@@ -95,9 +99,69 @@ def test_harness_profile_is_validated_at_construction() -> None:
         )
 
 
+@pytest.mark.usefixtures("patch_central_database")
+async def test_pinned_byok_identity_is_stable_async() -> None:
+    source = TargetRegistry.get_registry_singleton().create_named_instance(
+        name="baseline-model",
+        type_name="OpenAIChatTarget",
+        params={
+            "endpoint": "https://example.test/v1",
+            "model_name": "test-deployment",
+            "api_key": "synthetic-test-key",
+        },
+    )
+    try:
+        configuration = AgentTargetConfiguration(
+            model_binding=ModelBinding(target_registry_name="baseline-model"),
+            environment_template=EnvironmentTemplate(environment="docker", image="receipt:latest"),
+        )
+        target = AgentTarget(agent_configuration=configuration)
+        again = AgentTarget(agent_configuration=configuration)
+        # The identity pins the resolved source target, not just its registry name.
+        assert again.get_identifier().hash == target.get_identifier().hash
+        binding = target.get_identifier().params["configuration"]["model_binding"]
+        assert binding["target_identifier_hash"] == source.get_identifier().hash
+        assert binding["target_registry_name"] == "baseline-model"
+    finally:
+        await source.cleanup_target_async()
+
+
+@pytest.mark.usefixtures("opencode_adapter")
+def test_registered_adapter_configuration_has_no_provider_key_or_workspace_file() -> None:
+    environment = inference_environment(
+        kind="opencode",
+        model="test-model",
+        wire_api=InferenceWireApi.CHAT_COMPLETIONS,
+        base_url="http://127.0.0.1:3456/v1",
+        token="scoped-relay-test-token",
+    )
+    config = json.loads(environment["OPENCODE_CONFIG_CONTENT"])
+    assert config["model"] == config["small_model"] == "pyrit/test-model"
+    assert config["enabled_providers"] == ["pyrit"]
+    assert config["permission"] == "ask"
+    assert config["provider"]["pyrit"]["options"] == {
+        "baseURL": "http://127.0.0.1:3456/v1",
+        "apiKey": "{env:PYRIT_RELAY_TOKEN}",
+    }
+    assert "scoped-relay-test-token" not in environment["OPENCODE_CONFIG_CONTENT"]
+    assert environment["PYRIT_RELAY_TOKEN"] == "scoped-relay-test-token"
+    assert not any(name.startswith("COPILOT") for name in environment)
+
+
+@pytest.mark.usefixtures("opencode_adapter")
+@pytest.mark.parametrize("kind", [AgentHarnessKind.ACP, "opencode"])
+def test_unsupported_provider_adapters_fail_before_provisioning(kind: str) -> None:
+    with pytest.raises(ValueError, match="adapter|Chat Completions"):
+        validate_inference_adapter(kind=kind, wire_api=InferenceWireApi.RESPONSES)
+
+
 def test_adapter_reserved_names_are_declared_not_hardcoded() -> None:
     adapter = OpenCodeAdapter()
-    emitted = set(adapter.launch_environment(home="/private"))
+    emitted = set(adapter.launch_environment(home="/private")) | set(
+        adapter.inference_environment(
+            model="m", wire_api=InferenceWireApi.CHAT_COMPLETIONS, base_url="http://relay/v1", token="t"
+        )
+    )
     reserved = set(adapter.info.reserved_environment) | adapter.EXECUTION_RESERVED_ENVIRONMENT
     assert emitted <= reserved
     assert not any("OPENCODE" in name for name in adapter.EXECUTION_RESERVED_ENVIRONMENT)

@@ -108,6 +108,21 @@ def verify_harness_adapter(adapter: HarnessAdapter) -> ConformanceReport:
         not any("KEY" in name or "TOKEN" in name or "SECRET" in name for name in launch),
         "launch_environment must not emit credential-like variables",
     )
+    token, base_url = secrets.token_hex(16), "http://relay.conformance.invalid/v1"
+    for wire_api in info.wire_apis:
+        emitted = adapter.inference_environment(model="m", wire_api=wire_api, base_url=base_url, token=token)
+        recorder.check(
+            f"inference settings for {wire_api.value} only use declared reserved names",
+            set(emitted) <= reserved,
+            f"undeclared inference variables: {sorted(set(emitted) - reserved)}",
+        )
+        recorder.check(
+            f"inference settings for {wire_api.value} deliver the relay token and base URL",
+            any(token in value for value in emitted.values())
+            and any(base_url.rstrip("/") in value for value in emitted.values()),
+            "the harness cannot reach the scoped relay without both values",
+        )
+    # Wire APIs outside info.wire_apis are refused by the runtime before an adapter is consulted.
     return recorder.report
 
 
@@ -150,6 +165,7 @@ async def verify_environment_provider_async(
                 f"{name} is unavailable before launch", False, "streams must raise RuntimeError before launch"
             )
     session.reserve()
+    await _verify_relay_translation_async(recorder, session)
     secret = secrets.token_hex(24)
     spec = ExecutionSpec(
         command=echo_command,
@@ -212,6 +228,30 @@ def _verify_consent(recorder: _Recorder, provider: ExecutionEnvironmentProvider,
         not consent_required,
         "an unsandboxed provider accepted a template without consent",
     )
+
+
+async def _verify_relay_translation_async(recorder: _Recorder, session: ExecutionSession) -> None:
+    # Providers legitimately differ: a container needs a routable host, a remote sandbox forwards loopback.
+    accepted: list[str] = []
+    for relay_url in ("http://127.0.0.1:8021/v1", "http://relay.conformance.invalid:8021/v1"):
+        try:
+            endpoint = await session.inference_endpoint_async(relay_url=relay_url)
+        except ValueError:
+            continue
+        # Third-party code may not honor the annotation; verify the runtime value.
+        if not _is_http_url(endpoint):
+            recorder.check("inference_endpoint_async returns a URL", False, f"got {endpoint!r} for {relay_url}")
+            return
+        accepted.append(relay_url)
+    recorder.check(
+        "inference_endpoint_async translates at least one relay address and rejects others with ValueError",
+        bool(accepted),
+        "neither a loopback nor a routable relay URL was accepted",
+    )
+
+
+def _is_http_url(value: object) -> bool:
+    return isinstance(value, str) and value.startswith("http")
 
 
 async def _verify_streams_async(recorder: _Recorder, session: ExecutionSession) -> None:
