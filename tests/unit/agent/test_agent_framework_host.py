@@ -13,7 +13,7 @@ import pytest
 
 pytest.importorskip("acp")
 
-from acp import RequestError
+from acp import RequestError, text_block
 
 from pyrit.agent.execution_manager import AgentExecutionManager
 from pyrit.agent.hosts.agent_framework_acp import AgentFrameworkAcpHost, _Session, load_factory
@@ -208,6 +208,31 @@ async def test_streamed_argument_fragments_are_reported_complete_on_the_final_up
     )
     await host._emit_content_async("s", session, FakeContent(type="function_result", call_id="c2", result=""))
     assert "rawInput" not in updates[-1][1]
+
+
+@pytest.mark.parametrize("via_acp", [True, False])
+async def test_only_an_acp_cancel_is_reported_as_a_cancelled_turn(via_acp: bool) -> None:
+    class WaitingAgent:
+        def run(self, messages: Any = None, *, stream: bool = False, session: Any = None, **kwargs: Any) -> Any:
+            return self._stream()
+
+        async def _stream(self) -> Any:
+            await asyncio.sleep(3600)
+            yield None
+
+    host = AgentFrameworkAcpHost(factory=lambda cwd: None)  # type: ignore[arg-type, return-value]
+    host._sessions["s"] = _Session(agent=WaitingAgent(), session=None, cwd=".")  # type: ignore[arg-type]
+    prompt = asyncio.create_task(host.prompt("s", [text_block("wait")]))
+    await asyncio.sleep(0.05)
+    if via_acp:
+        await host.cancel("s")
+        assert (await prompt).stop_reason == "cancelled"
+    else:
+        # The host itself is shutting down; a shutdown must not masquerade as the agent cancelling a turn.
+        prompt.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await prompt
+    assert host._sessions["s"].task is None
 
 
 def test_tool_kind_and_argument_parsing_are_conservative() -> None:

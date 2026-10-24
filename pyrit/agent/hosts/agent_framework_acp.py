@@ -62,6 +62,7 @@ class _Session:
     session: "AgentSession"
     cwd: str
     task: asyncio.Task[Any] | None = None
+    cancel_requested: bool = False
     pending_calls: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -159,10 +160,12 @@ class AgentFrameworkAcpHost(Agent):
         if not text or len(text) != sum(len(getattr(block, "text", "")) for block in prompt):
             raise RequestError.invalid_params({"details": "This host accepts text prompts only"})
         session.task = asyncio.current_task()
+        session.cancel_requested = False
         try:
             await self._run_turn_async(session_id, session, text)
         except asyncio.CancelledError:
-            if session.task is not None and session.task.cancelling():
+            # Only an ACP session/cancel is reported as a cancelled turn; host shutdown keeps propagating.
+            if session.cancel_requested and session.task is not None and session.task.cancelling():
                 session.task.uncancel()
                 return PromptResponse(stop_reason="cancelled")
             raise
@@ -179,6 +182,7 @@ class AgentFrameworkAcpHost(Agent):
         """Cancel the running turn; the prompt call reports ``cancelled``."""
         session = self._sessions.get(session_id)
         if session is not None and session.task is not None and not session.task.done():
+            session.cancel_requested = True
             session.task.cancel()
 
     async def close_session(self, session_id: str, **kwargs: Any) -> None:  # pyrit-async-suffix-exempt
