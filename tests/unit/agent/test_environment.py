@@ -70,7 +70,7 @@ async def test_local_launch_uses_private_home_and_exposes_streams(tmp_path: Path
 def test_registry_lists_first_party_providers_and_rejects_unknown_names() -> None:
     registry = EnvironmentProviderRegistry()
     names = [info.name for info in registry.list_providers()]
-    assert names == ["local"]
+    assert names == ["docker", "local"]
     local = registry.get("local").info
     assert not local.capabilities.isolated
     with pytest.raises(ValueError, match="unavailable"):

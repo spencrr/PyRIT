@@ -59,7 +59,7 @@ def test_flattened_profile_persists_with_the_execution() -> None:
     [
         {"environment_template": {"environment": "local"}},
         {"environment_template": {}},
-        {"environment_template": {"environment": "local", "local_execution_acknowledged": True, "image": "test"}},
+        {"environment_template": {"environment": "docker", "image": "test", "docker_cpus": 0}},
         {"environment_template": _LOCAL, "harness_profile": {"command": []}},
         {"environment_template": _LOCAL, "harness_profile": {"credential_env": ["literal token"]}},
         {"environment_template": _LOCAL, "artifact_paths": ["../outside"]},
