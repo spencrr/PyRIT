@@ -33,25 +33,33 @@ class _JournalIndex:
 class AgentExecutionStore:
     """Persist records atomically and protocol events in an append-only journal."""
 
+    MAX_OBSERVERS = 64
+
     def __init__(self, *, root: Path) -> None:
         """Bind storage without creating directories or starting processes."""
         self.root = root
         # Record directories this version cannot decode; their resources may remain allocated.
         self.unreadable_records: dict[str, str] = {}
         self._save_lock = asyncio.Lock()
-        self._listeners: set[asyncio.Event] = set()
+        self._listeners: dict[str, set[asyncio.Event]] = {}
         self._indexes: dict[UUID, _JournalIndex] = {}
         self._index_lock = Lock()
 
-    def notify(self) -> None:
-        """Wake observers after a durable state change; slow observers do not buffer events in memory."""
-        for listener in self._listeners:
+    def notify(self, conversation_id: str) -> None:
+        """Wake one conversation's observers after a durable change; slow observers never buffer events in memory."""
+        for listener in self._listeners.get(conversation_id, ()):
             listener.set()
 
+    def notify_all(self) -> None:
+        """Wake every observer for store-wide transitions such as runtime shutdown."""
+        for listeners in self._listeners.values():
+            for listener in listeners:
+                listener.set()
+
     @contextmanager
-    def subscribe(self) -> Generator[asyncio.Event, None, None]:
+    def subscribe(self, conversation_id: str) -> Generator[asyncio.Event, None, None]:
         """
-        Subscribe to bounded wakeups; the journal remains the source of replay.
+        Subscribe to bounded wakeups for one conversation; the journal remains the source of replay.
 
         Yields:
             asyncio.Event: A coalesced change notification.
@@ -59,14 +67,18 @@ class AgentExecutionStore:
         Raises:
             RuntimeError: Observer admission is exhausted.
         """
-        if len(self._listeners) >= 64:
+        if sum(len(listeners) for listeners in self._listeners.values()) >= self.MAX_OBSERVERS:
             raise RuntimeError("Execution observer capacity reached")
         event = asyncio.Event()
-        self._listeners.add(event)
+        self._listeners.setdefault(conversation_id, set()).add(event)
         try:
             yield event
         finally:
-            self._listeners.discard(event)
+            listeners = self._listeners.get(conversation_id)
+            if listeners is not None:
+                listeners.discard(event)
+                if not listeners:
+                    del self._listeners[conversation_id]
 
     def directory(self, execution_id: UUID) -> Path:
         """
@@ -89,7 +101,7 @@ class AgentExecutionStore:
             await await_task_completion_async(
                 asyncio.create_task(self._save_with_retry_async(execution_id=execution.id, data=data))
             )
-            self.notify()
+            self.notify(execution.conversation_id)
 
     async def _save_with_retry_async(self, *, execution_id: UUID, data: str) -> None:
         for attempt in range(10):

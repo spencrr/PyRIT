@@ -291,6 +291,12 @@ the local provider may still discover keychain or other login state belonging to
 user (observed with Copilot CLI 1.0.95): a private directory is not credential isolation.
 Do not treat an exported personal token on a shared backend as a deployment design.
 
+The target catalog shows an agent target's full `agent_configuration` to every authenticated
+user, like the endpoints of other targets: credential environment variable *names* (never
+values) and, for API-created targets, the `fixture_directory` resolved to its absolute server
+path. Names are the authoring contract; the path reveals server layout, not content. Treat
+the catalog as visible to everyone who can use the target.
+
 ## Administration
 
 Creating an `AgentTarget` through `POST /api/targets` requires administrator access: the

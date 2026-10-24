@@ -471,7 +471,7 @@ class AgentExecutionManager:
                     record.last_event_at = event.timestamp
                     if payload.get("type") == "connection.closed":
                         record.connection_state = AgentConnectionState.DISCONNECTED
-                    self.store.notify()
+                    self.store.notify(record.conversation_id)
 
                 await await_task_completion_async(asyncio.create_task(append_and_count_async()))
             except Exception as error:
@@ -666,7 +666,7 @@ class AgentExecutionManager:
         async with self._admission:
             self._closed = True
             self._capacity.notify_all()
-            self.store.notify()
+            self.store.notify_all()
         if self._reaper:
             self._reaper.cancel()
             with contextlib.suppress(asyncio.CancelledError):
