@@ -576,6 +576,14 @@ which are redacted before frames are written.
 - `POST /{execution_id}/control/{continue|extend|close}` acts on an interactive execution; it
   is a 409 for automated executions or an expired hold.
 
+Decisions are attributed to the operator who made them (`approval.actor`, a `close_reason` of
+`operator:<id>`, and the actor on `permission.resolved` / `execution.operator_action` events).
+By default everyone with access to the attack sees that identity. Set
+`show_agent_operator_identity: false` in the saved configuration to report only the role
+(`operator`; runtime decisions keep `policy`, `runtime`, and `interrupted_runtime`) in the
+conversation-scoped view, its events, and the chat; the record and the administrator view keep
+the identity. This is presentation only: nothing stored changes.
+
 Administrator routes under `/api/executions` are the resource view:
 
 - `GET /` lists bounded execution pages (`conversation_id` filters a chat); `GET /{id}` reads

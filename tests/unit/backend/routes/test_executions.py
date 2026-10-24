@@ -226,3 +226,81 @@ def test_permission_and_hold_routes_require_an_interactive_execution() -> None:
         record.interactive = False
         assert client.post(f"{path}/control/continue").status_code == 409
     manager.control_held_async.assert_awaited_with(execution_id=record.id, action="extend", actor="local-operator")
+
+
+@pytest.mark.usefixtures("patch_central_database")
+@pytest.mark.parametrize("show_identity", [True, False])
+def test_operator_identity_visibility_follows_the_server_setting(show_identity: bool) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from pyrit.agent.execution_manager import AgentExecutionManager
+    from pyrit.agent.execution_store import AgentExecutionStore
+    from pyrit.backend.services import agent_execution_service
+    from pyrit.memory import CentralMemory
+    from pyrit.models import AttackResult
+    from pyrit.models.agent_execution import AgentApproval, AgentExecutionEvent, AgentExecutionState
+
+    attack = AttackResult(conversation_id=str(uuid4()), objective="receipt")
+    asyncio.run(CentralMemory.get_memory_instance().add_attack_results_to_memory_async(attack_results=[attack]))
+    oid = "11111111-2222-3333-4444-555555555555"
+    decided = AgentApproval(
+        tool_call_id="call",
+        title="Read orders",
+        options=[],
+        expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        decision="operator_allow",
+        option_id="yes",
+        actor=oid,
+    )
+    timed_out = decided.model_copy(update={"id": uuid4(), "decision": "timeout_deny", "actor": "policy"})
+    record = AgentExecution(
+        owner_id="owner",
+        conversation_id=attack.conversation_id,
+        target_id="target",
+        profile=AgentProfile(environment="local", local_execution_acknowledged=True, permission_policy="ask"),
+        state=AgentExecutionState.CLOSED,
+        interactive=True,
+        approvals=[decided, timed_out],
+        close_reason=f"operator:{oid}",
+    )
+    events = [
+        AgentExecutionEvent(
+            execution_id=record.id,
+            sequence=1,
+            direction="lifecycle",
+            payload={"type": "permission.resolved", "approval": decided.model_dump(mode="json")},
+        ),
+        AgentExecutionEvent(
+            execution_id=record.id,
+            sequence=2,
+            direction="lifecycle",
+            payload={"type": "execution.operator_action", "action": "extend", "actor": oid},
+        ),
+    ]
+    manager = MagicMock(spec=AgentExecutionManager)
+    manager.records = {record.id: record}
+    manager.latest_execution.return_value = record
+    manager.start_async = AsyncMock()
+    manager.store = MagicMock(spec=AgentExecutionStore)
+    manager.store.events_async = AsyncMock(return_value=AgentEventPage(events=events, next_cursor=2))
+    app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
+    app.state.show_agent_operator_identity = show_identity
+    app.include_router(executions.conversation_router)
+    client = TestClient(app)
+    path = f"/attacks/{attack.attack_result_id}/conversations/{attack.conversation_id}/execution"
+    with (
+        patch.object(agent_execution_service, "get_agent_execution_manager", return_value=manager),
+        patch.object(executions, "get_agent_execution_manager", return_value=manager),
+    ):
+        response = client.get(path)
+        view = response.json()
+        page = client.get(f"{path}/{record.id}/events").json()
+    expected = oid if show_identity else "operator"
+    assert view["close_reason"] == (f"operator:{oid}" if show_identity else "operator")
+    assert [approval["actor"] for approval in view["approvals"]] == [expected, "policy"]
+    assert page["events"][0]["payload"]["approval"]["actor"] == expected
+    assert page["events"][1]["payload"]["actor"] == expected
+    assert (oid in response.text) is show_identity
+    # The stored record is never rewritten by a presentation setting.
+    assert record.approvals[0].actor == oid and record.close_reason == f"operator:{oid}"

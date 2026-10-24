@@ -124,6 +124,9 @@ class ConfigurationLoader(YamlLoadable):
             single-process backend runtime from the GUI.
         target_upload_directory: Folder that targets created through the backend API may
             upload local files from. When unset, those targets cannot be created through the API.
+        show_agent_operator_identity: Whether conversation-scoped agent execution views name
+            the operator who decided a tool permission or closed an execution. When false, those
+            views report the role (``operator``) and only administrators see the identity.
 
     Example YAML configuration:
         memory_db_type: sqlite
@@ -172,6 +175,7 @@ class ConfigurationLoader(YamlLoadable):
     scenario_presets_source: str | None = None
     scenario_suites_source: str | None = None
     target_upload_directory: str | None = None
+    show_agent_operator_identity: bool = True
     server: dict[str, Any] | None = None
     extensions: dict[str, Any] = field(default_factory=dict)
 
@@ -193,6 +197,8 @@ class ConfigurationLoader(YamlLoadable):
         validate_env_akv_strict(env_akv_strict=self.env_akv_strict)
         if not isinstance(self.enable_live_reinitialization, bool):
             raise TypeError("enable_live_reinitialization must be a bool.")
+        if not isinstance(self.show_agent_operator_identity, bool):
+            raise TypeError("show_agent_operator_identity must be a bool.")
         self._validate_allow_custom_initializers()
         self._normalize_memory_db_type()
         self._normalize_initializers()

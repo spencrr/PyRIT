@@ -369,6 +369,65 @@ async def test_deadline_holds_interactive_but_closes_automated(
                 environment.close_async.assert_awaited()
 
 
+async def test_pending_approvals_pause_the_turn_deadline(
+    tmp_path: Path, configuration: AgentTargetConfiguration, connection: MagicMock, environment: MagicMock
+) -> None:
+    from pyrit.models.agent_execution import AgentPermissionPolicy
+
+    configuration = configuration.model_copy(
+        update={
+            "harness_profile": HarnessProfile(permission_policy=AgentPermissionPolicy.ASK),
+            "turn_timeout_seconds": 0.2,
+        }
+    )
+    with (
+        patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment),
+        patch("pyrit.agent.acp_connection.AcpConnection", return_value=connection),
+    ):
+        async with AgentExecutionManager(root=tmp_path) as manager:
+
+            async def prompt_async(prompt: str) -> tuple[str, str]:
+                live = next(iter(manager._live.values()))
+                assert live.approvals is not None
+                # The harness asks for permission; the operator takes longer than the whole turn deadline.
+                option = await live.approvals.request_async(
+                    tool_call_id="read",
+                    title="Read orders",
+                    options=[
+                        {"option_id": "yes", "name": "Allow", "kind": "allow_once"},
+                        {"option_id": "no", "name": "Deny", "kind": "reject_once"},
+                    ],
+                )
+                return "end_turn", f"Permission {option}"
+
+            connection.prompt_async.side_effect = prompt_async
+            send = asyncio.create_task(
+                manager.send_async(
+                    configuration=configuration,
+                    target_id="target",
+                    conversation_id="one",
+                    request_id="1",
+                    prompt="Read the orders",
+                    has_history=False,
+                    interactive=True,
+                )
+            )
+            async with asyncio.timeout(5):
+                while not manager.records or not next(iter(manager.records.values())).approvals:
+                    await asyncio.sleep(0.01)
+                record = next(iter(manager.records.values()))
+                await asyncio.sleep(0.4)
+                assert not send.done()
+                await manager.decide_permission_async(
+                    execution_id=record.id, approval_id=record.approvals[0].id, allow=True, actor="operator"
+                )
+                _, turn = await send
+            assert turn.status == AgentTurnStatus.COMPLETED
+            assert turn.response_text == "Permission yes"
+            assert record.state == AgentExecutionState.IDLE
+            connection.cancel_async.assert_not_awaited()
+
+
 async def test_automation_rejects_ask_before_provisioning(
     tmp_path: Path, configuration: AgentTargetConfiguration
 ) -> None:

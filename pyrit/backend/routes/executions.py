@@ -24,6 +24,7 @@ from pyrit.models.agent_execution import (
     AgentConnectionState,
     AgentEventPage,
     AgentExecution,
+    AgentExecutionEvent,
     AgentExecutionState,
     AgentTargetConfiguration,
     AgentTurn,
@@ -85,7 +86,9 @@ async def _resolve_async(
 
 
 @conversation_router.get("/{attack_result_id}/conversations/{conversation_id}/execution")
-async def get_conversation_execution_async(attack_result_id: str, conversation_id: str) -> ConversationExecution | None:
+async def get_conversation_execution_async(
+    request: Request, attack_result_id: str, conversation_id: str
+) -> ConversationExecution | None:
     """
     Observe the execution through the same attack access boundary as the chat transcript.
 
@@ -95,6 +98,7 @@ async def get_conversation_execution_async(attack_result_id: str, conversation_i
     record = await _resolve_async(attack_result_id=attack_result_id, conversation_id=conversation_id)
     if record is None:
         return None
+    show_identity = _shows_operator_identity(request)
     return ConversationExecution(
         id=record.id,
         conversation_id=record.conversation_id,
@@ -103,7 +107,7 @@ async def get_conversation_execution_async(attack_result_id: str, conversation_i
         model=record.profile.model,
         turns=[turn.model_copy(deep=True) for turn in record.turns],
         capture_error=record.capture_error,
-        close_reason=record.close_reason,
+        close_reason=record.close_reason if show_identity else _operator_role(record.close_reason),
         source_coverage=record.source_coverage,
         artifacts=list(record.artifacts),
         event_count=record.event_count,
@@ -112,9 +116,40 @@ async def get_conversation_execution_async(attack_result_id: str, conversation_i
         held_until=record.held_until,
         expires_at=record.created_at + timedelta(seconds=record.profile.lifetime_seconds),
         last_event_at=record.last_event_at,
-        approvals=[approval.model_copy(deep=True) for approval in record.approvals],
+        approvals=[
+            approval.model_copy(deep=True, update={} if show_identity else {"actor": _operator_role(approval.actor)})
+            for approval in record.approvals
+        ],
         transcript_revision=record.transcript_revision,
     )
+
+
+def _shows_operator_identity(request: Request) -> bool:
+    state = getattr(request.scope.get("app"), "state", None)
+    return bool(getattr(state, "show_agent_operator_identity", True))
+
+
+# Decisions made by the runtime itself keep their role names; anything else names a person.
+_RUNTIME_ACTORS = frozenset({"policy", "runtime", "interrupted_runtime"})
+
+
+def _operator_role(actor: str | None) -> str | None:
+    if actor is None or actor in _RUNTIME_ACTORS:
+        return actor
+    return "operator"
+
+
+def _mask_event_actors(event: AgentExecutionEvent) -> AgentExecutionEvent:
+    payload = dict(event.payload)
+    actor = payload.get("actor")
+    if isinstance(actor, str):
+        payload["actor"] = _operator_role(actor)
+    approval = payload.get("approval")
+    if isinstance(approval, dict):
+        approval_actor = approval.get("actor")
+        if isinstance(approval_actor, str):
+            payload["approval"] = {**approval, "actor": _operator_role(approval_actor)}
+    return event.model_copy(update={"payload": payload})
 
 
 @conversation_router.get("/{attack_result_id}/conversations/{conversation_id}/execution/stream")
@@ -145,7 +180,7 @@ async def stream_conversation_execution_async(
                 if manager.is_closed:
                     yield _sse("reconnect", {"reason": "runtime_replaced"})
                     return
-                current = await get_conversation_execution_async(attack_result_id, conversation_id)
+                current = await get_conversation_execution_async(request, attack_result_id, conversation_id)
                 if current is not None and current.id != identity:
                     cursor, identity = 0, current.id
                     yield _sse("reset", {"execution_id": str(identity)})
@@ -159,6 +194,7 @@ async def stream_conversation_execution_async(
                             yield _sse("reconnect", {"reason": "reauthorize"})
                             return
                         page = await get_conversation_execution_events_async(
+                            request,
                             attack_result_id,
                             conversation_id,
                             current.id,
@@ -247,7 +283,7 @@ async def decide_conversation_permission_async(
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    return await get_conversation_execution_async(attack_result_id, conversation_id)
+    return await get_conversation_execution_async(request, attack_result_id, conversation_id)
 
 
 @conversation_router.post(
@@ -282,11 +318,12 @@ async def control_conversation_execution_async(
             await manager.control_held_async(execution_id=execution_id, action=action.value, actor=_actor(request))
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    return await get_conversation_execution_async(attack_result_id, conversation_id)
+    return await get_conversation_execution_async(request, attack_result_id, conversation_id)
 
 
 @conversation_router.get("/{attack_result_id}/conversations/{conversation_id}/execution/{execution_id}/events")
 async def get_conversation_execution_events_async(
+    request: Request,
     attack_result_id: str,
     conversation_id: str,
     execution_id: UUID,
@@ -301,9 +338,10 @@ async def get_conversation_execution_events_async(
     """
     await _resolve_async(attack_result_id=attack_result_id, conversation_id=conversation_id, execution_id=execution_id)
     page = await get_agent_execution_manager().store.events_async(execution_id=execution_id, after=after, limit=limit)
+    show_identity = _shows_operator_identity(request)
     return AgentEventPage(
         events=[
-            event
+            event if show_identity or event.direction != "lifecycle" else _mask_event_actors(event)
             for event in page.events
             if event.payload.get("method") in ("session/update", "session/request_permission")
             or event.direction in ("lifecycle", "inference")
@@ -314,7 +352,7 @@ async def get_conversation_execution_events_async(
 
 @conversation_router.post("/{attack_result_id}/conversations/{conversation_id}/execution/{execution_id}/cancel")
 async def cancel_conversation_execution_async(
-    attack_result_id: str, conversation_id: str, execution_id: UUID
+    request: Request, attack_result_id: str, conversation_id: str, execution_id: UUID
 ) -> ConversationExecution | None:
     """
     Cancel this conversation's turn, never an arbitrary execution or its environment.
@@ -330,7 +368,7 @@ async def cancel_conversation_execution_async(
         await get_agent_execution_manager().cancel_async(execution_id)
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    return await get_conversation_execution_async(attack_result_id, conversation_id)
+    return await get_conversation_execution_async(request, attack_result_id, conversation_id)
 
 
 @router.get("")
