@@ -73,7 +73,7 @@ def test_flattened_profile_persists_with_the_execution() -> None:
 
 
 def test_inference_request_budget_is_bounded() -> None:
-    for maximum in (0, 101):
+    for maximum in (0, 1001):
         with pytest.raises(ValidationError):
             AgentProfile(environment="local", local_execution_acknowledged=True, max_inference_requests=maximum)
         with pytest.raises(ValidationError):

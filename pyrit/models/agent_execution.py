@@ -140,7 +140,7 @@ class AgentProfile(BaseModel):
     wire_api: InferenceWireApi | None = None
     inference_requirements: InferenceRequirements = Field(default_factory=InferenceRequirements)
     capture_inference_content: bool = False
-    max_inference_requests: int = Field(default=100, ge=1, le=100)
+    max_inference_requests: int = Field(default=100, ge=1, le=1000)
     local_execution_acknowledged: bool = False
     startup_timeout_seconds: float = Field(default=60, gt=0, le=600)
     turn_timeout_seconds: float = Field(default=180, gt=0, le=3600)
@@ -244,7 +244,7 @@ class AgentTargetConfiguration(BaseModel, JsonParameterValue):
     artifact_paths: tuple[str, ...] = ()
     max_artifact_bytes: int = Field(default=1024 * 1024, ge=1, le=16 * 1024 * 1024)
     capture_inference_content: bool = False
-    max_inference_requests: int = Field(default=100, ge=1, le=100)
+    max_inference_requests: int = Field(default=100, ge=1, le=1000)
 
     _artifact_validator = field_validator("artifact_paths")(_validate_artifacts)
 

@@ -151,8 +151,8 @@ target, and a source that no longer matches is refused rather than silently rebo
 The relay serves only the bound model and wire API, a bounded request body, and
 harness-executed tools; caller-supplied routing or authentication overrides, provider-hosted
 tools, background inference, and server-side continuation or file references are rejected. Each
-execution allows `max_inference_requests` admission attempts over its lifetime (default and
-maximum 100, including invalid requests), at most four concurrent requests, 16 MiB per response, and the turn
+execution allows `max_inference_requests` admission attempts over its lifetime (default 100,
+maximum 1000, counting invalid requests), at most four concurrent requests, 16 MiB per response, and the turn
 deadline per request. Closing the execution revokes its lease and cancels in-flight inference;
 the runtime stops the listener at shutdown, and the backend closes every registered target's
 transport (`cleanup_target_async`) with its other services.
