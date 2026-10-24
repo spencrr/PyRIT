@@ -442,6 +442,9 @@ export default function TargetTable({
                   </TableCell>
                   <TableCell className={styles.registryNameCell}>
                     <Text size={200} className={styles.registryNameText}>{target.target_registry_name}</Text>
+                    {target.agent_configuration_provenance && <Text block size={200}>
+                      {target.agent_configuration_provenance.origin === 'initializer' ? 'Initializer-defined' : 'Session-only'}
+                    </Text>}
                     {(isDefaultObjective(target) || isDefaultAdversarial(target)) && (
                       <div className={styles.defaultIndicators}>
                         {isDefaultObjective(target) && (
@@ -458,7 +461,7 @@ export default function TargetTable({
                     )}
                   </TableCell>
                   <TableCell>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <div className={styles.targetKind}>
                       {expandable && (
                         <Button
                           className={styles.rowAction}
@@ -470,6 +473,7 @@ export default function TargetTable({
                         />
                       )}
                       <Text size={200}>{targetType(target)}</Text>
+                      {target.agent_configuration && <Badge className={styles.kindBadge} appearance="outline">Managed agent</Badge>}
                     </div>
                   </TableCell>
                   <TableCell>
@@ -489,8 +493,14 @@ export default function TargetTable({
                   <CapabilityCells target={target} />
                   <TableCell>
                     <Text size={200} className={styles.paramsCell}>
-                      {formatParams(target.target_specific_params) || '—'}
+                      {target.agent_configuration
+                        ? `${target.agent_configuration.harness_profile.harness_kind ?? 'ACP'} · ${target.agent_configuration.environment_template.environment}`
+                        : formatParams(target.target_specific_params) || '—'}
                     </Text>
+                    {target.agent_configuration_provenance && <Text block size={200}>
+                      Profile: {target.agent_configuration_provenance.presets.harness_profile ?? 'custom'}
+                      {' · '}Template: {target.agent_configuration_provenance.presets.environment_template ?? 'custom'}
+                    </Text>}
                   </TableCell>
                 </TableRow>
 

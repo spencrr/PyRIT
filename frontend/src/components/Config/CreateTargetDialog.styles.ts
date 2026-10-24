@@ -1,5 +1,5 @@
 import { makeStyles, tokens } from '@fluentui/react-components'
-import { mobileTouchTarget } from '../../styles/touchTargets'
+import { mobileTouchTarget, NARROW_VIEWPORT_QUERY } from '../../styles/touchTargets'
 
 export const useCreateTargetDialogStyles = makeStyles({
   dialogSurface: {
@@ -12,6 +12,18 @@ export const useCreateTargetDialogStyles = makeStyles({
   },
   dialogContent: {
     minWidth: 0,
+    overflowY: 'auto',
+    maxHeight: '75vh',
+    '& > div[hidden], & > form[hidden]': { display: 'none' },
+  },
+  agentSurface: {
+    width: '72rem',
+    maxWidth: `calc(100vw - ${tokens.spacingHorizontalXXL})`,
+    [NARROW_VIEWPORT_QUERY]: { maxWidth: `calc(100vw - ${tokens.spacingHorizontalL})` },
+  },
+  ordinaryFields: {
+    border: 0, padding: 0, margin: 0, minWidth: 0,
+    display: 'flex', flexDirection: 'column', gap: tokens.spacingVerticalL,
   },
   form: {
     display: 'flex',
@@ -24,6 +36,7 @@ export const useCreateTargetDialogStyles = makeStyles({
   formField: {
     minWidth: 0,
     maxWidth: '100%',
+    marginBottom: tokens.spacingVerticalM,
   },
   fullWidthSelect: {
     width: '100%',

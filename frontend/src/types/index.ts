@@ -2,6 +2,232 @@ import type { Theme } from '@fluentui/react-components'
 
 import type { THEME_PRESETS } from '@/themes/themePresets'
 
+export type InferenceWireApi = 'completions' | 'responses'
+
+export interface ModelBinding {
+  readonly model: string
+  readonly target_registry_name?: string | null
+  readonly target_identifier_hash?: string | null
+  readonly wire_api?: 'completions' | 'responses' | null
+}
+
+export interface InferenceRequirements {
+  readonly wire_api: 'completions' | 'responses'
+  readonly streaming: boolean
+  readonly tool_calls: boolean
+  readonly input_modalities: string[]
+}
+
+export interface InferenceCapabilities {
+  readonly wire_apis: Array<'completions' | 'responses'>
+  readonly streaming: boolean
+  readonly tool_calls: boolean
+  readonly input_modalities: string[]
+  readonly blocked_reason: string | null
+}
+
+export interface HarnessProfile {
+  readonly harness_kind?: string
+  readonly command: string[]
+  readonly credential_env: string[]
+  readonly authentication_method: string | null
+  readonly permission_policy: 'deny' | 'allow_once'
+  readonly inference_requirements?: InferenceRequirements
+}
+
+/** Settings owned by a registered environment provider; empty for the first-party docker/local providers. */
+export type EnvironmentSettings = Record<string, unknown>
+
+export interface EnvironmentTemplate {
+  readonly workspace_base?: 'image' | 'empty' | null
+  readonly working_directory?: string
+  /** Installed provider name; `docker` and `local` are first-party. */
+  readonly environment: string
+  readonly environment_settings?: EnvironmentSettings
+  readonly image: string | null
+  readonly fixture_directory?: string | null
+  readonly expected_fixture_sha256?: string | null
+  readonly local_execution_acknowledged: boolean
+  readonly docker_network?: string
+  readonly docker_memory?: string
+  readonly docker_cpus?: number
+}
+
+export interface RegisteredHarnessProfile {
+  readonly name: string
+  readonly profile: HarnessProfile
+  readonly initializer: string | null
+}
+
+export interface RegisteredEnvironmentTemplate {
+  readonly name: string
+  readonly template: EnvironmentTemplate
+  readonly initializer: string | null
+}
+
+export interface AgentPresetCatalog {
+  readonly harness_profiles: RegisteredHarnessProfile[]
+  readonly environment_templates: RegisteredEnvironmentTemplate[]
+  readonly unavailable_targets: Record<string, string>
+  readonly environment_parameters?: Record<string, Parameter[]>
+  readonly harness_adapters?: HarnessAdapterInfo[]
+  readonly environment_providers?: EnvironmentProviderInfo[]
+}
+
+export interface HarnessAdapterInfo {
+  readonly name: string
+  readonly display_name: string
+  readonly default_command: readonly string[]
+  readonly wire_apis: readonly InferenceWireApi[]
+}
+
+export interface EnvironmentCapabilities {
+  readonly isolated: boolean
+}
+
+export interface EnvironmentProviderInfo {
+  readonly name: string
+  readonly display_name: string
+  readonly description?: string
+  readonly capabilities: EnvironmentCapabilities
+  /** JSON schema for provider-owned settings; empty for the first-party providers. */
+  readonly settings_schema?: Record<string, unknown>
+}
+
+export interface AgentPresetSelection {
+  readonly harness_profile?: string | null
+  readonly environment_template?: string | null
+}
+
+export interface AgentTargetProvenance {
+  readonly origin: 'initializer' | 'runtime'
+  readonly presets: AgentPresetSelection
+}
+
+export interface AgentTargetConfiguration {
+  readonly name: string
+  readonly model_binding: ModelBinding
+  readonly harness_profile: HarnessProfile
+  readonly environment_template: EnvironmentTemplate
+  readonly turn_timeout_seconds?: number
+  readonly idle_timeout_seconds?: number
+  readonly lifetime_seconds?: number
+  readonly artifact_paths?: string[]
+  readonly capture_inference_content?: boolean
+  readonly max_inference_requests?: number
+}
+
+export interface AgentProfile {
+  readonly name: string
+  readonly environment: 'local' | 'docker'
+  readonly image?: string | null
+  readonly model: string
+  readonly idle_timeout_seconds: number
+  readonly lifetime_seconds: number
+  readonly [key: string]: unknown
+}
+
+export interface AgentExecution {
+  readonly id: string
+  readonly conversation_id: string
+  readonly target_id: string
+  readonly image_id?: string | null
+  readonly fixture_sha256?: string | null
+  readonly profile: AgentProfile
+  readonly configuration: AgentTargetConfiguration
+  readonly created_at: string
+  readonly last_activity_at: string
+  readonly state: 'starting' | 'idle' | 'working' | 'closing' | 'closed' | 'cleanup_failed'
+  readonly turns: Array<{
+    readonly id: string
+    readonly status: string
+    readonly capture_complete: boolean
+    readonly stop_reason: string | null
+    readonly error: string | null
+  }>
+  readonly capture_error: string | null
+  readonly cleanup_error: string | null
+  readonly close_reason: string | null
+  readonly artifacts: string[]
+  readonly artifact_errors: string[]
+  readonly source_coverage: string
+}
+
+export interface AgentExecutionEvent {
+  readonly execution_id: string
+  readonly sequence: number
+  readonly timestamp: string
+  readonly turn_id: string | null
+  readonly direction: string
+  readonly payload: Record<string, unknown>
+}
+
+export interface AgentEventPage {
+  readonly events: AgentExecutionEvent[]
+  readonly next_cursor: number
+}
+
+export interface AgentTurn {
+  readonly id: string
+  readonly request_id: string
+  readonly prompt?: string
+  readonly status: 'running' | 'completed' | 'cancelled' | 'failed' | 'unknown'
+  readonly response_text: string
+  readonly capture_complete: boolean
+  readonly error: string | null
+  readonly tool_call_messages?: number | null
+  readonly tool_call_omissions?: Record<string, string>
+}
+
+export interface ConversationExecution {
+  readonly id: string
+  readonly conversation_id: string
+  readonly state: AgentExecution['state']
+  readonly environment: 'local' | 'docker'
+  readonly model: string
+  readonly turns: AgentTurn[]
+  readonly capture_error: string | null
+  readonly close_reason: string | null
+  readonly source_coverage: string
+  readonly artifacts: string[]
+  readonly event_count: number
+  readonly connection_state?: 'disconnected' | 'connecting' | 'authenticating' | 'ready' | 'failed'
+  readonly expires_at?: string | null
+  readonly last_event_at?: string | null
+  readonly transcript_revision?: number
+}
+
+export type AgentActivityBlock =
+  | { readonly kind: 'text'; readonly id: string; readonly text: string; readonly messageId?: string }
+  | { readonly kind: 'tool'; readonly id: string; readonly toolId: string }
+  | { readonly kind: 'plan'; readonly id: string; readonly entries: unknown }
+
+export interface AgentStreamFrame {
+  readonly event: string
+  readonly data: string
+}
+
+export interface AgentToolActivity {
+  readonly id: string
+  readonly title: string
+  readonly status: string
+  readonly kind?: string
+  readonly name?: string
+  readonly rawInput?: unknown
+  readonly rawOutput?: unknown
+  readonly content?: unknown
+  readonly locations?: unknown
+  readonly firstSeen: string
+  readonly lastSeen: string
+}
+
+export interface AgentTurnActivity {
+  readonly text: string
+  readonly tools: AgentToolActivity[]
+  readonly inference?: Record<string, { status: string; target?: string; bytes?: number; error?: string; statusCode?: number }>
+  readonly blocks?: AgentActivityBlock[]
+  readonly lastSequence?: number
+}
 // ============================================================================
 // Frontend UI Types
 // ============================================================================
@@ -160,6 +386,23 @@ export interface MessageMediaDisplayPiece {
 export type MessageDisplayPiece = MessageTextDisplayPiece | MessageMediaDisplayPiece
 
 export interface Message {
+  pieceIds?: string[]
+  agentTurnId?: string
+  agentToolCalls?: {
+    readonly source: 'acp'
+    readonly execution_id: string
+    readonly turn_id: string
+    readonly source_call_id: string
+    readonly event_sequence: number
+  }
+  /** Export-only snapshot of the displayed activity; not a claim of invocation. */
+  agentActivity?: {
+    readonly executionId: string
+    readonly turn: AgentTurn
+    readonly activity?: AgentTurnActivity
+    readonly sourceCoverage: string
+    readonly feed: string
+  }
   role: 'user' | 'assistant' | 'simulated_assistant' | 'tool' | 'simulated_tool' | 'system' | 'developer'
   content: string
   timestamp: string
@@ -337,6 +580,9 @@ export interface TargetIdentifier {
 }
 
 export interface TargetInstance {
+  inference_capabilities?: InferenceCapabilities
+  agent_configuration?: AgentTargetConfiguration
+  agent_configuration_provenance?: AgentTargetProvenance
   target_registry_name: string
   reconstructable?: boolean
   reconstruction_error?: string | null
@@ -359,9 +605,11 @@ export interface TargetListResponse {
 }
 
 export interface CreateTargetRequest {
+  name?: string
   type: string
   params: Record<string, unknown>
   auth_mode?: 'api_key' | 'identity'
+  agent_presets?: AgentPresetSelection
 }
 
 // --- Initializers ---

@@ -12,6 +12,7 @@ jest.mock("@/services/api", () => ({
     createTarget: jest.fn(),
     listTargetTypes: jest.fn(),
     listTargets: jest.fn(),
+    listAgentPresets: jest.fn(),
   },
 }));
 
@@ -508,6 +509,9 @@ describe("CreateTargetDialog", () => {
   beforeEach(() => {
     dialogAccessibilityObserver = watchDialogAccessibility();
     jest.clearAllMocks();
+    mockedTargetsApi.listAgentPresets.mockResolvedValue({
+      harness_profiles: [], environment_templates: [], unavailable_targets: {},
+    });
     mockedTargetsApi.listTargetTypes.mockResolvedValue(TARGET_TYPES);
     mockedTargetsApi.listTargets.mockResolvedValue({
       items: [],
@@ -527,9 +531,129 @@ describe("CreateTargetDialog", () => {
     );
     await flushTargetTypesFetch();
 
-    expect(screen.getByText("Create New Target")).toBeInTheDocument();
-    expect(screen.getByText("Create Target")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Create New Target", exact: true })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Target", exact: true })).toBeInTheDocument();
     expect(screen.getByText("Cancel")).toBeInTheDocument();
+  });
+
+  it("uses one creation flow for model targets and executable ACP harnesses", async () => {
+    const user = userEvent.setup();
+    render(<TestWrapper><CreateTargetDialog {...defaultProps} canConfigureAgents /></TestWrapper>);
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
+    expect(await screen.findByRole("region", { name: "Harness" })).toBeVisible();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Harness", exact: true }), "acp");
+    expect(screen.getByRole("combobox", { name: "Harness", exact: true })).toHaveValue("acp");
+    await user.type(screen.getByRole("textbox", { name: /Target name/ }), "agent-draft");
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: OpenAIChatTarget/ }));
+    expect(await screen.findByRole("heading", { name: "Create New Target", exact: true })).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Harness" })).not.toBeInTheDocument();
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
+    expect(screen.getByRole("combobox", { name: "Harness", exact: true })).toHaveValue("acp");
+    expect(screen.getByRole("textbox", { name: /Target name/ })).toHaveValue("agent-draft");
+    expect(mockedTargetsApi.createTarget).not.toHaveBeenCalled();
+  });
+
+  it("does not offer executable harness setup without configuration permission", async () => {
+    render(<TestWrapper><CreateTargetDialog {...defaultProps} /></TestWrapper>);
+    await flushTargetTypesFetch();
+    await openTargetTypePicker();
+    expect(screen.queryByRole("option", { name: /Implementation: AgentTarget/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps ordinary model fields when switching to an agent and back", async () => {
+    const user = userEvent.setup();
+    render(<TestWrapper><CreateTargetDialog {...defaultProps} canConfigureAgents /></TestWrapper>);
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: OpenAIChatTarget/ }));
+    await user.type(screen.getByRole("textbox", { name: /Endpoint/ }), "https://example.test/v1");
+    await user.type(screen.getByRole("textbox", { name: "Model / Deployment Name" }), "model-a");
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
+    expect(screen.queryByRole("textbox", { name: /Endpoint/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Back to target types|Tool-capable/ })).not.toBeInTheDocument();
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: OpenAIChatTarget/ }));
+    expect(screen.getByRole("textbox", { name: /Endpoint/ })).toHaveValue("https://example.test/v1");
+    expect(screen.getByRole("textbox", { name: "Model / Deployment Name" })).toHaveValue("model-a");
+  });
+
+  it("preserves ordinary authentication and parameters across Agent transitions", async () => {
+    const user = userEvent.setup();
+    mockedTargetsApi.createTarget.mockResolvedValue(makeTarget({ target_registry_name: "ordinary" }));
+    render(<TestWrapper><CreateTargetDialog {...defaultProps} canConfigureAgents /></TestWrapper>);
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: OpenAIChatTarget/ }));
+    await user.type(screen.getByRole("textbox", { name: /Endpoint/ }), "https://example.openai.azure.com/");
+    await user.type(screen.getByRole("textbox", { name: "Model / Deployment Name" }), "model-a");
+    await user.click(screen.getByRole("radio", { name: /Identity-based/ }));
+    await user.click(screen.getByText("Advanced settings"));
+    await user.type(screen.getByLabelText("Temperature"), "0.2");
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: OpenAIChatTarget/ }));
+    expect(screen.getByRole("radio", { name: /Identity-based/ })).toBeChecked();
+    expect(screen.getByLabelText("Temperature")).toHaveValue(0.2);
+    expect(screen.queryByPlaceholderText("API key (stored in memory only)")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
+    await waitFor(() => expect(mockedTargetsApi.createTarget).toHaveBeenCalled());
+    expect(mockedTargetsApi.createTarget.mock.calls[0][0]).toMatchObject({
+      type: "OpenAIChatTarget", auth_mode: "identity",
+      params: { temperature: 0.2, model_name: "model-a", endpoint: "https://example.openai.azure.com/" },
+    });
+  });
+
+  it("resets metadata inputs when Agent is followed by a different ordinary type", async () => {
+    const user = userEvent.setup();
+    render(<TestWrapper><CreateTargetDialog {...defaultProps} canConfigureAgents /></TestWrapper>);
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: OpenAIChatTarget/ }));
+    await user.click(screen.getByText("Advanced settings"));
+    await user.type(screen.getByLabelText("Temperature"), "0.2");
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: AzureMLChatTarget/ }));
+    expect(screen.getByLabelText("Temperature")).toHaveValue(null);
+  });
+
+  it("locks the shared type picker and close action during agent registration", async () => {
+    const user = userEvent.setup();
+    let finish: ((value: ReturnType<typeof makeTarget>) => void) | undefined;
+    mockedTargetsApi.createTarget.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const onClose = jest.fn();
+    const onCreated = jest.fn();
+    render(<TestWrapper><CreateTargetDialog {...defaultProps} canConfigureAgents
+      onClose={onClose} onCreated={onCreated} /></TestWrapper>);
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
+    await user.type(screen.getByRole("textbox", { name: /Target name/ }), "pending");
+    await user.type(screen.getByRole("textbox", { name: /Docker image/ }), "test-image");
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
+    expect(screen.getByRole("combobox", { name: "Target Type" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await user.keyboard("{Escape}");
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => { finish?.(makeTarget({ target_registry_name: "pending" })); });
+    expect(onCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards an agent draft on close and reopens the shared type picker", async () => {
+    const user = userEvent.setup();
+    const view = render(<TestWrapper><CreateTargetDialog {...defaultProps} canConfigureAgents /></TestWrapper>);
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
+    await user.type(screen.getByRole("textbox", { name: /Target name/ }), "old-draft");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    view.rerender(<TestWrapper><CreateTargetDialog {...defaultProps} canConfigureAgents open={false} /></TestWrapper>);
+    view.rerender(<TestWrapper><CreateTargetDialog {...defaultProps} canConfigureAgents /></TestWrapper>);
+    await openTargetTypePicker();
+    await user.click(screen.getByRole("option", { name: /Implementation: AgentTarget/ }));
+    expect(screen.getByRole("textbox", { name: /Target name/ })).toHaveValue("");
   });
 
   it("should show friendly names, registry descriptions, implementation identifiers, and auth for all target types", async () => {
@@ -675,7 +799,7 @@ describe("CreateTargetDialog", () => {
       </TestWrapper>
     );
 
-    expect(screen.queryByText("Create New Target")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Create New Target", exact: true })).not.toBeInTheDocument();
   });
 
   it("should have Create button disabled until type and endpoint filled", async () => {
@@ -686,7 +810,7 @@ describe("CreateTargetDialog", () => {
     );
     await flushTargetTypesFetch();
 
-    const createButton = screen.getByText("Create Target");
+    const createButton = screen.getByRole("button", { name: "Create Target", exact: true });
     expect(createButton.closest("button")).toBeDisabled();
   });
 
@@ -755,7 +879,7 @@ describe("CreateTargetDialog", () => {
     fireEvent.change(modelInput, { target: { value: "gpt-4" } });
 
     // Submit
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -803,7 +927,7 @@ describe("CreateTargetDialog", () => {
     fireEvent.change(underlyingInput, { target: { value: "gpt-4o" } });
 
     // Submit
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -844,7 +968,7 @@ describe("CreateTargetDialog", () => {
 
     // Do NOT toggle the underlying model switch
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -879,7 +1003,7 @@ describe("CreateTargetDialog", () => {
     fireEvent.change(endpointInput, { target: { value: "https://example.com" } });
 
     // Submit
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(screen.getByText("Invalid API key")).toBeInTheDocument();
@@ -914,7 +1038,7 @@ describe("CreateTargetDialog", () => {
       target: { value: "sk-test-key-123" },
     });
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith(
@@ -974,7 +1098,7 @@ describe("CreateTargetDialog", () => {
     await user.click(screen.getByRole("radio", { name: /Identity-based/ }));
 
     // Submit via form (bypass disabled button by submitting the form directly)
-    const form = screen.getByText("Create New Target").closest("form") ??
+    const form = screen.getByRole("heading", { name: "Create New Target", exact: true }).closest("form") ??
       document.querySelector("form");
     if (form) {
       fireEvent.submit(form);
@@ -1002,7 +1126,7 @@ describe("CreateTargetDialog", () => {
     );
     fireEvent.change(endpointInput, { target: { value: "https://example.com" } });
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(screen.getByText("string error")).toBeInTheDocument();
@@ -1039,7 +1163,7 @@ describe("CreateTargetDialog", () => {
     fireEvent.change(modelInput, { target: { value: "Llama-3.2-3B-Instruct" } });
 
     // Submit without overriding the displayed constructor defaults.
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1132,7 +1256,7 @@ describe("CreateTargetDialog", () => {
       target: { value: "1.2" },
     });
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1177,7 +1301,7 @@ describe("CreateTargetDialog", () => {
 
     expect(screen.getByLabelText("Extra Body Parameters")).toBeVisible();
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1279,7 +1403,7 @@ describe("CreateTargetDialog", () => {
 
     expect(screen.queryByLabelText("Custom Functions")).not.toBeInTheDocument();
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1316,7 +1440,7 @@ describe("CreateTargetDialog", () => {
       target: { value: "END, DONE" },
     });
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1348,7 +1472,7 @@ describe("CreateTargetDialog", () => {
     });
     await user.click(screen.getByText("Advanced settings"));
     await user.click(screen.getByRole("checkbox", { name: "Use empty list for stop" }));
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1387,7 +1511,7 @@ describe("CreateTargetDialog", () => {
       target: { value: '{"timeout":180}' },
     });
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1427,7 +1551,7 @@ describe("CreateTargetDialog", () => {
     });
     expect(screen.getByText("Extra Body Parameters must be a JSON object.")).toBeVisible();
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     expect(mockedTargetsApi.createTarget).not.toHaveBeenCalled();
   });
@@ -1472,7 +1596,7 @@ describe("CreateTargetDialog", () => {
 
     expect(screen.queryByLabelText("Endpoint URL")).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("API key (stored in memory only)")).not.toBeInTheDocument();
-    expect(screen.getByText("Create Target").closest("button")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create Target", exact: true }).closest("button")).toBeDisabled();
 
     // A real raw HTTP request template needs actual line breaks between the
     // request line, headers, and body — the backend parser splits on real
@@ -1485,8 +1609,8 @@ describe("CreateTargetDialog", () => {
       target: { value: httpRequestTemplate },
     });
 
-    expect(screen.getByText("Create Target").closest("button")).toBeEnabled();
-    await user.click(screen.getByText("Create Target"));
+    expect(screen.getByRole("button", { name: "Create Target", exact: true }).closest("button")).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1715,7 +1839,7 @@ describe("CreateTargetDialog", () => {
 
     await user.click(screen.getByRole("radio", { name: /Identity-based/ }));
 
-    expect(screen.getByText("Create Target").closest("button")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Create Target", exact: true }).closest("button")).toBeEnabled();
   });
 
   it("should mask the sas_token parameter and drop it once identity auth is selected", async () => {
@@ -1748,7 +1872,7 @@ describe("CreateTargetDialog", () => {
     expect(sasTokenField).toBeDisabled();
     expect(sasTokenField).toHaveValue("");
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1822,7 +1946,7 @@ describe("CreateTargetDialog", () => {
       screen.queryByPlaceholderText("API key (stored in memory only)")
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       expect(mockedTargetsApi.createTarget).toHaveBeenCalledWith({
@@ -1869,7 +1993,7 @@ describe("CreateTargetDialog", () => {
       screen.getByRole("radio", { name: /Identity-based/ })
     );
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       const call = mockedTargetsApi.createTarget.mock.calls[0][0];
@@ -1950,10 +2074,10 @@ describe("CreateTargetDialog", () => {
       screen.getByRole("radio", { name: /Identity-based/ })
     );
 
-    const createButton = screen.getByText("Create Target").closest("button");
+    const createButton = screen.getByRole("button", { name: "Create Target", exact: true }).closest("button");
     expect(createButton).toBeDisabled();
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     expect(mockedTargetsApi.createTarget).not.toHaveBeenCalled();
   });
@@ -2038,10 +2162,10 @@ describe("CreateTargetDialog", () => {
       screen.getByRole("radio", { name: /Identity-based/ })
     );
 
-    const createButton = screen.getByText("Create Target").closest("button");
+    const createButton = screen.getByRole("button", { name: "Create Target", exact: true }).closest("button");
     expect(createButton).toBeDisabled();
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     expect(mockedTargetsApi.createTarget).not.toHaveBeenCalled();
   });
@@ -2100,7 +2224,7 @@ describe("CreateTargetDialog", () => {
 
     await selectTargetType("RoundRobinTarget");
 
-    const createButton = screen.getByText("Create Target").closest("button");
+    const createButton = screen.getByRole("button", { name: "Create Target", exact: true }).closest("button");
     expect(createButton).toBeDisabled();
   });
 
@@ -2304,7 +2428,7 @@ describe("CreateTargetDialog", () => {
     await user.selectOptions(select, "a");
     await user.selectOptions(select, "b");
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(() => {
       // The backend's detail (the actual validation message) should be shown to
@@ -2392,11 +2516,11 @@ describe("CreateTargetDialog", () => {
     );
 
     expect(screen.getByText("Weight must be a whole number")).toBeInTheDocument();
-    expect(screen.getByText("Create Target").closest("button")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create Target", exact: true }).closest("button")).toBeDisabled();
 
     // Pressing Enter inside the weight input must not bypass the disabled
     // button and submit the form.
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
     expect(mockedTargetsApi.createTarget).not.toHaveBeenCalled();
   }, 30000);
 
@@ -2417,12 +2541,12 @@ describe("CreateTargetDialog", () => {
         const inputs = screen.getAllByLabelText(/Weight for /) as HTMLInputElement[];
         expect(inputs[0].value).toBe("7");
         expect(inputs[1].value).toBe("42");
-        expect(screen.getByText("Create Target").closest("button")).not.toBeDisabled();
+        expect(screen.getByRole("button", { name: "Create Target", exact: true }).closest("button")).not.toBeDisabled();
       },
       { timeout: 10000 },
     );
 
-    await user.click(screen.getByText("Create Target"));
+    await user.click(screen.getByRole("button", { name: "Create Target", exact: true }));
 
     await waitFor(
       () => {
@@ -2451,7 +2575,7 @@ describe("CreateTargetDialog", () => {
       { timeout: 10000 },
     );
     // With only one inner target left, Create is disabled (needs >= 2).
-    expect(screen.getByText("Create Target").closest("button")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create Target", exact: true }).closest("button")).toBeDisabled();
   }, 30000);
 
   it("submit-time guards reject invalid weights even if the disabled button is bypassed", async () => {
@@ -2463,7 +2587,7 @@ describe("CreateTargetDialog", () => {
     fireEvent.change(weightInputs[0], { target: { value: "2.5" } });
     await waitFor(
       () => {
-        expect(screen.getByText("Create Target").closest("button")).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Create Target", exact: true }).closest("button")).toBeDisabled();
       },
       { timeout: 10000 },
     );

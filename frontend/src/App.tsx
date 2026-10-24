@@ -53,6 +53,7 @@ import {
 } from './components/History/scenarioHistoryFilters'
 import type { ScenarioHistoryFilters } from './components/History/scenarioHistoryFilters'
 import type { ViewName } from './components/Sidebar/Navigation'
+import Executions from './components/Executions/Executions'
 import type {
   AttackOutcome, AttackSummary, BackendScore, Operation, TargetInfo, TargetInstance, TargetPreferences, TargetReference,
   UserPreferences,
@@ -695,6 +696,11 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
       targetsLoading={registry.loading}
       targetsError={registry.error}
       onRefreshTargets={registry.refresh}
+      canConfigureAgents={canManageConfiguration}
+      onAgentTargetCreated={(target: TargetInstance) => {
+        registry.rememberTarget(target)
+        setDraftSession((current) => ({ ...current, target: targetReference(target) }))
+      }}
       onSelectTarget={(target: TargetInstance | null) => {
         if (readyAttack?.targetUnbound) {
           setUnboundTarget({ attackId: readyAttack.id, target: target ? targetReference(target) : null })
@@ -839,6 +845,7 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
                   path="targets"
                   element={
                     <TargetConfig
+                      canConfigureAgents={canManageConfiguration}
                       defaultObjectiveTarget={targetDefaults.objectiveTarget}
                       defaultAdversarialTarget={targetDefaults.adversarialTarget}
                       onSetDefaultObjectiveTarget={(target: TargetInstance | null) => setDefaultTarget('objective', target)}
@@ -869,6 +876,9 @@ function AppContent({ operatorAlias }: { operatorAlias: string | null }) {
                 <Route path="scenario-suites" element={<ScenarioSuiteLibrary />} />
                 <Route path="scenario-suites/new" element={<ScenarioSuiteEditor mode="create" />} />
                 <Route path="scenario-suites/:suiteName/edit" element={<ScenarioSuiteEditor mode="edit" />} />
+                <Route path="executions" element={
+                  <Executions canManage={canManageConfiguration} onTargetCreated={registry.rememberTarget} />
+                } />
               </Route>
               <Route path="/targets" element={<Navigate to="/registry/targets" replace />} />
               <Route path="/scanner" element={<ScenarioCatalog />} />

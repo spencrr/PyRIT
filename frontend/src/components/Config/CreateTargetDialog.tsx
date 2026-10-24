@@ -23,6 +23,7 @@ import {
   MessageBar,
   MessageBarBody,
   Tooltip,
+  mergeClasses,
 } from '@fluentui/react-components'
 import { DeleteRegular } from '@fluentui/react-icons'
 
@@ -41,6 +42,8 @@ import {
   targetUnderlyingModelName,
 } from '@/utils/targetIdentity'
 import { useCreateTargetDialogStyles } from './CreateTargetDialog.styles'
+import AgentTargetForm from './AgentTargetForm'
+import type { AgentTargetConfiguration } from '@/types'
 import {
   canConfigureTargetType,
   getTargetParameterPolicy,
@@ -71,6 +74,7 @@ const FALLBACK_IDENTITY_TARGET_TYPES = new Set([
 ])
 
 const TARGET_DISPLAY_NAMES: Record<string, string> = {
+  AgentTarget: 'Agent (ACP)',
   AzureMLChatTarget: 'Azure Machine Learning chat',
   GitHubCopilotTarget: 'GitHub Copilot',
   OpenAIChatTarget: 'OpenAI chat',
@@ -201,7 +205,10 @@ function isAzureMlEndpoint(endpoint: string): boolean {
 interface CreateTargetDialogProps {
   open: boolean
   onClose: () => void
-  onCreated: () => void
+  onCreated: (target: TargetInstance) => void
+  canConfigureAgents?: boolean
+  initialAgentConfiguration?: AgentTargetConfiguration
+  selectForChat?: boolean
   /** Existing targets, passed from the parent to avoid a redundant API call. */
   existingTargets?: TargetInstance[]
 }
@@ -257,9 +264,16 @@ function isCompatible(a: TargetInstance, b: TargetInstance): boolean {
   )
 }
 
-export default function CreateTargetDialog({ open, onClose, onCreated, existingTargets }: CreateTargetDialogProps) {
+export default function CreateTargetDialog({
+  open, onClose, onCreated, existingTargets, canConfigureAgents = false, initialAgentConfiguration, selectForChat = false,
+}: CreateTargetDialogProps) {
   const styles = useCreateTargetDialogStyles()
-  const [targetType, setTargetType] = useState('')
+  const [targetType, setTargetType] = useState(initialAgentConfiguration && canConfigureAgents ? 'AgentTarget' : '')
+  const [ordinaryDraftType, setOrdinaryDraftType] = useState('')
+  const [agentVisited, setAgentVisited] = useState(Boolean(initialAgentConfiguration))
+  const [agentBusy, setAgentBusy] = useState(false)
+  const [agentActions, setAgentActions] = useState<HTMLDivElement | null>(null)
+  const isAgent = targetType === 'AgentTarget' && canConfigureAgents
   const [endpoint, setEndpoint] = useState('')
   const [modelName, setModelName] = useState('')
   const [hasDifferentUnderlying, setHasDifferentUnderlying] = useState(false)
@@ -300,6 +314,8 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
   if (open !== seenOpen) {
     setSeenOpen(open)
     if (open) {
+      setTargetType(initialAgentConfiguration && canConfigureAgents ? 'AgentTarget' : '')
+      setAgentVisited(Boolean(initialAgentConfiguration))
       setTargetTypeEntries([])
       setTypeMetadataStatus('loading')
     }
@@ -327,13 +343,20 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
   }, [open])
 
   const registeredTargetTypeOptions = useMemo(() => {
-    return targetTypeEntries.filter(canConfigureTargetType)
+    return targetTypeEntries.filter((entry) => entry.target_type !== 'AgentTarget' && canConfigureTargetType(entry))
   }, [targetTypeEntries])
   const typeMetadataAvailable = registeredTargetTypeOptions.length > 0
   const typeMetadataUnavailable = typeMetadataStatus !== 'loading' && !typeMetadataAvailable
-  const targetTypeOptions = typeMetadataAvailable
+  const ordinaryTypeOptions = typeMetadataAvailable
     ? registeredTargetTypeOptions
     : FALLBACK_TARGET_TYPE_ENTRIES
+  const targetTypeOptions: TargetTypeEntry[] = [
+    ...(canConfigureAgents ? [{
+      target_type: 'AgentTarget', parameters: [], supported_auth_modes: [],
+      description: 'Test an agent with a model, harness and execution environment.',
+    }] : []),
+    ...ordinaryTypeOptions,
+  ]
 
   const isRoundRobin = targetType === 'RoundRobinTarget'
   const isAzureML = targetType === 'AzureMLChatTarget'
@@ -479,6 +502,7 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
 
   const resetForm = () => {
     setTargetType('')
+    setOrdinaryDraftType('')
     setEndpoint('')
     setModelName('')
     setHasDifferentUnderlying(false)
@@ -492,11 +516,14 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
   }
 
   const handleClose = () => {
+    if (submitting || agentBusy) return
     resetForm()
+    setAgentVisited(false)
     onClose()
   }
 
   const handleSubmit = async () => {
+    if (submitting || agentBusy || isAgent) return
     // For RoundRobinTarget, validation is different: we need ≥2 selected targets, not endpoint
     if (isRoundRobin) {
       if (selectedInnerTargets.length < 2) {
@@ -520,7 +547,7 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
       setError(null)
 
       try {
-        await targetsApi.createTarget({
+        const target = await targetsApi.createTarget({
           type: 'RoundRobinTarget',
           params: {
             targets: selectedInnerTargets.map((t) => t.registryName),
@@ -528,7 +555,7 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
           },
         })
         resetForm()
-        onCreated()
+        onCreated(target)
       } catch (err) {
         // Surface the backend's RFC 7807 `detail` (e.g. RoundRobinTarget validation
         // messages) rather than the generic axios "Request failed with status code 400".
@@ -590,14 +617,14 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
         params[underlyingModelParameter?.name ?? 'underlying_model'] = underlyingModel
       }
 
-      await targetsApi.createTarget({
+      const target = await targetsApi.createTarget({
         type: targetType,
         params,
         ...(isIdentity ? { auth_mode: 'identity' as const } : {}),
       })
 
       resetForm()
-      onCreated()
+      onCreated(target)
     } catch (err) {
       // Surface the backend's RFC 7807 `detail` (e.g. RoundRobinTarget validation
       // messages) rather than the generic axios "Request failed with status code 400".
@@ -609,16 +636,11 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
 
   return (
     <Dialog open={open} onOpenChange={(_, data) => { if (!data.open) handleClose() }}>
-      <DialogSurface className={styles.dialogSurface}>
+      <DialogSurface className={mergeClasses(styles.dialogSurface, isAgent && styles.agentSurface)}>
         <DialogBody>
           <DialogTitle>Create New Target</DialogTitle>
           <DialogContent className={styles.dialogContent}>
-            <form
-              className={styles.form}
-              data-testid="create-target-form"
-              onSubmit={(e) => { e.preventDefault(); handleSubmit() }}
-            >
-              {error && (
+              {!isAgent && error && (
                 <MessageBar intent="error">
                   <MessageBarBody>{error}</MessageBarBody>
                 </MessageBar>
@@ -640,13 +662,13 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
               <Field
                 className={styles.formField}
                 label="Target Type"
-                hint="Each option shows what the target does, its implementation class, and how it authenticates."
                 required
                 validationMessage={fieldErrors.targetType}
                 validationState={fieldErrors.targetType ? 'error' : 'none'}
               >
                 <Dropdown
                   aria-label="Target Type"
+                  disabled={submitting || agentBusy}
                   className={styles.fullWidthSelect}
                   listbox={{ className: styles.targetTypeListbox }}
                   placeholder="Select a target type"
@@ -657,6 +679,12 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
                     const next = data.optionValue
                     if (!next) return
                     setTargetType(next)
+                    if (next === 'AgentTarget') {
+                      setAgentVisited(true)
+                      return
+                    }
+                    if (next === ordinaryDraftType) return
+                    setOrdinaryDraftType(next)
                     setParameterValues({})
                     const nextEntry = targetTypeByName.get(next)
                     const nextSupportsIdentity = nextEntry
@@ -706,6 +734,17 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
                 </Dropdown>
               </Field>
 
+              {open && agentVisited && canConfigureAgents && <div hidden={!isAgent}>
+                <AgentTargetForm onClose={handleClose} onCreated={onCreated} onBusyChange={setAgentBusy}
+                  initialConfiguration={initialAgentConfiguration} selectForChat={selectForChat} actionsContainer={agentActions} />
+              </div>}
+            <form
+              className={styles.form}
+              hidden={isAgent}
+              data-testid="create-target-form"
+              onSubmit={(e) => { e.preventDefault(); void handleSubmit() }}
+            >
+              <fieldset className={styles.ordinaryFields} disabled={isAgent || submitting}>
               {targetType && (
                 <section
                   aria-label="Selected target details"
@@ -716,6 +755,11 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
                     <Text weight="semibold">{selectedTargetDisplayName}</Text>
                     <code className={styles.targetTypeIdentifier}>{targetType}</code>
                   </div>
+                  {targetType === 'GitHubCopilotTarget' && <Text size={200}>
+                    Native Copilot SDK harness with tools disabled, for text responses and compatible judges.
+                    Model access is Copilot-managed; the working directory is local, not a sandbox.
+                    To test tool behavior in an owned local or Docker environment, choose Agent (ACP).
+                  </Text>}
                   {targetTypeEntry?.description ? (
                     <Text size={200} className={styles.targetTypeDescription}>
                       {targetTypeEntry.description}
@@ -1079,9 +1123,11 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
                 </Link>.
               </Label>
               )}
+              </fieldset>
             </form>
           </DialogContent>
-          <DialogActions>
+          {isAgent && <DialogActions ref={setAgentActions} />}
+          {!isAgent && <DialogActions>
             <Button appearance="secondary" onClick={handleClose} disabled={submitting}>
               Cancel
             </Button>
@@ -1103,7 +1149,7 @@ export default function CreateTargetDialog({ open, onClose, onCreated, existingT
             >
               {submitting ? 'Creating...' : 'Create Target'}
             </Button>
-          </DialogActions>
+          </DialogActions>}
         </DialogBody>
       </DialogSurface>
     </Dialog>

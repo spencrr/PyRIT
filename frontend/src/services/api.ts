@@ -5,6 +5,7 @@ import { toApiError } from './errors'
 import { compatibility, COMPATIBILITY_HEADER } from './compatibility'
 import { getGraphScopes } from '../auth/msalConfig'
 import type {
+  AgentPresetCatalog,
   TargetInstance,
   UnregisteredTarget,
   UnregisteredConverter,
@@ -228,6 +229,17 @@ apiClient.interceptors.request.use(async (config) => {
 // Response interceptor: retry once on 401 with forced token refresh
 // ---------------------------------------------------------------------------
 
+function blockRejectedCompatibility(status: number | undefined, problem: unknown): void {
+  if (!problem || typeof problem !== 'object') return
+  const type = 'type' in problem ? problem.type : undefined
+  if ((status === 400 && type === 'urn:pyrit:compatibility:invalid')
+    || (status === 409 && type === 'urn:pyrit:compatibility:mismatch')) {
+    compatibility.block('The backend rejected this frontend build identity.',
+      'expected' in problem ? problem.expected : undefined,
+      'actual' in problem ? problem.actual : undefined)
+  }
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -236,7 +248,7 @@ apiClient.interceptors.response.use(
       (error?.response?.status === 400 && problem?.type === 'urn:pyrit:compatibility:invalid') ||
       (error?.response?.status === 409 && problem?.type === 'urn:pyrit:compatibility:mismatch')
     ) {
-      compatibility.block('The backend rejected this frontend build identity.', problem.expected, problem.actual)
+      blockRejectedCompatibility(error.response.status, problem)
       return Promise.reject(error)
     }
     const originalRequest = error?.config
@@ -267,6 +279,38 @@ apiClient.interceptors.response.use(
 )
 
 export { apiClient }
+
+export async function openApiEventStream(path: string, signal: AbortSignal): Promise<Response> {
+  const request = async (forceRefresh: boolean): Promise<Response> => {
+    compatibility.assertReady()
+    const token = await getAccessToken(forceRefresh)
+    compatibility.assertReady()
+    const headers: Record<string, string> = {
+      Accept: 'text/event-stream', 'X-Request-ID': generateClientId(),
+      [COMPATIBILITY_HEADER]: compatibility.bundledId,
+    }
+    if (token) headers.Authorization = `Bearer ${token}`
+    return fetch(`${API_BASE_URL}${path}`, { headers, signal })
+  }
+  let response = await request(false)
+  if (response.status === 401) {
+    await response.body?.cancel()
+    response = await request(true)
+  }
+  if (!response.ok) {
+    let problem: unknown
+    if (response.headers.get('content-type')?.includes('json')) {
+      try { problem = await response.json() }
+      catch (error: unknown) { if (!(error instanceof SyntaxError)) throw error }
+    } else {
+      await response.body?.cancel()
+    }
+    blockRejectedCompatibility(response.status, problem)
+    const detail = toApiError({ isAxiosError: true, response: { status: response.status, data: problem } }).detail
+    throw new Error(`Execution stream failed (${response.status}): ${detail}`)
+  }
+  return response
+}
 
 export const analyticsApi = {
   query: async (
@@ -356,6 +400,9 @@ export const runtimeApi = {
 }
 
 export const targetsApi = {
+  listAgentPresets: async (): Promise<AgentPresetCatalog> => {
+    return (await apiClient.get<AgentPresetCatalog>('/config/agent-presets')).data
+  },
   listTargetTypes: async (): Promise<TargetTypeListResponse> => {
     const response = await apiClient.get('/targets/types')
     return response.data
