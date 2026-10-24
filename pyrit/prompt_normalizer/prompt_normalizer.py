@@ -19,6 +19,7 @@ from pyrit.converter import Converter
 from pyrit.exceptions import (
     ComponentRole,
     EmptyResponseException,
+    TargetResponseUnavailableError,
     execution_context,
     get_execution_context,
 )
@@ -32,6 +33,7 @@ from pyrit.models import (
     RequestTraceContext,
     construct_response_from_request,
 )
+from pyrit.models.target_response import TargetOutcome, TargetResponse
 from pyrit.prompt_normalizer import ConverterConfiguration, NormalizerRequest
 from pyrit.prompt_target import CapabilityName, PromptTarget
 from pyrit.prompt_target.batch_helper import batch_task_async
@@ -125,6 +127,7 @@ class PromptNormalizer:
         Raises:
             Exception: If an error occurs during the request processing.
             ValueError: If the message pieces are not part of the same sequence.
+            TargetResponseUnavailableError: The recorded operation has no completed scorable response.
         """
         # Validates that the MessagePieces in the Message are part of the same sequence
         request_converter_configurations = request_converter_configurations or []
@@ -164,7 +167,21 @@ class PromptNormalizer:
                 normalizer_overrides=normalizer_overrides,
                 send_context=send_context,
             )
-            (await self.memory.add_message_to_memory_async(request=request))
+            if isinstance(responses, TargetResponse):
+                outcome = responses
+                for piece in request.message_pieces:
+                    piece.prompt_metadata.update(outcome.to_metadata())
+                if outcome.outcome != TargetOutcome.COMPLETED or not outcome:
+                    await self.memory.add_message_to_memory_async(request=request)
+                    for response in outcome:
+                        for piece in response.message_pieces:
+                            piece.conversation_id = conversation_id
+                            piece.prompt_metadata.update(outcome.to_metadata())
+                        await self.hash_and_persist_message_async(message=response)
+                    raise TargetResponseUnavailableError(outcome)
+            await self.memory.add_message_to_memory_async(request=request)
+        except TargetResponseUnavailableError:
+            raise
         except EmptyResponseException as ex:
             if send_context and send_context.target_invocation_count == target_invocation_count_before_send:
                 cid = request.message_pieces[0].conversation_id if request.message_pieces else None

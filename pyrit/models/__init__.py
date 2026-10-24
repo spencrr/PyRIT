@@ -282,6 +282,7 @@ if TYPE_CHECKING:
     )
     from pyrit.models.target.request_trace_context import RequestTraceContext
     from pyrit.models.target.tool_execution_metadata import ToolExecutionMetadata
+    from pyrit.models.target_response import TargetOutcome, TargetResponse
 
 _LAZY_EXPORTS: dict[str, str] = {
     "Contains": "pyrit.models.score",
@@ -307,6 +308,8 @@ _LAZY_EXPORTS: dict[str, str] = {
     "ScenarioDatasetSizeEstimateKind": "pyrit.models.scenario_dataset_size_estimate",
     "scenario_dataset_size_from_limit": "pyrit.models.scenario_dataset_size_estimate",
     "RequestTraceContext": "pyrit.models.target.request_trace_context",
+    "TargetOutcome": "pyrit.models.target_response",
+    "TargetResponse": "pyrit.models.target_response",
     "ToolExecutionMetadata": "pyrit.models.target.tool_execution_metadata",
     "AttackAnalyticsCell": "pyrit.models.analytics",
     "AttackAnalyticsConverterDirection": "pyrit.models.analytics",

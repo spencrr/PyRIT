@@ -57,6 +57,24 @@ Target-side rate limiting remains independent and continues to use `limit_reques
 `_send_prompt_to_target_async(*, normalized_conversation: list[Message]) -> list[Message]` instead of
 overriding `send_prompt_async`.
 
+### Explicit outcomes
+
+Some targets run an operation whose completion is not the same thing as producing assistant text:
+an agent may finish a task by changing files, an operation may be cancelled part-way, or the target
+may lose track of the result. Such a target returns `TargetResponse`, a `list[Message]` that also
+carries a `TargetOutcome` (`completed`, `cancelled`, `failed`, `unknown`) and operation metadata.
+Targets that return plain message lists are unchanged.
+
+`PromptNormalizer` stamps `TargetResponse.to_metadata()` (the operation metadata plus the outcome
+under `target_outcome`) onto the stored request; `TargetOutcome.from_metadata()` reads it back and
+treats pieces stored before outcomes existed as completed. A completed outcome with messages flows to
+attacks and scorers as usual. Any other outcome, or a completed outcome with no messages, persists the
+request and any partial response exactly as returned and raises
+`pyrit.exceptions.TargetResponseUnavailableError` instead of fabricating a processing-error reply or
+presenting a partial answer as scorable. The exception carries the original `TargetResponse`; callers
+inspect it rather than resending. Manual chat in the backend records a cancelled outcome as a
+completed send without a reply, and reports `failed` and `unknown` outcomes as failed sends.
+
 ## Chat-style targets vs general targets
 
 A `PromptTarget` is a generic place to send a prompt. With PyRIT, the idea is that it will eventually be consumed by an AI application, but that doesn't have to be immediate. For example, you could have a SharePoint target. Everything you send a prompt to is a `PromptTarget`. Many attacks work generically with any `PromptTarget` including `RedTeamingAttack` and `PromptSendingAttack`.
