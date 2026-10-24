@@ -1,0 +1,150 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.requests import Request
+
+from pyrit.agent.execution_manager import AgentExecutionManager
+from pyrit.backend.authentication_policy import AuthenticationPolicy
+from pyrit.backend.middleware.auth import AuthenticationError, EntraAuthMiddleware
+from pyrit.backend.routes import executions
+from pyrit.models.agent_execution import AgentExecution, AgentExecutionEvent, AgentExecutionState, AgentProfile
+
+
+async def test_stream_replays_once_then_ends_closed_execution(tmp_path: Path) -> None:
+    manager = AgentExecutionManager(root=tmp_path)
+    record = AgentExecution(
+        owner_id="test",
+        conversation_id="one",
+        target_id="target",
+        profile=AgentProfile(environment="local", local_execution_acknowledged=True),
+        state=AgentExecutionState.CLOSED,
+        event_count=2,
+    )
+    await manager.store.save_async(record)
+    for sequence in (1, 2):
+        await manager.store.append_async(
+            AgentExecutionEvent(
+                execution_id=record.id,
+                sequence=sequence,
+                direction="incoming",
+                payload={"method": "session/update"},
+            )
+        )
+
+    async def receive_async() -> dict[str, object]:
+        await asyncio.sleep(10)
+        return {"type": "http.disconnect"}
+
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": []}, receive=receive_async)
+    with (
+        patch.object(executions, "_resolve_async", AsyncMock(return_value=record)),
+        patch.object(executions, "get_agent_execution_manager", return_value=manager),
+    ):
+        response = await executions.stream_conversation_execution_async(
+            request,
+            "attack",
+            "one",
+            after=1,
+            execution_id=record.id,
+        )
+        frames = [frame async for frame in response.body_iterator]
+    assert any('"sequence": 2' in frame for frame in frames)
+    assert not any('"sequence": 1' in frame for frame in frames)
+    assert any("event: end" in frame for frame in frames)
+    assert not manager.store._listeners
+
+
+def test_stream_uses_existing_http_authentication() -> None:
+    app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(
+        mode="entra", tenant_id="tenant", client_id="client", allowed_group_ids=("group",)
+    )
+    app.include_router(executions.conversation_router, prefix="/api")
+    app.add_middleware(EntraAuthMiddleware)
+    with patch.object(
+        EntraAuthMiddleware,
+        "_authenticate_request_async",
+        AsyncMock(side_effect=AuthenticationError(status_code=401, detail="Missing authentication")),
+    ):
+        response = TestClient(app).get(f"/api/attacks/{uuid4()}/conversations/one/execution/stream")
+    assert response.status_code == 401
+
+
+async def test_stream_shutdown_releases_subscriber_without_cancelling_execution(tmp_path: Path) -> None:
+    manager = AgentExecutionManager(root=tmp_path)
+    record = AgentExecution(
+        owner_id="test",
+        conversation_id="one",
+        target_id="target",
+        profile=AgentProfile(environment="local", local_execution_acknowledged=True),
+        state=AgentExecutionState.WORKING,
+    )
+    await manager.store.save_async(record)
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+    with (
+        patch.object(executions, "_resolve_async", AsyncMock(return_value=record)),
+        patch.object(executions, "get_agent_execution_manager", return_value=manager),
+    ):
+        response = await executions.stream_conversation_execution_async(
+            request,
+            "attack",
+            "one",
+            after=0,
+            execution_id=None,
+        )
+        await anext(response.body_iterator)
+        assert len(manager.store._listeners) == 1
+        await response.body_iterator.aclose()
+    assert not manager.store._listeners
+    assert record.state == AgentExecutionState.WORKING
+
+
+async def test_stream_resets_to_a_replaced_execution_before_replaying_its_events(tmp_path: Path) -> None:
+    manager = AgentExecutionManager(root=tmp_path)
+    profile = AgentProfile(environment="local", local_execution_acknowledged=True)
+    previous = AgentExecution(
+        owner_id="test", conversation_id="one", target_id="target", profile=profile, state=AgentExecutionState.CLOSED
+    )
+    current = AgentExecution(
+        owner_id="test",
+        conversation_id="one",
+        target_id="target",
+        profile=profile,
+        state=AgentExecutionState.CLOSED,
+        event_count=1,
+    )
+    for record in (previous, current):
+        await manager.store.save_async(record)
+    await manager.store.append_async(
+        AgentExecutionEvent(
+            execution_id=current.id, sequence=1, direction="incoming", payload={"method": "session/update"}
+        )
+    )
+
+    async def receive_async() -> dict[str, object]:
+        await asyncio.sleep(10)
+        return {"type": "http.disconnect"}
+
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": []}, receive=receive_async)
+    with (
+        patch.object(executions, "_resolve_async", AsyncMock(return_value=current)),
+        patch.object(executions, "get_agent_execution_manager", return_value=manager),
+    ):
+        # The viewer resumes from a cursor that belonged to the previous execution.
+        response = await executions.stream_conversation_execution_async(
+            request, "attack", "one", after=7, execution_id=previous.id
+        )
+        frames = [frame async for frame in response.body_iterator]
+    reset = next(index for index, frame in enumerate(frames) if frame.startswith("event: reset"))
+    assert f'"execution_id": "{current.id}"' in frames[reset]
+    events = next(index for index, frame in enumerate(frames) if frame.startswith("event: events"))
+    assert reset < events
+    assert f'"execution_id": "{current.id}"' in frames[events] and '"sequence": 1' in frames[events]
+    assert any(frame.startswith("event: end") for frame in frames)

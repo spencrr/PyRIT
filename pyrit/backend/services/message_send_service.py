@@ -20,6 +20,7 @@ from typing import Any
 
 from pydantic import PydanticUserError
 
+from pyrit.agent.runtime import peek_agent_execution_manager
 from pyrit.backend.mappers import request_piece_to_pyrit_message_piece, request_to_pyrit_message
 from pyrit.backend.models.attacks import AddMessageRequest, ConverterConfigurationRequest, MessagePieceRequest
 from pyrit.backend.models.message_sends import (
@@ -860,6 +861,9 @@ class MessageSendService:
                     objective_score=objective_score,
                 )
             )
+        manager = peek_agent_execution_manager()
+        if manager is not None:
+            await manager.transcript_updated_async(msg_conversation_id)
 
     async def _score_chat_response_async(
         self,

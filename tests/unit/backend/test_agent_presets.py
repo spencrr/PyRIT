@@ -1,0 +1,157 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+from collections.abc import Iterator
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from pyrit.agent.runtime import peek_agent_execution_manager
+from pyrit.backend.authentication_policy import AuthenticationPolicy
+from pyrit.backend.middleware.auth import require_admin
+from pyrit.backend.models.targets import CreateTargetRequest
+from pyrit.backend.routes.configuration import router
+from pyrit.backend.services.target_service import TargetService
+from pyrit.models.agent_execution import AgentTargetConfiguration, EnvironmentTemplate, HarnessProfile
+from pyrit.models.agent_setup import AgentPresetSelection, AgentTargetOrigin
+from pyrit.registry import AgentConfigurationRegistry, Registry, TargetRegistry
+
+pytestmark = pytest.mark.usefixtures("patch_central_database")
+
+
+@pytest.fixture(autouse=True)
+def isolated_registries() -> Iterator[None]:
+    with patch.dict(Registry._singletons, clear=True), patch.object(AgentConfigurationRegistry, "_singleton", None):
+        yield
+
+
+def config(*, local: bool = False) -> AgentTargetConfiguration:
+    presets = AgentConfigurationRegistry.get_registry_singleton()
+    harness = HarnessProfile(
+        harness_kind="acp",
+        command=("team-agent", "--stdio"),
+        permission_policy="allow_once",
+        credential_env=("TEST_TOOL_TOKEN",),
+    )
+    template = (
+        EnvironmentTemplate(environment="local")
+        if local
+        else EnvironmentTemplate(environment="docker", image="team:1", docker_network="none", docker_cpus=2)
+    )
+    presets.register_harness(name="team", profile=harness, initializer="PrivateHarnessInitializer")
+    presets.register_environment(name="workspace", template=template, initializer="PrivateEnvironmentInitializer")
+    return AgentTargetConfiguration(
+        harness_profile=harness,
+        environment_template=template.model_copy(update={"local_execution_acknowledged": local}),
+    )
+
+
+def request(configuration: AgentTargetConfiguration) -> CreateTargetRequest:
+    return CreateTargetRequest(
+        name="agent",
+        type="AgentTarget",
+        params={"agent_configuration": configuration.model_dump(mode="json")},
+        agent_presets=AgentPresetSelection(harness_profile="team", environment_template="workspace"),
+    )
+
+
+def test_catalog_is_admin_only_and_returns_detached_canonical_models() -> None:
+    configuration = config()
+    before = peek_agent_execution_manager()
+    app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
+    app.include_router(router)
+    with TestClient(app) as client, patch.dict("os.environ", {"TEST_TOOL_TOKEN": "not-for-export"}):
+        assert client.get("/config/agent-presets").status_code == 403
+        app.dependency_overrides[require_admin] = lambda: None
+        response = client.get("/config/agent-presets")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["harness_profiles"] == [
+        {
+            "name": "team",
+            "profile": configuration.harness_profile.model_dump(mode="json"),
+            "initializer": "PrivateHarnessInitializer",
+        }
+    ]
+    assert body["environment_templates"][0]["initializer"] == "PrivateEnvironmentInitializer"
+    assert "not-for-export" not in response.text
+    docker = {field["name"]: field for field in body["environment_parameters"]["docker"]}
+    local = {field["name"]: field for field in body["environment_parameters"]["local"]}
+    assert set(docker) == {"working_directory", "docker_network", "docker_memory", "docker_cpus"}
+    assert set(local) == {"working_directory"}
+    assert docker["docker_memory"]["default"] == EnvironmentTemplate.model_fields["docker_memory"].default
+    assert docker["docker_cpus"]["type_name"] == "float"
+    body["environment_templates"][0]["template"]["image"] = "changed"
+    assert AgentConfigurationRegistry.get_registry_singleton().get_environment("workspace").image == "team:1"
+    assert peek_agent_execution_manager() is before
+
+
+@pytest.mark.parametrize("local", [False, True])
+async def test_create_validates_snapshot_and_returns_provenance_without_affecting_identity_async(
+    local: bool, tmp_path: Path
+) -> None:
+    configuration = config(local=local)
+    service = TargetService()
+    before = peek_agent_execution_manager()
+    created = await service.create_target_async(
+        request=request(configuration), upload_directory=str(tmp_path), is_admin=True
+    )
+    assert created.agent_configuration_provenance.origin is AgentTargetOrigin.RUNTIME
+    assert created.agent_configuration_provenance.presets.harness_profile == "team"
+    assert (await service.get_target_async(target_registry_name="agent")) == created
+    assert (await service.list_targets_async()).items[0] == created
+    custom = await service.create_target_async(
+        request=CreateTargetRequest(
+            name="custom",
+            type="AgentTarget",
+            params={"agent_configuration": configuration.model_dump(mode="json")},
+        ),
+        upload_directory=str(tmp_path),
+        is_admin=True,
+    )
+    assert custom.identifier.hash == created.identifier.hash
+    assert custom.agent_configuration_provenance.presets == AgentPresetSelection()
+    assert peek_agent_execution_manager() is before
+
+
+@pytest.mark.parametrize("change", ["removed", "profile", "template"])
+async def test_changed_or_removed_preset_is_rejected_without_registration_async(change: str) -> None:
+    configuration = config()
+    create = request(configuration)
+    if change == "removed":
+        AgentConfigurationRegistry.reset_registry_singleton()
+    else:
+        updated = configuration.model_copy(
+            update={"harness_profile": configuration.harness_profile.model_copy(update={"command": ("different",)})}
+            if change == "profile"
+            else {"environment_template": configuration.environment_template.model_copy(update={"image": "other:2"})}
+        )
+        create = request(updated)
+    with pytest.raises(ValueError, match="Unknown|changed"):
+        await TargetService().create_target_async(request=create, is_admin=True)
+    assert TargetRegistry.get_registry_singleton().instances.get("agent") is None
+
+
+@pytest.mark.parametrize("name", ["team", "missing"])
+async def test_non_admin_cannot_probe_agent_presets_async(name: str) -> None:
+    create = request(config()).model_copy(update={"agent_presets": AgentPresetSelection(harness_profile=name)})
+    presets = AgentConfigurationRegistry.get_registry_singleton()
+    with patch.object(presets, "validate_selection") as validate:
+        with pytest.raises(PermissionError, match="administrator access"):
+            await TargetService().create_target_async(request=create, is_admin=False)
+    validate.assert_not_called()
+    assert TargetRegistry.get_registry_singleton().instances.get("agent") is None
+
+
+async def test_ordinary_target_cannot_claim_agent_preset_provenance_async() -> None:
+    with pytest.raises(ValueError, match="require an AgentTarget"):
+        await TargetService().create_target_async(
+            request=CreateTargetRequest(
+                type="TextTarget",
+                agent_presets=AgentPresetSelection(harness_profile="team"),
+            )
+        )
