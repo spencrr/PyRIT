@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pyrit.agent.tool_calls import AgentToolProjection
 from pyrit.exceptions import TargetResponseUnavailableError
 from pyrit.memory import CentralMemory
 from pyrit.models import MessagePiece
@@ -79,6 +80,7 @@ class TestAgentTarget:
             environment_template=EnvironmentTemplate(environment="local", local_execution_acknowledged=True)
         )
         manager = MagicMock(spec=AgentExecutionManager)
+        manager.tool_calls_async = AsyncMock(return_value=AgentToolProjection())
         manager.send_async = AsyncMock(
             return_value=(
                 AgentExecution(
@@ -106,6 +108,7 @@ class TestAgentTarget:
             environment_template=EnvironmentTemplate(environment="local", local_execution_acknowledged=True)
         )
         manager = MagicMock(spec=AgentExecutionManager)
+        manager.tool_calls_async = AsyncMock(return_value=AgentToolProjection())
         manager.send_async = AsyncMock(
             return_value=(
                 AgentExecution(

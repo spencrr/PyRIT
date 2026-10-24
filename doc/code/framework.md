@@ -278,7 +278,10 @@ target**, a recipe that owns no resources. The runtime owns policy (timeouts, bu
 cancellation, redaction, the ACP protocol); an **environment provider** owns resources
 (allocate, seed, expose streams, release) behind `ExecutionEnvironmentProvider`, and a
 **harness adapter** owns launch translation behind `HarnessAdapter`. Both seams have
-executable conformance suites in `pyrit.agent.conformance`.
+executable conformance suites in `pyrit.agent.conformance`. Canonical tool calls use the
+existing `FunctionCallContent`, `FunctionOutputContent`, and `ToolExecutionMetadata`: the
+target projects retained reports, the normalizer persists them, and the existing
+`MessageToolCallScorer` interprets `ToolsCalled`. Missing reports remain unknown, not false.
 
 **Contributing (difficulty low)**:
 - The pattern is well-defined.
