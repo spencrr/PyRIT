@@ -452,7 +452,7 @@ export default function AgentTargetForm({
             <Field label="Idle expiry (seconds)"><Input type="number" min={1} max={86400} value={idleTimeout} onChange={(_, data) => setIdleTimeout(data.value)} required /></Field>
             <Field label="Maximum lifetime (seconds)"><Input type="number" min={1} max={86400} value={lifetime} onChange={(_, data) => setLifetime(data.value)} required /></Field>
             {source && <>
-              <Field label="Maximum inference requests per execution"><Input type="number" min={1} max={100} value={maxInference} onChange={(_, data) => setMaxInference(data.value)} /></Field>
+              <Field label="Maximum inference requests per execution"><Input type="number" min={1} max={1000} value={maxInference} onChange={(_, data) => setMaxInference(data.value)} /></Field>
               <Checkbox label="Retain inference content (sensitive)" checked={captureInference} onChange={(_, data) => setCaptureInference(data.checked === true)} />
             </>}
           </div>
