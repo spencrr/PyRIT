@@ -1,18 +1,22 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import asyncio
 import json
 import logging
 import re
 from abc import abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
+import httpx
 from openai import (
     AsyncOpenAI,
     BadRequestError,
     ContentFilterFinishReasonError,
+    DefaultAsyncHttpxClient,
     RateLimitError,
 )
 from openai._exceptions import (
@@ -24,14 +28,18 @@ from openai._exceptions import (
 
 from pyrit.auth import resolve_openai_auth
 from pyrit.common import default_values
+from pyrit.common.asyncio_task import await_task_completion_async
 from pyrit.exceptions.exception_classes import (
     RateLimitException,
     handle_bad_request_exception,
 )
 from pyrit.models import Message, MessagePiece
+from pyrit.models.model_inference import InferenceCapabilities, InferenceRequirements, InferenceWireApi
+from pyrit.prompt_target.common.model_inference import InferenceAdmissionError, InferenceResponse
 from pyrit.prompt_target.common.prompt_target import AuthMode, PromptTarget
 from pyrit.prompt_target.common.target_capabilities import TargetCapabilities
 from pyrit.prompt_target.common.target_configuration import TargetConfiguration
+from pyrit.prompt_target.common.utils import _get_rate_limit_lock
 from pyrit.prompt_target.openai._response_adapter import OpenAIResponseAdapter
 from pyrit.prompt_target.openai.openai_error_handling import (
     _extract_error_payload,
@@ -68,6 +76,122 @@ class OpenAITarget(PromptTarget):
     api_key_environment_variable: str
 
     _async_client: AsyncOpenAI | None = None
+    _api_key: str | Callable[[], Awaitable[str]]
+    _INFERENCE_WIRE_API: ClassVar[InferenceWireApi | None] = None
+    # Seconds an inference may wait behind other requests for this target's pacing lock.
+    INFERENCE_ADMISSION_SECONDS: ClassVar[float] = 5
+
+    @property
+    def inference_capabilities(self) -> InferenceCapabilities | None:
+        """Provider-wire support, independent of the high-level prompt/tool loop."""
+        if self._INFERENCE_WIRE_API is None:
+            return None
+        return InferenceCapabilities(
+            wire_apis=frozenset({self._INFERENCE_WIRE_API}),
+            streaming=True,
+            tool_calls=True,
+            input_modalities=frozenset(
+                "image" if modality == "image_path" else modality
+                for group in self.capabilities.input_modalities
+                for modality in group
+            ),
+            blocked_reason=self._inference_blocked_reason(),
+        )
+
+    def _inference_blocked_reason(self) -> str | None:
+        return None
+
+    def _inference_defaults(self) -> dict[str, Any]:
+        return {}
+
+    def _inference_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        effective = dict(body)
+        defaults = self._inference_defaults()
+        overridden = []
+        for key, value in defaults.items():
+            if value is None:
+                continue
+            if key == "n" and effective.get(key, value) != value:
+                raise ValueError("Inference request conflicts with configured target parameter 'n'")
+            if key == "reasoning" and isinstance(value, dict) and isinstance(effective.get(key), dict):
+                value = {**effective[key], **value}
+            if key in effective and effective[key] != value:
+                overridden.append(key)
+            effective[key] = value
+        if defaults.get("max_completion_tokens") is not None and "max_tokens" in effective:
+            effective.pop("max_tokens")
+            overridden.append("max_tokens")
+        if overridden:
+            logger.warning("Target settings override caller-supplied inference parameters: %s", ", ".join(overridden))
+        effective["model"] = self._model_name
+        return effective
+
+    @asynccontextmanager
+    async def open_inference_async(
+        self, *, body: dict[str, Any], requirements: InferenceRequirements, request_id: str
+    ) -> AsyncGenerator[InferenceResponse, None]:
+        """
+        Invoke this target's existing client/authentication without its conversation or tool loop.
+
+        Yields:
+            InferenceResponse: Unparsed provider bytes, preserving unknown fields and SSE frames.
+
+        Raises:
+            ValueError: Required capabilities or completion-count constraints conflict.
+            InferenceAdmissionError: The shared target pacing budget cannot admit this request promptly.
+        """
+        capabilities = self.inference_capabilities
+        if capabilities is None:
+            raise ValueError("Target has no inference capabilities")
+        reasons = capabilities.incompatibilities(requirements)
+        if reasons:
+            raise ValueError("; ".join(reasons))
+        effective = self._inference_body(body)
+        if self._max_requests_per_minute and self._max_requests_per_minute > 0:
+            # The budget bounds queueing behind other requests; the pacing sleep itself is the configured rate.
+            lock = _get_rate_limit_lock(self)
+            try:
+                async with asyncio.timeout(self.INFERENCE_ADMISSION_SECONDS):
+                    await lock.acquire()
+            except TimeoutError as error:
+                raise InferenceAdmissionError(
+                    f"Target pacing exceeded the {self.INFERENCE_ADMISSION_SECONDS:g}-second inference admission budget"
+                ) from error
+            try:
+                await asyncio.sleep(60 / self._max_requests_per_minute)
+            finally:
+                lock.release()
+        # Use the SDK's shared HTTP transport directly: its normal error path eagerly buffers
+        # error bodies, which would defeat a caller's response budget before iteration starts.
+        key = self._api_key if isinstance(self._api_key, str) else await self._api_key()
+        headers = httpx.Headers({k: v for k, v in self._client.default_headers.items() if isinstance(v, str)})
+        headers["Authorization"] = f"Bearer {key}"
+        configured_headers = self._httpx_client_kwargs.get("default_headers", {})
+        headers.update(configured_headers)
+        headers.update(self._headers)
+        headers["x-client-request-id"] = request_id
+        path = "chat/completions" if requirements.wire_api == InferenceWireApi.CHAT_COMPLETIONS else "responses"
+        query: dict[str, str | int | float | bool | None] = {}
+        for name, value in self._client.default_query.items():
+            if value is not None and not isinstance(value, (str, int, float, bool)):
+                raise ValueError("Inference requires scalar configured query parameters")
+            query[name] = value
+        request = self._provider_http_client.build_request(
+            "POST",
+            self._client.base_url.join(path),
+            json=effective,
+            headers=headers,
+            params=query,
+            timeout=self._client.timeout,
+        )
+        response = await self._provider_http_client.send(request, stream=True, follow_redirects=False)
+        try:
+            yield InferenceResponse(
+                status_code=response.status_code, headers=response.headers, body=response.aiter_bytes()
+            )
+        finally:
+            await await_task_completion_async(asyncio.create_task(response.aclose()))
+
     _reconstruction_parameters: dict[str, object] = {}
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -443,6 +567,9 @@ class OpenAITarget(PromptTarget):
         - Anthropic: https://api.anthropic.com/v1
         - Google Gemini: https://generativelanguage.googleapis.com/v1beta/openai
         - Custom endpoints: Any format (warnings may be shown but URL is not modified)
+
+        Raises:
+            TypeError: A configured HTTP client is not asynchronous.
         """
         # Merge custom headers with httpx_client_kwargs
         httpx_kwargs = self._httpx_client_kwargs.copy()
@@ -475,6 +602,14 @@ class OpenAITarget(PromptTarget):
 
         # Use endpoint as-is - the user knows their provider best
         base_url = self._endpoint
+
+        provider_http = httpx_kwargs.get("http_client")
+        if provider_http is None:
+            provider_http = DefaultAsyncHttpxClient()
+            httpx_kwargs["http_client"] = provider_http
+        if not isinstance(provider_http, httpx.AsyncClient):
+            raise TypeError("http_client must be an httpx.AsyncClient")
+        self._provider_http_client = provider_http
 
         # Pass api_key directly to the SDK - it handles both strings and callables
         self._async_client = AsyncOpenAI(

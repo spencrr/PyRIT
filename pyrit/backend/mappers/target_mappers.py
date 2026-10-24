@@ -16,6 +16,7 @@ from typing import Any
 
 from pyrit.models import TargetIdentifier
 from pyrit.models.catalog.target import TargetInstance
+from pyrit.models.model_inference import InferenceCapabilities
 from pyrit.prompt_target import PromptTarget
 from pyrit.prompt_target.common.target_capabilities import CapabilityName
 from pyrit.registry import TargetRegistry
@@ -72,6 +73,7 @@ def target_object_to_instance(target_registry_name: str, target_obj: PromptTarge
         TargetInstance DTO with metadata derived from the object.
     """
     target_identifier = TargetIdentifier.from_component_identifier(target_obj.get_identifier())
+    inference = target_obj.inference_capabilities
     reconstructable = isinstance(target_obj, Reconstructable)
     reconstruction_error = None
     if reconstructable:
@@ -98,6 +100,7 @@ def target_object_to_instance(target_registry_name: str, target_obj: PromptTarge
         ),
         identifier=target_identifier,
         capabilities=target_obj.capabilities,
+        inference_capabilities=inference if isinstance(inference, InferenceCapabilities) else None,
         supports_history_replay=supports_history_replay,
         target_specific_params=_target_specific_params(target_identifier),
         inner_targets=_build_inner_targets(target_obj),
