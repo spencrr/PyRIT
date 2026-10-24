@@ -27,6 +27,7 @@ class AgentHarnessKind(str, Enum):
     """Launch configuration adapter, independent of the ACP transport."""
 
     COPILOT = "copilot"
+    AGENT_FRAMEWORK = "agent_framework"
     ACP = "acp"
 
 
@@ -37,7 +38,10 @@ class AgentWorkspaceBase(str, Enum):
     EMPTY = "empty"
 
 
-_HARNESS_DEFAULT_COMMANDS: dict[str, tuple[str, ...]] = {AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio")}
+_HARNESS_DEFAULT_COMMANDS: dict[str, tuple[str, ...]] = {
+    AgentHarnessKind.COPILOT: ("copilot", "--acp", "--stdio"),
+    AgentHarnessKind.AGENT_FRAMEWORK: ("python", "-m", "pyrit.agent.hosts.agent_framework_acp"),
+}
 
 
 def _resolve_harness(value: Any) -> Any:
