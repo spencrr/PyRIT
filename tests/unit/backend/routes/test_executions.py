@@ -115,3 +115,50 @@ def test_conversation_access_is_scoped_without_admin_privileges() -> None:
         assert client.post(f"{path}/{uuid4()}/cancel").status_code == 404
         assert client.get(f"/attacks/{attack.attack_result_id}/conversations/{uuid4()}/execution").status_code == 404
     manager.cancel_async.assert_awaited_once()
+
+
+@pytest.mark.usefixtures("patch_central_database")
+def test_conversation_routes_never_resolve_another_conversations_execution() -> None:
+    from pyrit.agent.execution_manager import AgentExecutionManager
+    from pyrit.agent.execution_store import AgentExecutionStore
+    from pyrit.backend.services import agent_execution_service
+    from pyrit.memory import CentralMemory
+    from pyrit.models import AttackResult
+
+    memory = CentralMemory.get_memory_instance()
+    mine = AttackResult(conversation_id=str(uuid4()), objective="mine")
+    other = AttackResult(conversation_id=str(uuid4()), objective="other")
+    asyncio.run(memory.add_attack_results_to_memory_async(attack_results=[mine, other]))
+    profile = AgentProfile(environment="local", local_execution_acknowledged=True)
+    records = {
+        attack.conversation_id: AgentExecution(
+            owner_id="owner", conversation_id=attack.conversation_id, target_id="target", profile=profile
+        )
+        for attack in (mine, other)
+    }
+    manager = MagicMock(spec=AgentExecutionManager)
+    manager.records = {record.id: record for record in records.values()}
+    manager.latest_execution.side_effect = lambda *, conversation_id, target_id=None: records.get(conversation_id)
+    manager.start_async = AsyncMock()
+    manager.cancel_async = AsyncMock()
+    manager.store = MagicMock(spec=AgentExecutionStore)
+    manager.store.events_async = AsyncMock(return_value=AgentEventPage(events=[], next_cursor=0))
+    app = FastAPI()
+    app.state.authentication_policy = AuthenticationPolicy(mode="local")
+    app.include_router(executions.conversation_router)
+    client = TestClient(app)
+    path = f"/attacks/{mine.attack_result_id}/conversations/{mine.conversation_id}/execution"
+    foreign = records[other.conversation_id].id
+    with (
+        patch.object(agent_execution_service, "get_agent_execution_manager", return_value=manager),
+        patch.object(executions, "get_agent_execution_manager", return_value=manager),
+    ):
+        assert client.get(path).json()["id"] == str(records[mine.conversation_id].id)
+        assert client.get(f"{path}/{foreign}/events").status_code == 404
+        assert client.post(f"{path}/{foreign}/cancel").status_code == 404
+        # The other attack's conversation is not reachable through this attack either.
+        crossed = f"/attacks/{mine.attack_result_id}/conversations/{other.conversation_id}/execution"
+        assert client.get(crossed).status_code == 404
+        assert client.get(f"{crossed}/{foreign}/events").status_code == 404
+    manager.cancel_async.assert_not_awaited()
+    manager.store.events_async.assert_not_awaited()

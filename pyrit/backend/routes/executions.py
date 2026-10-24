@@ -131,7 +131,7 @@ async def stream_conversation_execution_async(
         identity = execution_id
         previous_state = ""
         deadline = monotonic() + 60
-        with manager.store.subscribe() as changed:
+        with manager.store.subscribe(conversation_id) as changed:
             while monotonic() < deadline:
                 changed.clear()
                 if manager.is_closed:

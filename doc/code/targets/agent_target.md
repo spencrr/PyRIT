@@ -521,14 +521,20 @@ The demo configuration sets `target_upload_directory: assets`, so API-created ta
 
 Conversation-scoped routes under
 `/api/attacks/{attack_id}/conversations/{conversation_id}/execution` reuse the attack access
-boundary of the chat transcript; they expose the execution's state and journal without its
-infrastructure identities or credential references, and never another conversation's execution:
+boundary of the chat transcript and never resolve another conversation's execution (a foreign
+`execution_id` is a 404). They omit the structured fields that identify infrastructure and
+credentials: owner, provider and process identities, image digest, and the profile with its
+credential references. Turn errors and the journal are diagnostics from the harness and
+provider and may mention container names or paths; they never contain credential values,
+which are redacted before frames are written.
 
 - `GET /` returns the current execution's operator-visible state, or `null` before provisioning.
 - `GET /stream?after=0&execution_id=...` is an authenticated, fetch-based SSE feed of state
   snapshots and retained event pages with an execution-scoped resume cursor. A connection lasts
   at most 60 seconds before the client reconnects through the normal authorization checks;
-  reconnects catch up from the journal, each observer has one coalesced wakeup, and observing
+  reconnects catch up from the journal, and a conversation whose execution was replaced receives
+  a `reset` frame naming the new execution before its events replay from the start. Observers
+  are woken only by their own conversation's changes (one coalesced wakeup each), and observing
   neither renews an execution's lifetime nor counts as active runtime work.
 - `GET /{execution_id}/events?after=0&limit=100` pages the retained session updates, lifecycle,
   and inference events.

@@ -15,7 +15,7 @@ async def test_subscription_catchup_append_and_resume_use_durable_cursor(tmp_pat
         target_id="target",
         profile=AgentProfile(environment="local", local_execution_acknowledged=True),
     )
-    with store.subscribe() as changed:
+    with store.subscribe("one") as changed:
         await store.save_async(record)
         assert changed.is_set()
         changed.clear()
