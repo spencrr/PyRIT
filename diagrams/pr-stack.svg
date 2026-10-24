@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="960" viewBox="0 0 1200 960" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="14">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5568"/>
+    </marker>
+    <marker id="arrow-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a0aec0"/>
+    </marker>
+    <style>
+      .box { stroke-width: 1.5; }
+      .core { fill: #ebf4ff; stroke: #2b6cb0; }
+      .ui { fill: #faf5ff; stroke: #6b46c1; }
+      .opt { fill: #f0fff4; stroke: #2f855a; }
+      .def { fill: #ffffff; stroke: #a0aec0; stroke-dasharray: 6 4; }
+      .num { fill: #1a202c; font-weight: 700; text-anchor: middle; dominant-baseline: middle; }
+      .claim { fill: #4a5568; font-size: 12px; font-style: italic; text-anchor: middle; dominant-baseline: middle; }
+      .dnum { fill: #4a5568; font-weight: 600; text-anchor: middle; dominant-baseline: middle; }
+      .edge { fill: none; stroke: #4a5568; stroke-width: 1.5; marker-end: url(#arrow); }
+      .dedge { fill: none; stroke: #a0aec0; stroke-width: 1.5; stroke-dasharray: 5 4; marker-end: url(#arrow-d); }
+      .title { fill: #1a202c; font-size: 17px; font-weight: 600; }
+      .legend { fill: #4a5568; font-size: 12.5px; dominant-baseline: middle; }
+      .lane { fill: #a0aec0; font-size: 11.5px; font-weight: 600; letter-spacing: 0.5px; }
+    </style>
+  </defs>
+  <rect width="1200" height="960" fill="#ffffff"/>
+  <text class="title" x="24" y="32">PR stack: one claim per box; arrows are review dependencies (branches are stacked in numeric order)</text>
+
+  <text class="lane" x="24" y="62">AGENT RUNTIME</text>
+  <text class="lane" x="600" y="62">MODEL CONTROL → OPERATOR SURFACE</text>
+  <text class="lane" x="900" y="62">BRANCHES / DEFERRED</text>
+
+  <!-- 1 -->
+  <rect class="box core" x="60" y="80" width="240" height="66" rx="6"/>
+  <text class="num" x="180" y="102">1 · Explicit target outcomes</text>
+  <text class="claim" x="180" y="124">a target can finish without assistant text</text>
+
+  <!-- 3 -->
+  <rect class="box core" x="600" y="80" width="240" height="66" rx="6"/>
+  <text class="num" x="720" y="102">3 · Single-inference capability</text>
+  <text class="claim" x="720" y="124">transport + auth, no history or tool loop</text>
+
+  <!-- 2a -->
+  <rect class="box core" x="30" y="200" width="300" height="104" rx="6"/>
+  <text class="num" x="180" y="222">2a · ACP runtime + environment seam</text>
+  <text class="claim" x="180" y="246">local provider · harness adapters · AgentTarget</text>
+  <text class="claim" x="180" y="265">conformance suites · admin gating</text>
+  <text class="claim" x="180" y="284">JsonParameterValue opt-in for agent_configuration</text>
+
+  <!-- 2b, 2c -->
+  <rect class="box core" x="20" y="350" width="200" height="66" rx="6"/>
+  <text class="num" x="120" y="372">2b · Docker provider</text>
+  <text class="claim" x="120" y="394">the reference others copy</text>
+
+  <rect class="box core" x="250" y="350" width="220" height="66" rx="6"/>
+  <text class="num" x="360" y="372">2c · Tool calls as pieces</text>
+  <text class="claim" x="360" y="394">scorers read them · no false evidence</text>
+
+  <!-- 4 -->
+  <rect class="box core" x="600" y="340" width="240" height="66" rx="6"/>
+  <text class="num" x="720" y="362">4 · Target-backed model (BYOK)</text>
+  <text class="claim" x="720" y="384">relay · scoped authority · conflict rules</text>
+
+  <!-- 5 -->
+  <rect class="box core" x="600" y="470" width="240" height="66" rx="6"/>
+  <text class="num" x="720" y="492">5 · Reusable configuration</text>
+  <text class="claim" x="720" y="514">initializers · registries · provenance ≠ identity</text>
+
+  <!-- 8 -->
+  <rect class="box opt" x="900" y="470" width="240" height="66" rx="6"/>
+  <text class="num" x="1020" y="492">8 · Agent Framework ACP host</text>
+  <text class="claim" x="1020" y="514">optional extra · login-free CI proof</text>
+
+  <!-- 6a, 6b, 7 -->
+  <rect class="box ui" x="600" y="600" width="240" height="66" rx="6"/>
+  <text class="num" x="720" y="622">6a · Co-PyRIT API</text>
+  <text class="claim" x="720" y="644">create · send · stream · inspect</text>
+
+  <rect class="box ui" x="600" y="730" width="240" height="66" rx="6"/>
+  <text class="num" x="720" y="752">6b · Co-PyRIT UI</text>
+  <text class="claim" x="720" y="774">configure agents · watch what they do</text>
+
+  <rect class="box ui" x="600" y="860" width="240" height="66" rx="6"/>
+  <text class="num" x="720" y="882">7 · Interactive controls</text>
+  <text class="claim" x="720" y="904">approve · cancel · hold</text>
+
+  <!-- deferred -->
+  <rect class="box def" x="20" y="480" width="200" height="66" rx="6"/>
+  <text class="dnum" x="120" y="502">Checkpoint restore</text>
+  <text class="claim" x="120" y="524">optional Docker capability</text>
+
+  <rect class="box def" x="900" y="600" width="240" height="66" rx="6"/>
+  <text class="dnum" x="1020" y="622">Durable startup authoring</text>
+  <text class="claim" x="1020" y="644">persist a reproducible definition</text>
+
+  <rect class="box def" x="900" y="730" width="240" height="66" rx="6"/>
+  <text class="dnum" x="1020" y="752">Evidence packages / playback</text>
+  <text class="claim" x="1020" y="774">"download journal" covers it today</text>
+
+  <rect class="box def" x="900" y="860" width="240" height="66" rx="6"/>
+  <text class="dnum" x="1020" y="882">Config registry UI</text>
+  <text class="claim" x="1020" y="904">+ create by preset reference</text>
+
+  <!-- edges -->
+  <path class="edge" d="M180,146 L180,200"/>
+  <path class="edge" d="M140,304 C140,328 120,328 120,350"/>
+  <path class="edge" d="M260,304 C260,328 360,328 360,350"/>
+  <path class="edge" d="M330,252 C470,252 470,373 600,373"/>
+  <path class="edge" d="M720,146 L720,340"/>
+  <path class="edge" d="M720,406 L720,470"/>
+  <path class="edge" d="M720,536 L720,600"/>
+  <path class="edge" d="M720,666 L720,730"/>
+  <path class="edge" d="M720,796 L720,860"/>
+  <path class="edge" d="M840,373 C940,373 1020,410 1020,470"/>
+
+  <path class="dedge" d="M120,416 L120,480"/>
+  <path class="dedge" d="M840,503 C870,503 870,633 900,633"/>
+  <path class="dedge" d="M840,633 C870,633 870,763 900,763"/>
+  <path class="dedge" d="M840,763 C870,763 870,893 900,893"/>
+
+  <!-- legend -->
+  <rect x="24" y="600" width="14" height="14" rx="3" class="box core"/>
+  <text class="legend" x="46" y="607">core Python slices</text>
+  <rect x="24" y="628" width="14" height="14" rx="3" class="box ui"/>
+  <text class="legend" x="46" y="635">API + UI slices</text>
+  <rect x="24" y="656" width="14" height="14" rx="3" class="box opt"/>
+  <text class="legend" x="46" y="663">optional extra</text>
+  <rect x="24" y="684" width="14" height="14" rx="3" class="box def"/>
+  <text class="legend" x="46" y="691">deferred on purpose (not in this series)</text>
+
+  <text class="legend" x="24" y="740">1 and 3 are independent of each other; 4 merges 3 into the runtime chain.</text>
+  <text class="legend" x="24" y="762">2b and 2c each need only 2a; they are stacked 2a → 2b → 2c so 4 has one base.</text>
+  <text class="legend" x="24" y="784">8 needs only 4; it is stacked after 7 so the fork has one linear review chain.</text>
+  <text class="legend" x="24" y="806">Every PR links back to this story.</text>
+</svg>

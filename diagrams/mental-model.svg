@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="460" viewBox="0 0 1440 460" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="14">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5568"/>
+    </marker>
+    <style>
+      .box { stroke-width: 1.5; }
+      .def { fill: #fffaf0; stroke: #b7791f; }
+      .core { fill: #ebf4ff; stroke: #2b6cb0; }
+      .run { fill: #f0fff4; stroke: #2f855a; }
+      .ext { fill: #f7fafc; stroke: #718096; }
+      .label { fill: #1a202c; text-anchor: middle; dominant-baseline: middle; font-weight: 600; }
+      .sub { fill: #4a5568; font-size: 12px; font-style: italic; text-anchor: middle; dominant-baseline: middle; }
+      .edge { fill: none; stroke: #4a5568; stroke-width: 1.5; marker-end: url(#arrow); }
+      .elabel { fill: #2d3748; font-size: 12px; text-anchor: middle; paint-order: stroke; stroke: #ffffff; stroke-width: 5px; stroke-linejoin: round; }
+      .title { fill: #1a202c; font-size: 17px; font-weight: 600; }
+      .band { fill: #4a5568; font-size: 12.5px; }
+      .bandhead { fill: #1a202c; font-size: 12.5px; font-weight: 600; }
+    </style>
+  </defs>
+  <rect width="1440" height="460" fill="#ffffff"/>
+  <text class="title" x="24" y="34">Mental model: three definitions, one recipe, one owned execution per conversation</text>
+
+  <!-- definitions -->
+  <rect class="box def" x="24" y="70" width="260" height="64" rx="6"/>
+  <text class="label" x="154" y="92">Model binding</text>
+  <text class="sub" x="154" y="113">which model answers</text>
+
+  <rect class="box def" x="24" y="170" width="260" height="64" rx="6"/>
+  <text class="label" x="154" y="192">Harness profile</text>
+  <text class="sub" x="154" y="213">which agent runs, and how it is launched</text>
+
+  <rect class="box def" x="24" y="270" width="260" height="64" rx="6"/>
+  <text class="label" x="154" y="292">Environment template</text>
+  <text class="sub" x="154" y="313">where it runs: local · docker · ⟨yours⟩</text>
+
+  <path class="edge" d="M284,102 C320,102 320,202 350,202"/>
+  <path class="edge" d="M284,202 L350,202"/>
+  <path class="edge" d="M284,302 C320,302 320,202 350,202"/>
+
+  <!-- recipe -->
+  <rect class="box core" x="350" y="166" width="250" height="72" rx="6"/>
+  <text class="label" x="475" y="190">Configured AgentTarget</text>
+  <text class="sub" x="475" y="211">a recipe — no resources allocated</text>
+
+  <path class="edge" d="M600,202 L720,202"/>
+  <text class="elabel" x="660" y="186">first message</text>
+  <text class="elabel" x="660" y="220">of a conversation</text>
+
+  <!-- execution -->
+  <rect class="box run" x="720" y="166" width="250" height="72" rx="6"/>
+  <text class="label" x="845" y="190">Owned execution</text>
+  <text class="sub" x="845" y="211">allocated · leased · disposed</text>
+
+  <path class="edge" d="M970,202 L1030,202"/>
+
+  <rect class="box run" x="1030" y="166" width="190" height="72" rx="6"/>
+  <text class="label" x="1125" y="190">Journal</text>
+  <text class="sub" x="1125" y="211">events · tool calls · artifacts</text>
+
+  <path class="edge" d="M1220,202 L1260,202"/>
+
+  <rect class="box ext" x="1260" y="166" width="140" height="72" rx="6"/>
+  <text class="label" x="1330" y="190">Existing</text>
+  <text class="label" x="1330" y="211">PyRIT scorers</text>
+
+  <!-- later-turn loop -->
+  <path class="edge" d="M790,238 C790,290 935,290 935,238" stroke-dasharray="5 4"/>
+  <text class="elabel" x="862" y="290">later messages reuse the same execution</text>
+
+  <!-- bands -->
+  <line x1="24" y1="352" x2="1416" y2="352" stroke="#e2e8f0"/>
+  <text class="bandhead" x="24" y="378">Identity</text>
+  <text class="band" x="110" y="378">hash of the recipe (model binding + harness profile + environment template). Preset names are provenance, not identity.</text>
+  <text class="bandhead" x="24" y="404">Lifetime</text>
+  <text class="band" x="110" y="404">one execution per conversation; startup / turn / idle / lifetime timeouts and inference budgets are core policy, enforced for every provider.</text>
+  <text class="bandhead" x="24" y="430">Ownership</text>
+  <text class="band" x="110" y="430">PyRIT owns the policy and the protocol; the environment provider owns the resources and their cleanup.</text>
+</svg>

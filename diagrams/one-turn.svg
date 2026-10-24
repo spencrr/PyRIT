@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="790" viewBox="0 0 1400 790" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5568"/>
+    </marker>
+    <style>
+      .title { fill: #1a202c; font-size: 17px; font-weight: 600; }
+      .head { stroke-width: 1.5; }
+      .core { fill: #ebf4ff; stroke: #2b6cb0; }
+      .env { fill: #e6fffa; stroke: #2f855a; }
+      .ext { fill: #f7fafc; stroke: #718096; }
+      .hlabel { fill: #1a202c; font-weight: 600; text-anchor: middle; dominant-baseline: middle; }
+      .life { stroke: #cbd5e0; stroke-width: 1.2; stroke-dasharray: 4 4; }
+      .msg { fill: none; stroke: #4a5568; stroke-width: 1.5; marker-end: url(#arrow); }
+      .ret { stroke-dasharray: 5 4; }
+      .mlabel { fill: #2d3748; font-size: 12px; text-anchor: middle; paint-order: stroke; stroke: #ffffff; stroke-width: 5px; stroke-linejoin: round; }
+      .frame { fill: none; stroke: #a0aec0; stroke-width: 1.2; stroke-dasharray: 6 4; }
+      .ftab { fill: #718096; font-size: 11.5px; font-weight: 700; letter-spacing: 0.4px; }
+      .note { fill: #4a5568; font-size: 12px; }
+    </style>
+  </defs>
+  <rect width="1400" height="790" fill="#ffffff"/>
+  <text class="title" x="24" y="30">One turn: what happens when an attack sends a message to an agent</text>
+
+  <!-- participant heads -->
+  <rect class="head ext" x="20" y="52" width="140" height="40" rx="6"/>
+  <text class="hlabel" x="90" y="72">Attack</text>
+  <rect class="head core" x="195" y="52" width="150" height="40" rx="6"/>
+  <text class="hlabel" x="270" y="72">AgentTarget</text>
+  <rect class="head core" x="395" y="52" width="170" height="40" rx="6"/>
+  <text class="hlabel" x="480" y="72">ExecutionManager</text>
+  <rect class="head env" x="620" y="52" width="160" height="40" rx="6"/>
+  <text class="hlabel" x="700" y="72">Provider session</text>
+  <rect class="head env" x="840" y="52" width="160" height="40" rx="6"/>
+  <text class="hlabel" x="920" y="72">Harness (ACP)</text>
+  <rect class="head core" x="1045" y="52" width="150" height="40" rx="6"/>
+  <text class="hlabel" x="1120" y="72">Inference relay</text>
+  <rect class="head core" x="1230" y="52" width="160" height="40" rx="6"/>
+  <text class="hlabel" x="1310" y="72">Bound model target</text>
+
+  <!-- lifelines -->
+  <line class="life" x1="90" y1="92" x2="90" y2="750"/>
+  <line class="life" x1="270" y1="92" x2="270" y2="750"/>
+  <line class="life" x1="480" y1="92" x2="480" y2="750"/>
+  <line class="life" x1="700" y1="92" x2="700" y2="750"/>
+  <line class="life" x1="920" y1="92" x2="920" y2="750"/>
+  <line class="life" x1="1120" y1="92" x2="1120" y2="750"/>
+  <line class="life" x1="1310" y1="92" x2="1310" y2="750"/>
+
+  <!-- frames -->
+  <rect class="frame" x="420" y="178" width="580" height="100" rx="4"/>
+  <text class="ftab" x="430" y="194">FIRST TURN OF THIS CONVERSATION</text>
+
+  <rect class="frame" x="420" y="318" width="960" height="272" rx="4"/>
+  <text class="ftab" x="430" y="334">WHILE THE AGENT WORKS</text>
+
+  <rect class="frame" x="440" y="494" width="520" height="80" rx="4"/>
+  <text class="ftab" x="450" y="510">PERMISSION REQUIRED</text>
+
+  <!-- messages -->
+  <path class="msg" d="M90,122 L270,122"/>
+  <text class="mlabel" x="180" y="115">send_prompt_async(message)</text>
+
+  <path class="msg" d="M270,152 L480,152"/>
+  <text class="mlabel" x="375" y="145">send(conversation, text)</text>
+
+  <path class="msg" d="M480,222 L700,222"/>
+  <text class="mlabel" x="590" y="215">create_session · reserve · launch(ExecutionSpec)</text>
+
+  <path class="msg" d="M480,260 L920,260"/>
+  <text class="mlabel" x="700" y="253">initialize · session/new (cwd = agent_cwd)</text>
+
+  <path class="msg" d="M480,302 L920,302"/>
+  <text class="mlabel" x="700" y="295">session/prompt</text>
+
+  <path class="msg" d="M920,352 L1120,352"/>
+  <text class="mlabel" x="1020" y="345">POST /chat/completions · scoped key</text>
+
+  <path class="msg" d="M1120,382 L1310,382"/>
+  <text class="mlabel" x="1215" y="375">open_inference_async(body)</text>
+
+  <path class="msg ret" d="M1310,412 L1120,412"/>
+  <text class="mlabel" x="1215" y="405">streamed provider bytes</text>
+
+  <path class="msg ret" d="M1120,442 L920,442"/>
+  <text class="mlabel" x="1020" y="435">streamed response</text>
+
+  <path class="msg ret" d="M920,474 L480,474"/>
+  <text class="mlabel" x="700" y="467">session/update: text · tool_call · tool_call_update</text>
+
+  <path class="msg" d="M920,526 L480,526"/>
+  <text class="mlabel" x="700" y="519">request_permission</text>
+
+  <path class="msg ret" d="M480,558 L920,558"/>
+  <text class="mlabel" x="700" y="551">policy decision, or held for the operator</text>
+
+  <path class="msg ret" d="M920,616 L480,616"/>
+  <text class="mlabel" x="700" y="609">prompt result</text>
+
+  <!-- self message -->
+  <path class="msg" d="M480,640 L530,640 L530,662 L486,662"/>
+  <text class="note" x="542" y="655">project tool calls → function_call pieces · append to journal</text>
+
+  <path class="msg ret" d="M480,696 L270,696"/>
+  <text class="mlabel" x="375" y="689">text + pieces</text>
+
+  <path class="msg ret" d="M270,726 L90,726"/>
+  <text class="mlabel" x="180" y="719">TargetResponse</text>
+
+  <text class="note" x="24" y="776">Later messages in the same conversation skip the first-turn frame and reuse the execution. Solid = request, dashed = response or notification.</text>
+</svg>

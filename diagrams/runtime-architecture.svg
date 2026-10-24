@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1420" height="790" viewBox="0 0 1420 790" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="14">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5568"/>
+    </marker>
+    <style>
+      .region { stroke-width: 1.2; stroke-dasharray: 7 5; }
+      .r-core { fill: #f5f9ff; stroke: #90cdf4; }
+      .r-seam { fill: #fffcf5; stroke: #ecc94b; }
+      .r-env { fill: #f6fdf8; stroke: #9ae6b4; }
+      .rtitle { fill: #2d3748; font-size: 13px; font-weight: 700; letter-spacing: 0.3px; }
+      .rsub { fill: #718096; font-size: 12px; }
+      .box { stroke-width: 1.5; }
+      .core { fill: #ebf4ff; stroke: #2b6cb0; }
+      .seam { fill: #fff7e6; stroke: #b7791f; stroke-width: 2; }
+      .env { fill: #e6fffa; stroke: #2f855a; }
+      .ext { fill: #f7fafc; stroke: #718096; }
+      .label { fill: #1a202c; text-anchor: middle; dominant-baseline: middle; font-weight: 600; }
+      .sub { fill: #4a5568; font-size: 12px; font-style: italic; text-anchor: middle; dominant-baseline: middle; }
+      .edge { fill: none; stroke: #4a5568; stroke-width: 1.5; marker-end: url(#arrow); }
+      .both { marker-start: url(#arrow); }
+      .elabel { fill: #2d3748; font-size: 12px; text-anchor: middle; paint-order: stroke; stroke: #ffffff; stroke-width: 5px; stroke-linejoin: round; }
+      .title { fill: #1a202c; font-size: 17px; font-weight: 600; }
+      .port { fill: #2f855a; font-size: 11.5px; dominant-baseline: middle; }
+      .legend { fill: #4a5568; font-size: 12.5px; dominant-baseline: middle; }
+    </style>
+  </defs>
+  <rect width="1420" height="790" fill="#ffffff"/>
+  <text class="title" x="24" y="32">Runtime architecture: core owns policy, providers own resources, two verified seams between them</text>
+
+  <!-- regions -->
+  <rect class="region r-core" x="240" y="56" width="450" height="648" rx="10"/>
+  <text class="rtitle" x="258" y="80">PYRIT CORE — OWNS POLICY</text>
+  <text class="rsub" x="258" y="98">timeouts · budgets · cancellation · approvals · redaction · ACP protocol</text>
+
+  <rect class="region r-seam" x="760" y="56" width="280" height="346" rx="10"/>
+  <text class="rtitle" x="778" y="80">EXTENSION SEAMS</text>
+  <text class="rsub" x="778" y="98">contracts verified by pyrit.agent.conformance</text>
+
+  <rect class="region r-env" x="1060" y="56" width="340" height="564" rx="10"/>
+  <text class="rtitle" x="1078" y="80">PROVIDER-OWNED RESOURCES</text>
+  <text class="rsub" x="1078" y="98">allocate · seed workspace · expose streams · release</text>
+
+  <!-- core nodes -->
+  <rect class="box core" x="270" y="118" width="180" height="50" rx="6"/>
+  <text class="label" x="360" y="143">AgentTarget</text>
+
+  <rect class="box core" x="270" y="196" width="390" height="92" rx="6"/>
+  <text class="label" x="465" y="220">AgentExecutionManager</text>
+  <text class="sub" x="465" y="243">one owned execution per conversation</text>
+  <text class="sub" x="465" y="262">applies the same policy to every provider and harness</text>
+
+  <rect class="box core" x="270" y="400" width="160" height="60" rx="6"/>
+  <text class="label" x="350" y="421">Execution store</text>
+  <text class="sub" x="350" y="441">append-only journal</text>
+
+  <rect class="box core" x="500" y="400" width="170" height="60" rx="6"/>
+  <text class="label" x="585" y="421">ACP connection</text>
+  <text class="sub" x="585" y="441">JSON-RPC over stdio</text>
+
+  <rect class="box core" x="270" y="520" width="160" height="64" rx="6"/>
+  <text class="label" x="350" y="542">Tool-call projection</text>
+  <text class="sub" x="350" y="563">→ function_call pieces</text>
+
+  <rect class="box core" x="500" y="520" width="170" height="64" rx="6"/>
+  <text class="label" x="585" y="542">Inference relay</text>
+  <text class="sub" x="585" y="563">execution-scoped URL + key</text>
+
+  <rect class="box core" x="500" y="630" width="170" height="56" rx="6"/>
+  <text class="label" x="585" y="650">Bound PyRIT target</text>
+  <text class="sub" x="585" y="670">e.g. OpenAIChatTarget</text>
+
+  <!-- seam nodes -->
+  <rect class="box seam" x="780" y="150" width="240" height="96" rx="6"/>
+  <text class="label" x="900" y="172">HarnessAdapter</text>
+  <text class="sub" x="900" y="194">copilot · generic ACP · agent_framework</text>
+  <text class="sub" x="900" y="213">ExecutionSpec → command · env · credentials</text>
+
+  <rect class="box seam" x="780" y="290" width="240" height="100" rx="6"/>
+  <text class="label" x="900" y="312">ExecutionEnvironmentProvider</text>
+  <text class="sub" x="900" y="334">local · docker · ⟨yours⟩</text>
+  <text class="sub" x="900" y="353">validate_template · create_session</text>
+  <text class="sub" x="900" y="372">capabilities: isolated · checkpoint</text>
+
+  <!-- env nodes -->
+  <rect class="box env" x="1080" y="290" width="300" height="90" rx="6"/>
+  <text class="label" x="1230" y="312">ExecutionSession</text>
+  <text class="sub" x="1230" y="334">workspace · ACP byte streams · stderr</text>
+  <text class="sub" x="1230" y="353">reserve · inference_endpoint · launch · close</text>
+
+  <rect class="box env" x="1080" y="400" width="300" height="184" rx="6"/>
+  <text class="label" x="1230" y="478">Harness process</text>
+  <text class="sub" x="1230" y="500">Copilot CLI · AF host · any ACP agent</text>
+  <text class="sub" x="1230" y="519">no provider credential in its environment</text>
+  <text class="port" x="1096" y="430">⇄ ACP client</text>
+  <text class="port" x="1096" y="552">→ model calls</text>
+
+  <!-- external nodes -->
+  <rect class="box ext" x="20" y="400" width="190" height="60" rx="6"/>
+  <text class="label" x="115" y="421">Co-PyRIT</text>
+  <text class="sub" x="115" y="441">SSE → ordered chat activity</text>
+
+  <rect class="box ext" x="20" y="520" width="190" height="64" rx="6"/>
+  <text class="label" x="115" y="542">Memory</text>
+  <text class="sub" x="115" y="563">scorers read the pieces</text>
+
+  <!-- edges: core internal -->
+  <path class="edge" d="M360,168 L360,196"/>
+  <path class="edge" d="M330,288 L330,400"/>
+  <path class="edge" d="M590,288 L590,400"/>
+  <path class="edge" d="M560,460 L560,490 L350,490 L350,520"/>
+  <text class="elabel" x="455" y="490">session/update stream</text>
+  <path class="edge" d="M590,584 L590,630"/>
+  <path class="edge" d="M270,430 L210,430"/>
+  <path class="edge" d="M270,552 L210,552"/>
+
+  <!-- edges: core -> seams -->
+  <path class="edge" d="M660,214 L780,214"/>
+  <text class="elabel" x="720" y="200">launch spec ⇄</text>
+  <text class="elabel" x="720" y="230">command · env</text>
+
+  <path class="edge" d="M660,262 L720,262 L720,340 L780,340"/>
+  <text class="elabel" x="720" y="292">create · reserve</text>
+  <text class="elabel" x="720" y="308">launch · close</text>
+
+  <!-- edges: seams -> resources -->
+  <path class="edge" d="M1020,340 L1080,340"/>
+  <path class="edge" d="M1230,380 L1230,400"/>
+
+  <!-- edges: across the boundary at runtime -->
+  <path class="edge both" d="M670,430 L1080,430"/>
+  <text class="elabel" x="875" y="418">stdin / stdout · ACP JSON-RPC</text>
+
+  <path class="edge" d="M1080,552 L670,552"/>
+  <text class="elabel" x="875" y="540">OpenAI-compatible HTTP · execution-scoped key</text>
+
+  <!-- legend -->
+  <rect x="24" y="724" width="14" height="14" rx="3" class="box core"/>
+  <text class="legend" x="46" y="731">PyRIT core (policy, protocol, evidence)</text>
+  <rect x="300" y="724" width="14" height="14" rx="3" class="box seam"/>
+  <text class="legend" x="322" y="731">seam contract (what an extension implements)</text>
+  <rect x="640" y="724" width="14" height="14" rx="3" class="box env"/>
+  <text class="legend" x="662" y="731">provider-owned (allocated and released per execution)</text>
+  <rect x="1020" y="724" width="14" height="14" rx="3" class="box ext"/>
+  <text class="legend" x="1042" y="731">existing PyRIT surfaces, unchanged</text>
+  <text class="legend" x="24" y="764">The ACA sandbox provider was built against this contract outside the repository with zero core changes; it is the proof the seam is real.</text>
+</svg>

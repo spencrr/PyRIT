@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="360" viewBox="0 0 1400 360" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="14">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5568"/>
+    </marker>
+    <style>
+      .box { stroke-width: 1.5; }
+      .core { fill: #ebf4ff; stroke: #2b6cb0; }
+      .new { fill: #fff7e6; stroke: #b7791f; stroke-width: 2.2; }
+      .ext { fill: #f7fafc; stroke: #718096; }
+      .abstract { fill: #ffffff; stroke: #2b6cb0; stroke-dasharray: 6 4; }
+      .label { fill: #1a202c; text-anchor: middle; dominant-baseline: middle; }
+      .sub { fill: #4a5568; font-size: 12px; font-style: italic; text-anchor: middle; dominant-baseline: middle; }
+      .edge { fill: none; stroke: #4a5568; stroke-width: 1.5; marker-end: url(#arrow); }
+      .elabel { fill: #2d3748; font-size: 12px; text-anchor: middle; paint-order: stroke; stroke: #ffffff; stroke-width: 5px; stroke-linejoin: round; }
+      .title { fill: #1a202c; font-size: 17px; font-weight: 600; }
+      .caption { fill: #4a5568; font-size: 13px; }
+    </style>
+  </defs>
+  <rect width="1400" height="360" fill="#ffffff"/>
+  <text class="title" x="24" y="34">Where it sits: an AgentTarget is a PromptTarget</text>
+
+  <rect class="box ext" x="24" y="132" width="196" height="56" rx="6"/>
+  <text class="label" x="122" y="160">Attack · Scenario · Chat</text>
+
+  <path class="edge" d="M220,160 L256,160"/>
+
+  <rect class="box ext" x="256" y="132" width="168" height="56" rx="6"/>
+  <text class="label" x="340" y="160">PromptNormalizer</text>
+
+  <path class="edge" d="M424,160 L460,160"/>
+
+  <rect class="box abstract" x="460" y="132" width="150" height="56" rx="6"/>
+  <text class="label" x="535" y="153">PromptTarget</text>
+  <text class="sub" x="535" y="172">base contract</text>
+
+  <path class="edge" d="M610,160 C636,160 636,92 660,92"/>
+  <path class="edge" d="M610,160 C636,160 636,228 660,228"/>
+
+  <rect class="box core" x="660" y="64" width="250" height="56" rx="6"/>
+  <text class="label" x="785" y="85">OpenAIChatTarget · HTTP · …</text>
+  <text class="sub" x="785" y="104">existing targets, unchanged</text>
+
+  <rect class="box new" x="660" y="200" width="250" height="56" rx="6"/>
+  <text class="label" x="785" y="221">AgentTarget</text>
+  <text class="sub" x="785" y="240">harness + environment under test</text>
+
+  <path class="edge" d="M910,92 C980,92 980,160 1050,160"/>
+  <text class="elabel" x="980" y="126">text pieces</text>
+
+  <path class="edge" d="M910,228 C980,228 980,160 1050,160"/>
+  <text class="elabel" x="980" y="188">text + function_call</text>
+  <text class="elabel" x="980" y="204">+ function_call_output pieces</text>
+
+  <path d="M1050,138 a65,10 0 0,1 130,0 v44 a65,10 0 0,1 -130,0 z" fill="#f7fafc" stroke="#718096" stroke-width="1.5"/>
+  <ellipse cx="1115" cy="138" rx="65" ry="10" fill="#f7fafc" stroke="#718096" stroke-width="1.5"/>
+  <text class="label" x="1115" y="166">Memory</text>
+
+  <path class="edge" d="M1180,160 L1220,160"/>
+
+  <rect class="box ext" x="1220" y="132" width="160" height="56" rx="6"/>
+  <text class="label" x="1300" y="153">Scorers</text>
+  <text class="sub" x="1300" y="172">incl. MessageToolCallScorer</text>
+
+  <text class="caption" x="24" y="322">Attacks, converters, memory, and scorers do not change. What the agent did arrives as the same</text>
+  <text class="caption" x="24" y="340">function_call / function_call_output pieces that PyRIT's tool-call scorers already read.</text>
+</svg>
