@@ -79,8 +79,8 @@ export default function AgentTargetForm({
   const [credential, setCredential] = useState(
     initialConfiguration?.harness_profile.credential_env.join('\n') ?? '',
   )
-  const [permissionPolicy, setPermissionPolicy] = useState<'deny' | 'allow_once'>(
-    initialConfiguration?.harness_profile.permission_policy === 'allow_once' ? 'allow_once' : 'deny',
+  const [permissionPolicy, setPermissionPolicy] = useState<'ask' | 'deny' | 'allow_once'>(
+    initialConfiguration?.harness_profile.permission_policy ?? 'deny',
   )
   const [acknowledged, setAcknowledged] = useState(false)
   const [turnTimeout, setTurnTimeout] = useState(String(initialConfiguration?.turn_timeout_seconds ?? 180))
@@ -375,8 +375,8 @@ export default function AgentTargetForm({
                 </Select>
               </Field>
               <Field label="Tool permission policy">
-                <Select className={styles.select} value={permissionPolicy} onChange={(_, data) => setPermissionPolicy(data.value === 'allow_once' ? 'allow_once' : 'deny')}>
-                  <option value="deny">Deny requests</option><option value="allow_once">Allow requests</option>
+                <Select className={styles.select} value={permissionPolicy} onChange={(_, data) => setPermissionPolicy(data.value === 'allow_once' ? 'allow_once' : data.value === 'deny' ? 'deny' : 'ask')}>
+                  <option value="ask">Ask me</option><option value="deny">Deny requests</option><option value="allow_once">Allow requests</option>
                 </Select>
               </Field>
               {harness === 'copilot' && !source && !credential.trim()

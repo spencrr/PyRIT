@@ -5,7 +5,7 @@
 The execution-environment seam: providers own resources, the runtime owns policy.
 
 A provider allocates and releases the place where a harness runs and exposes its ACP byte
-streams. It never decides timeouts, budgets, cancellation, redaction, or what the
+streams. It never decides timeouts, budgets, cancellation, approvals, redaction, or what the
 harness does; those stay with ``AgentExecutionManager``.
 """
 

@@ -55,6 +55,11 @@ def project_agent_tools(
         if event.execution_id != execution_id or event.turn_id != turn_id or event.sequence <= last_sequence:
             raise ValueError("Tool call events must be ordered within one execution turn")
         last_sequence = event.sequence
+        if event.direction == "lifecycle" and event.payload.get("type") == "permission.resolved":
+            approval = event.payload.get("approval")
+            if isinstance(approval, dict) and approval.get("decision") != "operator_allow":
+                denied.add(str(approval.get("tool_call_id")))
+            continue
         params = event.payload.get("params")
         if event.direction == "incoming" and event.payload.get("method") == "session/request_permission":
             tool = params.get("toolCall") if isinstance(params, dict) else None

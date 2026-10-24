@@ -4,7 +4,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FluentProvider, webLightTheme } from '@fluentui/react-components'
 
-import type { AgentTurn } from '@/types'
+import type { AgentApproval, AgentTurn } from '@/types'
 
 import AgentActivity from './AgentActivity'
 
@@ -73,5 +73,39 @@ describe('AgentActivity', () => {
       activity={{ text: 'Last observed output', tools: [] }} /></TestWrapper>)
     expect(screen.getByText('Retained streamed output (not a completed reply)')).toBeInTheDocument()
     expect(screen.getByText('Last observed output')).toBeInTheDocument()
+  })
+
+  it('offers one-time decisions for pending approvals and reports settled ones', async () => {
+    const user = userEvent.setup()
+    const onDecision = jest.fn().mockResolvedValue(undefined)
+    const approvals: AgentApproval[] = [
+      { id: 'pending', turn_id: 'turn', tool_call_id: 'tool', title: 'Read orders', expires_at: '2099-01-01T00:00:00Z',
+        decision: null, option_id: null, actor: null,
+        options: [{ option_id: 'allow', name: 'Allow once', kind: 'allow_once' }, { option_id: 'reject', name: 'Reject', kind: 'reject_once' }] },
+      { id: 'settled', turn_id: 'turn', tool_call_id: 'other', title: 'Write receipt', expires_at: '2099-01-01T00:00:00Z',
+        decision: 'operator_deny', option_id: 'reject', actor: 'operator', options: [] },
+      { id: 'elsewhere', turn_id: 'another-turn', tool_call_id: 'tool', title: 'Not this turn', expires_at: '2099-01-01T00:00:00Z',
+        decision: null, option_id: null, actor: null, options: [] },
+    ]
+    render(<TestWrapper><AgentActivity turn={{ ...turn, status: 'running', capture_complete: false }}
+      approvals={approvals} onDecision={onDecision} activity={{ text: '', tools: [{
+        id: 'tool', title: 'Read orders', status: 'pending', firstSeen: '', lastSeen: '',
+      }] }} /></TestWrapper>)
+    expect(screen.getByText(/Harness requested approval\. Expires /)).toBeInTheDocument()
+    expect(screen.getByText('Permission: operator deny · operator')).toBeInTheDocument()
+    expect(screen.queryByText('Not this turn')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Allow once' }))
+    await user.click(screen.getByRole('button', { name: 'Deny' }))
+    expect(onDecision.mock.calls).toEqual([['pending', true], ['pending', false]])
+  })
+
+  it('cannot allow a request the harness offered no one-time allow option for', () => {
+    render(<TestWrapper><AgentActivity turn={turn} onDecision={jest.fn()} approvals={[
+      { id: 'pending', turn_id: 'turn', tool_call_id: 'tool', title: 'Always allow?', expires_at: '2099-01-01T00:00:00Z',
+        decision: null, option_id: null, actor: null,
+        options: [{ option_id: 'always', name: 'Allow always', kind: 'allow_always' }] },
+    ]} /></TestWrapper>)
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeEnabled()
   })
 })

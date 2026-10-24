@@ -136,6 +136,29 @@ def test_title_and_meta_never_stand_in_for_a_tool_name() -> None:
         assert projection.omitted == {"call-1": "name_not_reported"}
 
 
+@pytest.mark.parametrize("policy", ["operator_deny", "timeout_deny", "cancelled"])
+def test_permission_denial_is_not_invocation(policy: str) -> None:
+    execution_id, turn_id = uuid4(), uuid4()
+    events = tool_events(execution_id=execution_id, turn_id=turn_id)
+    events.append(
+        AgentExecutionEvent(
+            execution_id=execution_id,
+            turn_id=turn_id,
+            sequence=3,
+            direction="lifecycle",
+            payload={"type": "permission.resolved", "approval": {"tool_call_id": "call-1", "decision": policy}},
+        )
+    )
+    projection = project_agent_tools(
+        events=events,
+        execution_id=execution_id,
+        turn_id=turn_id,
+        conversation_id="one",
+    )
+    assert not projection.messages
+    assert projection.omitted == {"call-1": "permission_not_granted"}
+
+
 def test_ambiguous_call_ids_and_missing_arguments_remain_explicit() -> None:
     execution_id, turn_id = uuid4(), uuid4()
     events = tool_events(execution_id=execution_id, turn_id=turn_id)

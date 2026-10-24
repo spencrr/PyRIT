@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from pyrit.agent.send_context import is_interactive_agent_send
 from pyrit.models import ComponentIdentifier, Message, construct_response_from_request
 from pyrit.models.agent_execution import AgentTargetConfiguration
 from pyrit.models.target.agent_tool_call import AgentToolCallProvenance
@@ -35,6 +36,8 @@ class AgentTarget(PromptTarget):
         "idle_timeout_seconds",
         "lifetime_seconds",
         "cancellation_grace_seconds",
+        "approval_timeout_seconds",
+        "interactive_hold_seconds",
         "max_evidence_bytes",
         "max_artifact_bytes",
     }
@@ -223,6 +226,7 @@ class AgentTarget(PromptTarget):
             prompt=request.converted_value,
             has_history=len(normalized_conversation) > 1,
             model_binding=self._model_binding,
+            interactive=is_interactive_agent_send(str(request.conversation_id)),
         )
         metadata: dict[str, Any] = {
             "agent_execution_id": str(record.id),

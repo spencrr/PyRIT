@@ -4,6 +4,7 @@
 import asyncio
 import json
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
@@ -14,7 +15,13 @@ pytest.importorskip("acp")
 
 from pyrit.agent.environment import ExecutionSession
 from pyrit.agent.execution_manager import AgentExecutionManager
-from pyrit.models.agent_execution import AgentExecution, AgentExecutionState, AgentProfile
+from pyrit.models.agent_execution import (
+    AgentApproval,
+    AgentExecution,
+    AgentExecutionEvent,
+    AgentExecutionState,
+    AgentProfile,
+)
 
 
 def make_manager(tmp_path: Path) -> tuple[AgentExecutionManager, AgentExecution]:
@@ -125,6 +132,89 @@ async def test_recorded_evidence_is_bounded(tmp_path: Path) -> None:
     assert record.capture_error is not None
     assert record.event_count == 0
     assert json.loads((tmp_path / str(record.id) / "record.json").read_text())["state"] == "starting"
+
+
+@pytest.mark.parametrize("failed_snapshot", ["pending", "resolved", "both"])
+async def test_approval_journal_commit_survives_snapshot_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, failed_snapshot: str
+) -> None:
+    manager, record = make_manager(tmp_path)
+    await manager.store.save_async(record)
+    live = manager._make_live(record)
+    assert live.approvals is not None
+    approvals = live.approvals
+    save = manager.store.save_async
+
+    async def save_snapshot_async(execution: AgentExecution) -> None:
+        stage = "resolved" if execution.approvals[-1].decision else "pending"
+        if failed_snapshot in (stage, "both"):
+            raise OSError("execution snapshot locked")
+        await save(execution)
+
+    with patch.object(manager.store, "save_async", side_effect=save_snapshot_async):
+        pending = asyncio.create_task(
+            approvals.request_async(
+                tool_call_id="read",
+                title="Read orders",
+                options=[
+                    {"option_id": "yes", "name": "Allow", "kind": "allow_once"},
+                    {"option_id": "no", "name": "Deny", "kind": "reject_once"},
+                ],
+            )
+        )
+        async with asyncio.timeout(3):
+            while not record.approvals:
+                await asyncio.sleep(0)
+        approval = record.approvals[0]
+        await approvals.decide_async(approval_id=approval.id, decision="operator_allow", actor="operator")
+        assert await pending == "yes"
+        await approvals.cancel_async()
+
+    page = await manager.store.events_async(execution_id=record.id)
+    assert [event.payload["type"] for event in page.events] == ["permission.pending", "permission.resolved"]
+    assert page.events[1].payload["approval"]["decision"] == "operator_allow"
+    assert "committed to the journal" in caplog.text
+    assert record.capture_error is None
+
+    # Reload from the actual stale snapshot, not the still-live in-memory record.
+    reloaded = (await manager.store.load_all_async())[0]
+    assert reloaded.approvals == record.approvals
+    assert reloaded.event_count == 2
+    assert reloaded.evidence_bytes == (tmp_path / str(record.id) / "events.jsonl").stat().st_size
+    environment = MagicMock(spec=ExecutionSession)
+    environment.close_async = AsyncMock()
+    with patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment):
+        async with AgentExecutionManager(root=tmp_path) as restarted:
+            assert restarted.records[record.id].approvals[0].decision == "operator_allow"
+
+
+async def test_interrupted_approval_stays_cancelled_across_repeated_restarts(tmp_path: Path) -> None:
+    manager, record = make_manager(tmp_path)
+    approval = AgentApproval(
+        tool_call_id="read",
+        title="Read orders",
+        options=[{"option_id": "no", "name": "Deny", "kind": "reject_once"}],
+        expires_at=datetime.now(UTC) + timedelta(minutes=1),
+    )
+    record.approvals.append(approval)
+    await manager.store.save_async(record)
+    await manager.store.append_async(
+        AgentExecutionEvent(
+            execution_id=record.id,
+            sequence=1,
+            direction="lifecycle",
+            payload={"type": "permission.pending", "approval": approval.model_dump(mode="json")},
+        )
+    )
+    environment = MagicMock(spec=ExecutionSession)
+    environment.close_async = AsyncMock()
+    with patch("pyrit.agent.execution_manager.create_execution_session", return_value=environment):
+        for _ in range(2):
+            async with AgentExecutionManager(root=tmp_path) as restarted:
+                recovered = restarted.records[record.id]
+                assert recovered.state == AgentExecutionState.CLOSED
+                assert recovered.approvals[0].decision == "cancelled"
+                assert recovered.approvals[0].actor == "interrupted_runtime"
 
 
 async def test_records_from_another_version_are_reported_and_skipped_at_startup(

@@ -608,11 +608,17 @@ async def test_management_publishes_target_upload_directory(tmp_path: Path) -> N
     app = FastAPI()
     with patch.dict(os.environ, {}, clear=True):
         service = RuntimeLifecycle(app=app, source=ConfigurationFileService(config_file_value=None))
-    config = ConfigurationLoader(memory_db_type="in_memory", env_files=[], target_upload_directory=str(tmp_path))
+    config = ConfigurationLoader(
+        memory_db_type="in_memory",
+        env_files=[],
+        target_upload_directory=str(tmp_path),
+        show_agent_operator_identity=False,
+    )
 
     await service._management_async(config)
 
     assert app.state.target_upload_directory == str(tmp_path)
+    assert app.state.show_agent_operator_identity is False
 
 
 async def test_invalid_cold_configuration_requires_restart_but_retains_raw_repair(tmp_path: Path) -> None:
@@ -625,6 +631,7 @@ async def test_invalid_cold_configuration_requires_restart_but_retains_raw_repai
     assert service.state == "restart-required"
     assert not app.state.allow_custom_initializers
     assert app.state.target_upload_directory is None
+    assert app.state.show_agent_operator_identity is True
     assert app.state.environment_file_service is None
     content, version = await source.read_with_version_async()
     assert content == "broken: ["

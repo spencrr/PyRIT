@@ -109,6 +109,18 @@ class TestConfigurationLoader:
         with pytest.raises(TypeError, match=r"allow_custom_initializers must be a bool"):
             ConfigurationLoader(allow_custom_initializers=invalid_value)  # type: ignore[arg-type]
 
+    def test_show_agent_operator_identity_defaults_on_and_loads_from_yaml(self, tmp_path: pathlib.Path) -> None:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("show_agent_operator_identity: false\n", encoding="utf-8")
+
+        assert ConfigurationLoader().show_agent_operator_identity is True
+        assert ConfigurationLoader.from_yaml_file(config_path).show_agent_operator_identity is False
+
+    @pytest.mark.parametrize("invalid_value", ["false", "true", 0, 1, None, [], {}])
+    def test_rejects_non_boolean_show_agent_operator_identity(self, invalid_value: object) -> None:
+        with pytest.raises(TypeError, match=r"show_agent_operator_identity must be a bool"):
+            ConfigurationLoader(show_agent_operator_identity=invalid_value)  # type: ignore[arg-type]
+
     def test_valid_memory_db_types_snake_case(self):
         """Test all valid memory database types in snake_case."""
         for db_type in ["in_memory", "sqlite", "azure_sql"]:

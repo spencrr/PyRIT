@@ -275,7 +275,7 @@ select prompts, score, or branch. Configuration separates **model binding** (whi
 answers), **harness profile** (which agent runs and how it is launched), and
 **environment template** (where it runs); their composition is a **configured agent
 target**, a recipe that owns no resources. The runtime owns policy (timeouts, budgets,
-cancellation, redaction, the ACP protocol); an **environment provider** owns resources
+cancellation, approvals, redaction, the ACP protocol); an **environment provider** owns resources
 (allocate, seed, expose streams, release) behind `ExecutionEnvironmentProvider`, and a
 **harness adapter** owns launch translation behind `HarnessAdapter`. Both seams have
 executable conformance suites in `pyrit.agent.conformance`. Canonical tool calls use the

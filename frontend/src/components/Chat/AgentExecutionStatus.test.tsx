@@ -7,31 +7,39 @@ import type { ConversationExecution } from '@/types'
 import AgentExecutionStatus from './AgentExecutionStatus'
 
 describe('AgentExecutionStatus', () => {
-  const execution: ConversationExecution = {
-    id: 'one', conversation_id: 'one', state: 'working', environment: 'docker', model: '', turns: [],
-    capture_error: null, close_reason: null, source_coverage: 'ACP only', artifacts: [], event_count: 1,
-    connection_state: 'ready',
-  }
-
-  it('distinguishes feed, session and environment and cancels only the running turn', async () => {
-    const onCancel = jest.fn().mockResolvedValue(undefined)
+  it('distinguishes feed, session and environment and offers explicit held actions', async () => {
+    const onControl = jest.fn().mockResolvedValue(undefined)
+    const execution: ConversationExecution = {
+      id: 'one', conversation_id: 'one', state: 'held', environment: 'docker', model: '', turns: [],
+      capture_error: null, close_reason: null, source_coverage: 'ACP only', artifacts: [], event_count: 1,
+      connection_state: 'ready', interactive: true, held_until: new Date(Date.now() + 60000).toISOString(),
+    }
     render(<FluentProvider theme={webLightTheme}>
-      <AgentExecutionStatus execution={execution} feed="reconnecting" disabled={false} cancelling={false} onCancel={onCancel} />
+      <AgentExecutionStatus execution={execution} feed="reconnecting" disabled={false} cancelling={false}
+        onCancel={jest.fn()} onControl={onControl} />
     </FluentProvider>)
     expect(screen.getByText('Feed: reconnecting')).toBeInTheDocument()
     expect(screen.getByText('ACP: ready')).toBeInTheDocument()
-    expect(screen.getByText('Environment: docker / working')).toBeInTheDocument()
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Cancel turn' }))
-    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('Environment: docker / held')).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Continue', exact: true }))
+    expect(onControl).toHaveBeenCalledWith('continue')
   })
 
   it('keeps cancellation read-only while locked and hides it once the turn settles', () => {
+    const execution: ConversationExecution = {
+      id: 'one', conversation_id: 'one', state: 'working', environment: 'docker', model: '', turns: [],
+      capture_error: null, close_reason: null, source_coverage: 'ACP only', artifacts: [], event_count: 1,
+      connection_state: 'ready',
+    }
     const { rerender } = render(<FluentProvider theme={webLightTheme}>
-      <AgentExecutionStatus execution={execution} feed="live" disabled cancelling={false} onCancel={jest.fn()} />
+      <AgentExecutionStatus execution={execution} feed="live" disabled cancelling={false}
+        onCancel={jest.fn()} onControl={jest.fn()} />
     </FluentProvider>)
     expect(screen.getByRole('button', { name: 'Cancel turn' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Close execution' })).not.toBeInTheDocument()
     rerender(<FluentProvider theme={webLightTheme}>
-      <AgentExecutionStatus execution={{ ...execution, state: 'idle' }} feed="live" disabled={false} cancelling={false} onCancel={jest.fn()} />
+      <AgentExecutionStatus execution={{ ...execution, state: 'idle' }} feed="live" disabled={false} cancelling={false}
+        onCancel={jest.fn()} onControl={jest.fn()} />
     </FluentProvider>)
     expect(screen.queryByRole('button', { name: 'Cancel turn' })).not.toBeInTheDocument()
     expect(screen.getByText('Environment: docker / idle')).toBeInTheDocument()
@@ -39,7 +47,8 @@ describe('AgentExecutionStatus', () => {
 
   it('describes an unstarted execution without inventing connection state', () => {
     render(<FluentProvider theme={webLightTheme}>
-      <AgentExecutionStatus execution={null} feed="idle" disabled={false} cancelling={false} onCancel={jest.fn()} />
+      <AgentExecutionStatus execution={null} feed="idle" disabled={false} cancelling={false}
+        onCancel={jest.fn()} onControl={jest.fn()} />
     </FluentProvider>)
     expect(screen.getByText('ACP: not started')).toBeInTheDocument()
     expect(screen.getByText('Environment: not provisioned')).toBeInTheDocument()

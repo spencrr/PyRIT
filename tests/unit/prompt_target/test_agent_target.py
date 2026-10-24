@@ -97,6 +97,38 @@ class TestAgentTarget:
         assert manager.send_async.call_args.kwargs["has_history"] is True
         assert manager.send_async.call_args.kwargs["configuration"] == configuration
 
+    async def test_interactive_mode_is_scoped_to_the_callers_conversation(self) -> None:
+        from pyrit.agent.execution_manager import AgentExecutionManager
+        from pyrit.agent.send_context import interactive_agent_send
+
+        configuration = AgentTargetConfiguration(
+            environment_template=EnvironmentTemplate(environment="local", local_execution_acknowledged=True)
+        )
+        manager = MagicMock(spec=AgentExecutionManager)
+        manager.tool_calls_async = AsyncMock(return_value=AgentToolProjection())
+        manager.send_async = AsyncMock(
+            return_value=(
+                AgentExecution(
+                    owner_id="test", conversation_id="one", target_id="target", profile=configuration.to_profile()
+                ),
+                AgentTurn(request_id="1", prompt="hi", response_text="done", status=AgentTurnStatus.COMPLETED),
+            )
+        )
+        target = AgentTarget(agent_configuration=configuration)
+        target.bind_execution_manager(manager)
+        conversation = [MessagePiece(role="user", original_value="hi", conversation_id="one").to_message()]
+        await target._send_prompt_to_target_async(normalized_conversation=conversation)
+        assert manager.send_async.call_args.kwargs["interactive"] is False
+        with interactive_agent_send("one"):
+            await target._send_prompt_to_target_async(normalized_conversation=conversation)
+            assert manager.send_async.call_args.kwargs["interactive"] is True
+            # Another conversation dispatched inside the same scope is still automation.
+            other = [MessagePiece(role="user", original_value="hi", conversation_id="two").to_message()]
+            await target._send_prompt_to_target_async(normalized_conversation=other)
+            assert manager.send_async.call_args.kwargs["interactive"] is False
+        await target._send_prompt_to_target_async(normalized_conversation=conversation)
+        assert manager.send_async.call_args.kwargs["interactive"] is False
+
     async def test_turn_errors_travel_with_the_explicit_outcome(self) -> None:
         from pyrit.agent.execution_manager import AgentExecutionManager
 

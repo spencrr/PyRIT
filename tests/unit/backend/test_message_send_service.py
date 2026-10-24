@@ -60,6 +60,7 @@ from pyrit.models import (
     Message,
     MessagePiece,
     PromptDataType,
+    construct_response_from_request,
 )
 from pyrit.models.target.target_capabilities import TargetCapabilities
 from pyrit.models.target_response import TargetOutcome, TargetResponse
@@ -309,6 +310,31 @@ async def test_manual_tool_call_pieces_score_through_the_final_response_async(
         expectation=ScoringExpectation(conditions=(ToolsCalled(tools=(ToolCallRequirement(name="lookup"),)),)),
     )
     assert scores[0].get_value() is True
+
+
+async def test_manual_sends_are_interactive_only_for_their_own_conversation_async(
+    real_send_context: tuple[MessageSendService, AttackResult, MockPromptTarget, Base64Converter],
+) -> None:
+    from pyrit.agent.send_context import is_interactive_agent_send
+
+    service, attack, target, _ = real_send_context
+    observed: list[tuple[bool, bool]] = []
+
+    async def send_async(*, normalized_conversation: list[Message]) -> TargetResponse:
+        conversation_id = str(normalized_conversation[-1].get_piece().conversation_id)
+        observed.append((is_interactive_agent_send(conversation_id), is_interactive_agent_send("other")))
+        return TargetResponse(
+            messages=[construct_response_from_request(normalized_conversation[-1].get_piece(), ["ok"])],
+            outcome=TargetOutcome.COMPLETED,
+        )
+
+    with patch.object(target, "_send_prompt_to_target_async", side_effect=send_async):
+        await service.add_message_async(
+            attack_result_id=attack.attack_result_id,
+            request=_request(conversation_id=attack.conversation_id),
+        )
+    assert observed == [(True, False)]
+    assert not is_interactive_agent_send(attack.conversation_id)
 
 
 async def _send_message_and_get_update_fields(
