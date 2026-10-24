@@ -43,7 +43,7 @@ import inspect
 import logging
 import re
 import types
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, Union, get_args, get_origin, get_type_hints
 
@@ -59,7 +59,7 @@ from pyrit.models.parameter import ComponentType, Parameter, RegistryReference
 from pyrit.models.parameter import display_choices as display_choices
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
 
     from pyrit.models.identifiers.component_identifier import ComponentIdentifier
 
@@ -700,6 +700,7 @@ def resolve_constructor_args(
             param.choices
             or (isinstance(value, str) and param.is_string_coercible)
             or (isinstance(value_type, type) and issubclass(value_type, Enum))
+            or (external_input and isinstance(value, Mapping) and param.is_external_input)
         ):
             try:
                 resolved[name] = param.coerce_value(value)

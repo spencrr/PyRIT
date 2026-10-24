@@ -55,7 +55,7 @@ export interface InitialFormValueOptions {
 }
 
 export function isJsonObjectParameter(param: Parameter): boolean {
-  return /^dict(?:\[|$)/.test(param.type_name)
+  return param.is_json_object === true || /^dict(?:\[|$)/.test(param.type_name)
 }
 
 export function getParameterControlKind(param: Parameter): ParameterControlKind {

@@ -65,6 +65,8 @@ def validate_reinitialization_memory(*, memory_db_type: str, environment: dict[s
 
 def reset_setup_registries() -> None:
     """Discard only PyRIT's setup-owned registries, not persistence singletons."""
+    from pyrit.agent.environment import EnvironmentProviderRegistry
+    from pyrit.agent.harness import HarnessAdapterRegistry
     from pyrit.registry import (
         AttackRegistry,
         AttackTechniqueRegistry,
@@ -77,6 +79,8 @@ def reset_setup_registries() -> None:
     from pyrit.scenario.scenarios._dynamic_techniques import reset_dynamic_technique_caches
 
     reset_dynamic_technique_caches()
+    HarnessAdapterRegistry.reset_registry_singleton()
+    EnvironmentProviderRegistry.reset_registry_singleton()
 
     for registry in (
         AttackRegistry,

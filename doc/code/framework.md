@@ -268,8 +268,19 @@ If you are contributing to PyRIT, that work will most likely land in one of the 
 - Better agent support may require extra pieces attached to a Message
 - Better surface support may require expanding the return types
 
-**Contributing (difficulty low)**:
+**ACP agents**: [Agent targets](./targets/agent_target.md) adapt a running harness
+without replacing its tool loop. A runtime-owned execution manager provisions and
+releases one execution per conversation and records the protocol journal; it does not
+select prompts, score, or branch. Configuration separates **model binding** (which model
+answers), **harness profile** (which agent runs and how it is launched), and
+**environment template** (where it runs); their composition is a **configured agent
+target**, a recipe that owns no resources. The runtime owns policy (timeouts, budgets,
+cancellation, redaction, the ACP protocol); an **environment provider** owns resources
+(allocate, seed, expose streams, release) behind `ExecutionEnvironmentProvider`, and a
+**harness adapter** owns launch translation behind `HarnessAdapter`. Both seams have
+executable conformance suites in `pyrit.agent.conformance`.
 
+**Contributing (difficulty low)**:
 - The pattern is well-defined.
 - Are there models you want to use at any stage or for different attacks? But also, can your model just be one of the existing targets?
 

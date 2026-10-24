@@ -62,6 +62,12 @@ describe('getParameterControlKind', () => {
     )).toBe('json')
   })
 
+  it('returns json for declared JSON object models', () => {
+    expect(getParameterControlKind(
+      makeParameter({ name: 'agent_configuration', type_name: 'AgentTargetConfiguration', is_json_object: true }),
+    )).toBe('json')
+  })
+
   it('returns structured for parameters with declared variants', () => {
     const param = makeParameter({
       name: 'strategy',

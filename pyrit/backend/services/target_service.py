@@ -348,8 +348,9 @@ class TargetService:
                 the server configures none. Construction errors (unknown params,
                 incompatible inner targets, unrecognized identity endpoints) are
                 raised by the registry / target classes.
-            PermissionError: If a non-administrator enables a target's model code execution, or
-                creates a target that would authenticate with this server's stored credentials.
+            PermissionError: If a non-administrator enables a target's model code execution, creates a
+                target that would authenticate with this server's stored credentials, or creates a target
+                type that declares `requires_admin_creation`.
         """
         if request.type not in self._registry:
             raise ValueError(
@@ -384,6 +385,11 @@ class TargetService:
                         params.pop(parameter.name, None)
 
         params.update(target_cls.get_auth_mode_parameters(auth_mode=request.auth_mode))
+        if target_cls.requires_admin_creation and not is_admin:
+            raise PermissionError(
+                f"Creating '{request.type}' launches processes with this server's stored credentials and requires "
+                "administrator access."
+            )
         self._apply_upload_directory(
             target_type=request.type, target_cls=target_cls, params=params, upload_directory=upload_directory
         )

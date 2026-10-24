@@ -5,6 +5,7 @@
 
 import asyncio
 
+from pyrit.agent.runtime import close_agent_execution_manager_async
 from pyrit.backend.services.analytics_service import close_analytics_service_async, get_analytics_service
 from pyrit.backend.services.attack_service import get_attack_service
 from pyrit.backend.services.converter_service import get_converter_service
@@ -65,6 +66,7 @@ async def _close_cached_services_async() -> None:
             if get_converter_service.cache_info().currsize:
                 await get_converter_service().close_async()
             await reset_scenario_run_service_async()
+            await close_agent_execution_manager_async()
         finally:
             for factory in (
                 get_attack_service,
