@@ -48,7 +48,7 @@ async def test_admin_creates_agent_target_from_json_configuration(tmp_path: Path
     )
     target = TargetRegistry.get_registry_singleton().instances.get("agent")
     assert isinstance(target, AgentTarget)
-    assert created.identifier.hash == target.get_identifier().hash
+    assert created.agent_configuration == target.agent_configuration
     assert target.agent_configuration.environment_template.environment == "local"
 
 

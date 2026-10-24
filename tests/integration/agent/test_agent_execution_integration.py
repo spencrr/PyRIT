@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("acp")
 
 from pyrit.agent.execution_manager import AgentExecutionManager
+from pyrit.agent.harness import HarnessAdapter, HarnessAdapterRegistry
 from pyrit.executor.attack import AttackExecutor, AttackScoringConfig, PromptSendingAttack
 from pyrit.models import (
     AttackOutcome,
@@ -27,9 +28,13 @@ from pyrit.models.agent_execution import (
     EnvironmentTemplate,
     HarnessProfile,
 )
+from pyrit.models.agent_setup import AgentTargetComposition
+from pyrit.models.harness_adapter import HarnessAdapterInfo
 from pyrit.prompt_target import AgentTarget
+from pyrit.registry import AgentConfigurationRegistry, InitializerRegistry, TargetRegistry
 from pyrit.scenario import AtomicAttack, AttackTechnique
 from pyrit.score import MessageToolCallScorer
+from pyrit.setup.agent_initialization import register_agent_target
 
 pytestmark = pytest.mark.run_only_if_all_tests
 
@@ -47,6 +52,75 @@ def scripted_configuration() -> AgentTargetConfiguration:
         ),
         artifact_paths=("receipt.json",),
     )
+
+
+@pytest.mark.parametrize("harness_kind", ["acp", "receipt_v1"])
+async def test_initializer_composed_target_uses_the_existing_execution_and_scorer_async(
+    tmp_path: Path,
+    harness_kind: str,
+) -> None:
+    from unittest.mock import patch
+
+    from pyrit.registry import Registry
+
+    launches: list[str] = []
+
+    class ReceiptAdapter(HarnessAdapter):
+        @property
+        def info(self) -> HarnessAdapterInfo:
+            return HarnessAdapterInfo(name="receipt_v1", display_name="Receipt peer")
+
+        def launch_environment(self, *, home: str) -> dict[str, str]:
+            launches.append(home)
+            return {"RECEIPT_ADAPTER": "v1"}
+
+    with (
+        patch.dict(Registry._singletons, clear=True),
+        patch.object(AgentConfigurationRegistry, "_singleton", None),
+        patch.object(HarnessAdapterRegistry, "_singleton", None),
+    ):
+        HarnessAdapterRegistry.get_registry_singleton().register(ReceiptAdapter())
+        registry = InitializerRegistry.get_registry_singleton()
+        profile = scripted_configuration().to_profile()
+        for name, params in [
+            ("harness_profile", {"name": "scripted", "harness_kind": harness_kind, "command": list(profile.command)}),
+            (
+                "environment_template",
+                {"name": "fixture", "environment": "local", "fixture_directory": profile.fixture_directory},
+            ),
+        ]:
+            await registry.create_and_configure(name, initializer_params=params).initialize_async()
+        target = register_agent_target(
+            AgentTargetComposition(
+                name="receipt_test",
+                harness_profile="scripted",
+                environment_template="fixture",
+                local_execution_acknowledged=True,
+                artifact_paths=("receipt.json",),
+            )
+        )
+        assert target is TargetRegistry.get_registry_singleton().instances.get("receipt_test")
+        assert target is not None
+        async with AgentExecutionManager(root=tmp_path) as manager:
+            target.bind_execution_manager(manager)
+            result = await PromptSendingAttack(
+                objective_target=target,
+                attack_scoring_config=AttackScoringConfig(objective_scorer=MessageToolCallScorer()),
+            ).execute_async(
+                objective="tool-only",
+                expectation=ScoringExpectation(
+                    conditions=(ToolsCalled(tools=(ToolCallRequirement(name="read_orders"),)),)
+                ),
+            )
+            assert result.outcome is AttackOutcome.SUCCESS
+        record = next(iter(manager.records.values()))
+        assert record.state is AgentExecutionState.CLOSED
+        assert record.artifacts == ["receipt.json"]
+        receipt = await asyncio.to_thread(
+            (manager.store.directory(record.id) / "artifacts" / "receipt.json").read_text,
+        )
+        assert json.loads(receipt) == {"total": 31}
+        assert bool(launches) == (harness_kind == "receipt_v1")
 
 
 async def test_tool_only_subprocess_completion_is_scorable(tmp_path: Path) -> None:

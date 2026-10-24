@@ -24,6 +24,8 @@ embedded ``TargetCapabilities``.
 
 from pydantic import BaseModel, Field
 
+from pyrit.models.agent_execution import AgentTargetConfiguration
+from pyrit.models.agent_setup import AgentTargetProvenance
 from pyrit.models.identifiers.component_identifier import JSONValue
 from pyrit.models.identifiers.target_identifier import TargetIdentifier
 from pyrit.models.model_inference import InferenceCapabilities
@@ -61,6 +63,16 @@ class TargetInstance(BaseModel):
         default=None,
         exclude_if=lambda value: value is None,
         description="Single-inference support (wire APIs, streaming, tool passthrough), when the target offers it.",
+    )
+    agent_configuration: AgentTargetConfiguration | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Resolved model binding, harness profile and environment template, when this is an agent target.",
+    )
+    agent_configuration_provenance: AgentTargetProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Initializer/runtime origin and verified preset references; not part of target identity.",
     )
     supports_history_replay: bool = Field(
         False,
