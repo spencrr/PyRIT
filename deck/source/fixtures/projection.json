@@ -1,0 +1,45 @@
+{
+  "pieces": [
+    {
+      "type": "function_call",
+      "call_id": "8d947990-6451-4283-ae1b-86de5fd5ab22:132096dd-f8ab-4f76-b5fb-aef3ab2fce39:receipt",
+      "name": "read_orders",
+      "arguments": "{\"path\": \"orders.json\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "8d947990-6451-4283-ae1b-86de5fd5ab22:132096dd-f8ab-4f76-b5fb-aef3ab2fce39:receipt",
+      "output": {
+        "total": 31
+      }
+    }
+  ],
+  "metadata": [
+    {
+      "agent_tool_call": {
+        "source": "acp",
+        "execution_id": "8d947990-6451-4283-ae1b-86de5fd5ab22",
+        "turn_id": "132096dd-f8ab-4f76-b5fb-aef3ab2fce39",
+        "source_call_id": "receipt",
+        "event_sequence": 8
+      },
+      "agent_execution_id": "8d947990-6451-4283-ae1b-86de5fd5ab22",
+      "agent_turn_id": "132096dd-f8ab-4f76-b5fb-aef3ab2fce39"
+    },
+    {
+      "agent_tool_call": {
+        "source": "acp",
+        "execution_id": "8d947990-6451-4283-ae1b-86de5fd5ab22",
+        "turn_id": "132096dd-f8ab-4f76-b5fb-aef3ab2fce39",
+        "source_call_id": "receipt",
+        "event_sequence": 9
+      },
+      "agent_execution_id": "8d947990-6451-4283-ae1b-86de5fd5ab22",
+      "agent_turn_id": "132096dd-f8ab-4f76-b5fb-aef3ab2fce39",
+      "pyrit_tool_execution": {
+        "invoked": true
+      }
+    }
+  ],
+  "omitted": {}
+}
