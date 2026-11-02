@@ -2,70 +2,8 @@
 
 from __future__ import annotations
 
-REF = "agents/stack-08-agent-framework"
-ASSETS = "https://raw.githubusercontent.com/spencrr/PyRIT/agents/stack-assets/diagrams/png"
-PR = "https://github.com/spencrr/PyRIT/pull"
-
-
-def ev(title, file=None, *, start=None, end=None, lines=None, focus=(), before=0, after=0, tag=None, tone=None, fixture=None):
-    source = {"fixture": fixture} if fixture else {"ref": REF, "file": file}
-    if start:
-        source["start"] = start
-    if end:
-        source["end"] = end
-    if lines:
-        source["lines"] = lines
-    if before:
-        source["before"] = before
-    if after:
-        source["after"] = after
-    source["focus"] = list(focus)
-    out = {"title": title, "source": source}
-    if tag:
-        out["tag"] = tag
-    if tone:
-        out["tone"] = tone
-    return out
-
-
-def actor(id, label, x, y, w, *, tag=None, sub=None, slots=(), kind="card", tone=None, h=None, cols=None):
-    a = {"id": id, "label": label, "x": x, "y": y, "w": w, "kind": kind}
-    for k, v in (("tag", tag), ("sub", sub), ("tone", tone), ("h", h), ("cols", cols)):
-        if v is not None:
-            a[k] = v
-    a["slots"] = [{"key": k, "label": lbl} for k, lbl in slots]
-    return a
-
-
-def edge(id, src, dst, **kw):
-    return {"id": id, "from": src, "to": dst, **kw}
-
-
-def card(id, title, takeaway, *, eyebrow=None, bullets=None, image=None, note=None, alt=None, autoplay=9000):
-    c = {"id": id, "kind": "card", "title": title, "takeaway": takeaway, "autoplayMs": autoplay}
-    for k, v in (("eyebrow", eyebrow), ("bullets", bullets), ("image", image), ("note", note), ("alt", alt)):
-        if v is not None:
-            c[k] = v
-    return c
-
-
-def packet(edge_id, label, tone="mint", count=1, **kw):
-    return {"type": "packet", "edge": edge_id, "label": label, "tone": tone, "count": count, **kw}
-
-
-def step(id, tab, title, body, *, status=None, slots=None, edges=None, camera=None, captions=None, animations=None, evidence=None, limit=None, review=None, autoplay=None):
-    s = {"id": id, "kind": "step", "tab": tab, "title": title, "body": body, "patch": {}}
-    if status:
-        s["patch"]["status"] = status
-    if slots:
-        s["patch"]["slots"] = slots
-    if edges:
-        s["patch"]["edges"] = edges
-    for k, v in (("camera", camera), ("captions", captions), ("animations", animations), ("evidence", evidence), ("limit", limit), ("review", review), ("autoplayMs", autoplay)):
-        if v is not None:
-            s[k] = v
-    return s
-
+from deck_helpers import ASSETS, PR, REF, actor, card, edge, ev, packet, step  # noqa: F401
+from deck_tour import ADMIN, COLD, DECISIONS, EXTENDER, GLOSSARY, LIMITS, MAP, MINIMAP, OPERATOR, PITCH, RECIPE
 
 LEGEND_DEFAULT = [
     {"swatch": "mint", "label": "PyRIT-owned · runtime, policy, journal, relay"},
@@ -76,8 +14,8 @@ LEGEND_DEFAULT = [
 
 # ---------------------------------------------------------------------------------------------- chapter 1
 CH1 = {
-    "id": "turn", "index": 1, "short": "pipeline", "accent": "mint",
-    "eyebrow": "Chapter 01 · one turn, end to end",
+    "id": "turn", "index": 11, "short": "deep · pipeline", "accent": "mint", "track": "deep", "regions": ["target", "core", "providers"],
+    "eyebrow": "Deep dive 11 · one turn, end to end",
     "title": "One turn, end to end",
     "summary": "An attack sends one message; a real agent plans, calls a tool, answers; PyRIT returns what it did.",
     "takeaway": "The thing under test is a **harness** that plans, calls tools and changes state inside an environment PyRIT owns. Existing attacks, scorers and converters run against it **unchanged**.",
@@ -163,8 +101,8 @@ CH1 = {
 
 # ---------------------------------------------------------------------------------------------- chapter 2
 CH2 = {
-    "id": "seam", "index": 2, "short": "topology", "accent": "mint",
-    "eyebrow": "Chapter 02 · the environment seam",
+    "id": "seam", "index": 12, "short": "deep · topology", "accent": "mint", "track": "deep", "regions": ["core", "seams", "providers", "extend"],
+    "eyebrow": "Deep dive 12 · the environment seam",
     "title": "Core owns policy, providers own resources",
     "summary": "Two executable contracts separate PyRIT's runtime from wherever the agent runs: local, Docker, or your own sandbox.",
     "takeaway": "PyRIT does **not** own environments. It owns **policy**: timeouts, budgets, cancellation, approvals, redaction and the ACP protocol. A provider owns **resources**: allocation, release, workspace seeding and the byte streams. The seam between them is a contract PyRIT can verify.",
@@ -243,8 +181,8 @@ CH2 = {
 
 # ---------------------------------------------------------------------------------------------- chapter 3
 CH3 = {
-    "id": "journal", "index": 3, "short": "panel", "accent": "mint",
-    "eyebrow": "Chapter 03 · journal → pieces",
+    "id": "journal", "index": 13, "short": "deep · panel", "accent": "mint", "track": "deep", "regions": ["core", "attack"],
+    "eyebrow": "Deep dive 13 · journal → pieces",
     "title": "Recording what the agent did",
     "summary": "An append-only journal of every frame, and a projection that never guesses.",
     "takeaway": "PyRIT records what the agent **did**, not only what it **said**. The journal is the ground truth; the projection into memory pieces is explicit, provenance-carrying, and silent about anything it cannot establish.",
@@ -307,8 +245,8 @@ CH3 = {
 
 # ---------------------------------------------------------------------------------------------- chapter 4
 CH4 = {
-    "id": "relay", "index": 4, "short": "pipeline", "accent": "mint",
-    "eyebrow": "Chapter 04 · the inference relay",
+    "id": "relay", "index": 14, "short": "deep · pipeline", "accent": "mint", "track": "deep", "regions": ["core", "providers"],
+    "eyebrow": "Deep dive 14 · the inference relay",
     "title": "Bring your own model, keep your own key",
     "summary": "The harness thinks it is talking to OpenAI. It is talking to a lease-scoped relay in front of a PyRIT target.",
     "takeaway": "The model behind the agent is **a PyRIT target**. The harness receives an execution-scoped token and a local base URL; the relay validates every request against the binding and forwards it with the single-inference capability. The provider credential stays on the server. Model and harness become **independently testable**.",
@@ -382,20 +320,10 @@ CH4 = {
     ],
 }
 
-# ---------------------------------------------------------------------------------------------- zoom out
-ZOOM = {
-    "id": "zoomout", "index": None, "accent": "mint", "eyebrow": "Half-time · where we are", "title": "Zoom out",
-    "steps": [
-        card("arch", "Four chapters in, <em>one picture</em>",
-             "**Core owns policy, providers own resources.** Two seams, `HarnessAdapter` and `ExecutionEnvironmentProvider`, each with an executable conformance suite. The harness reaches the model only through the execution-scoped relay. Everything you have seen so far is on this diagram; the next three chapters are about people and configuration.",
-             eyebrow="Half-time · runtime architecture", image=f"{ASSETS}/runtime-architecture.png", alt="Runtime architecture diagram", note="Diagram source and PNG live on the `agents/stack-assets` branch; the gist embeds the same image.", autoplay=12000),
-    ],
-}
-
 # ---------------------------------------------------------------------------------------------- chapter 5
 CH5 = {
-    "id": "recipes", "index": 5, "short": "panel", "accent": "mint",
-    "eyebrow": "Chapter 05 · recipes and identity",
+    "id": "recipes", "index": 15, "short": "deep · panel", "accent": "mint", "track": "deep", "regions": ["recipes", "target"],
+    "eyebrow": "Deep dive 15 · recipes and identity",
     "title": "A target is a recipe, not a resource",
     "summary": "Model binding + harness profile + environment template → a configured target whose identity is the hash of the recipe.",
     "takeaway": "A configured `AgentTarget` **owns no resources**. Its identity is its configuration without defaults, timeouts and evidence budgets. Preset names are **provenance**, not identity. `permission_policy` **is** identity, and it defaults to deny.",
@@ -467,8 +395,8 @@ CH5 = {
 
 # ---------------------------------------------------------------------------------------------- chapter 6
 CH6 = {
-    "id": "operators", "index": 6, "short": "topology", "accent": "green",
-    "eyebrow": "Chapter 06 · Co-PyRIT operators",
+    "id": "operators", "index": 16, "short": "deep · topology", "accent": "green", "track": "deep", "regions": ["copyrit", "core"],
+    "eyebrow": "Deep dive 16 · Co-PyRIT operators",
     "title": "Watch it, approve it, hold it",
     "summary": "Live streaming of durable evidence; permission requests routed to an operator; hold, cancel and close.",
     "takeaway": "Observation and control are separate PRs because they are separate concerns. 6a/6b let an operator **watch** what the agent does, live, from the journal. PR 7 lets the operator **change** what happens: approve or deny a tool, hold an execution, cancel, close.",
@@ -548,8 +476,8 @@ CH6 = {
 
 # ---------------------------------------------------------------------------------------------- chapter 7
 CH7 = {
-    "id": "harnesses", "index": 7, "short": "topology", "accent": "amber",
-    "eyebrow": "Chapter 07 · harnesses",
+    "id": "harnesses", "index": 17, "short": "deep · topology", "accent": "amber", "track": "deep", "regions": ["seams", "providers"],
+    "eyebrow": "Deep dive 17 · harnesses",
     "title": "Copilot CLI, Agent Framework, any ACP agent",
     "summary": "One adapter contract; Copilot CLI first, an in-repo ACP host for Agent Framework agents, and a login-free CI proof.",
     "takeaway": "`HarnessAdapter` is the second seam: how a harness is **launched** and how it is **pointed at a model**. Copilot CLI is the MVP harness. The optional Agent Framework host makes PyRIT itself an ACP agent for Microsoft Agent Framework agents, and doubles as the CI proof of the full ACP path without any login.",
@@ -608,22 +536,7 @@ CH7 = {
     ],
 }
 
-# ---------------------------------------------------------------------------------------------- recap + stack + epilogue
-RECAP = {
-    "id": "recap", "index": None, "accent": "mint", "eyebrow": "Recap", "title": "One receipt, five ways",
-    "steps": [
-        card("recap", "One receipt, <em>five ways</em>",
-             "The same `{\"total\": 31}` appeared as an ACP `tool_call_update` frame, as a journal line, as a `function_call_output` piece with provenance, as the thing an operator approved, and as what a scorer read. Five views, one source of truth: the journal.",
-             bullets=[
-                 {"title": "Agents are targets", "text": "`AgentTarget` is a `PromptTarget`; attacks, converters and scorers are unchanged."},
-                 {"title": "Core owns policy, providers own resources", "text": "Two executable seams; `local`, `docker`, and your own sandbox."},
-                 {"title": "Did, not said", "text": "Append-only journal; explicit projection; omissions carry reasons."},
-                 {"title": "Bring your own model", "text": "Relay + lease + binding; the credential never enters the environment."},
-                 {"title": "People in the loop", "text": "Watch live; approve, deny, hold, cancel, close; identity visible by default."},
-             ], autoplay=12000),
-    ],
-}
-
+# ---------------------------------------------------------------------------------------------- stack + epilogue
 STACK_NODES = [
     {"id": "p01", "label": "1", "title": "Explicit target outcomes", "pr": "#15", "branch": "agents/stack-01-outcomes", "x": 20, "y": 10, "w": 240, "url": f"{PR}/15",
      "claim": "A target can complete without assistant text. Every `TargetResponse` declares an explicit outcome instead of letting an empty string mean anything.",
@@ -674,7 +587,7 @@ STACK_NODES = [
 ]
 
 STACK = {
-    "id": "stack", "index": 8, "short": "explorable", "accent": "mint",
+    "id": "stack", "index": 9, "short": "explorable", "accent": "mint", "track": "tour", "regions": ["*"],
     "eyebrow": "Epilogue · the pull-request stack",
     "title": "Eleven claims, one linear chain",
     "summary": "Hover a PR to read its claim, why it is separate, and what it needs. Dashed nodes are deferred on purpose.",
@@ -685,16 +598,8 @@ STACK = {
 }
 
 EPILOGUE = {
-    "id": "epilogue", "index": None, "accent": "mint", "eyebrow": "Epilogue", "title": "Limits and how to review",
+    "id": "epilogue", "index": None, "accent": "mint", "track": "tour", "eyebrow": "Epilogue", "title": "How to review", "regions": ["*"],
     "steps": [
-        card("limits", "Known <em>limits</em>", "Said plainly, so reviewers do not have to find them.",
-             bullets=[
-                 {"title": "Budgets are per execution", "text": "Default 100 inference requests, max 1,000; per-turn budgets are deferred."},
-                 {"title": "Modality is declared, not policed per request", "text": "The binding declares input modalities; undeclared image parts are not yet rejected by the relay."},
-                 {"title": "`local` is not a sandbox", "text": "Private home and workspace only; it requires an explicit acknowledgement."},
-                 {"title": "Permission policy is not enforcement", "text": "It is a deterministic ACP answer; isolation comes from the environment."},
-                 {"title": "Catalog shows credential *names*", "text": "And the resolved fixture path, to authenticated users; values never appear (declined review item, documented)."},
-             ], autoplay=12000),
         card("review", "How to <em>review</em>", "Each PR carries its feature commit plus the fixes from two skeptical reviews as separate `FIX`/`TEST` commits, so you can see what the review changed. Each PR body lists the exact commands run and their results.",
              bullets=[
                  {"title": "Start with #15 and #16", "text": "Independent core/target changes; natural first promotions to `microsoft/PyRIT`."},
@@ -705,9 +610,9 @@ EPILOGUE = {
              ], autoplay=12000),
         card("end", "Questions, <em>objections</em>, better cuts", "Drafts #15–#25 on `spencrr/PyRIT`, GitHub stack #26. The story gist links every PR, the four diagrams, and this deck. Nothing is promoted to `microsoft/PyRIT` yet; that starts when you say so.",
              bullets=[
-                 {"title": "Deck", "text": "Single-file HTML, deck-as-data; evidence resolved from pinned branch tips at build time (SHAs in the footer)."},
-                 {"title": "Fixtures", "text": "Journal, record, projection and receipt captured from the scripted ACP agent in this repository: `fixtures/generate.py`."},
-                 {"title": "Keys", "text": "← → steps · Tab chapter · Space autoplay · E evidence · P presenter · Esc overview · `?mode=present`"},
+                 {"title": "Two tracks", "text": "**Tour** (this): pitch, swappable, map, three perspectives, stack. **Deep dive** (press `T`): one turn, seam, journal → pieces, relay, identity, approvals, harnesses, decisions."},
+                 {"title": "Real throughout", "text": "Journals, projection and conformance report captured from the scripted ACP agent; Co-PyRIT screenshots captured headlessly on this branch; every code panel pinned to a branch tip."},
+                 {"title": "Keys", "text": "← → steps · Tab chapter · T track · Space autoplay · E evidence · P presenter · Esc overview · hover any dotted `term` for its definition"},
              ], autoplay=12000),
     ],
 }
@@ -715,17 +620,17 @@ EPILOGUE = {
 TITLE = {
     "id": "title", "index": None, "accent": "mint", "eyebrow": "PyRIT", "title": "PyRIT · agent targets",
     "steps": [
-        {"id": "hero", "kind": "hero", "eyebrow": "PyRIT · agents as targets · design walkthrough", "word": "AGENTS", "sub": "as the thing under test",
-         "lede": "PyRIT can red-team an **agent**, not just a model: a harness that plans, calls tools and changes state inside an environment PyRIT owns and disposes of. One receipt, five ways.",
+        {"id": "hero", "kind": "hero", "eyebrow": "PyRIT · agents as targets · the pitch, the map, three perspectives", "word": "AGENTS", "sub": "as the thing under test",
+         "lede": "PyRIT can red-team an **agent**, not just a model: a harness that plans, calls tools and changes state inside an environment PyRIT owns and disposes of. Everything is swappable; everything is recorded; a person can say no.",
          "status": "11 PRs · drafts #15–#25", "autoplayMs": 9000,
          "legend": [{"swatch": "mint", "label": "PyRIT-owned"}, {"swatch": "amber", "label": "Agent-owned"}, {"swatch": "grey", "label": "Infrastructure"}]},
-        {"id": "agenda", "kind": "agenda", "eyebrow": "Seven chapters, one epilogue", "title": "What you will <em>see</em>",
-         "lede": "Each chapter has one stage that evolves step by step, a claim on the left, and the code that makes it true on the right, pinned to the branch tips of the stack.",
+        {"id": "agenda", "kind": "agenda", "eyebrow": "Two tracks · pick yours", "title": "What you will <em>see</em>",
+         "lede": "The **tour** (≈6 min) is the pitch in visual form: a cold open, four claims, a recipe you can swap live, the map, and a day in the life of an operator, an administrator and an extender. The **deep dive** adds the mechanism chapters with pinned code. Press `T` any time to switch.",
          "principles": [
-             {"title": "Unchanged above the target", "text": "Attacks, converters and scorers do not know an agent is on the other side."},
-             {"title": "Core owns policy, providers own resources", "text": "Two executable seams: environment and harness."},
+             {"title": "Agents are targets", "text": "Attacks, converters and scorers do not know an agent is on the other side."},
+             {"title": "Everything is swappable", "text": "Model × harness × environment × policy; two executable seams behind them."},
              {"title": "Did, not said", "text": "An append-only journal and an explicit projection; silence has reasons."},
-             {"title": "Bring your own model, keep your own key", "text": "The relay is how the model becomes a PyRIT target and how no credential enters the environment."},
+             {"title": "People in the loop", "text": "Watch live; approve, deny, hold, cancel, close; decisions attributed."},
          ], "autoplayMs": 12000},
     ],
 }
@@ -733,10 +638,13 @@ TITLE = {
 DECK = {
     "meta": {
         "title": "PyRIT · agent targets",
-        "subtitle": "design walkthrough for drafts #15–#25 on spencrr/PyRIT",
-        "version": "deck v1 · fork spencrr/PyRIT · base microsoft/PyRIT 6a2319644",
+        "subtitle": "the pitch in visual form · drafts #15–#25 on spencrr/PyRIT",
+        "version": "deck v2 · fork spencrr/PyRIT · base microsoft/PyRIT 6a2319644",
         "gist": "https://gist.github.com/spencrr/474c66a5f7c569106b5068b7477d4e90",
         "autoplayMs": 8000,
+        "tracks": {"tour": "Tour", "deep": "Deep dive"},
     },
-    "chapters": [TITLE, CH1, CH2, CH3, CH4, ZOOM, CH5, CH6, CH7, RECAP, STACK, EPILOGUE],
+    "glossary": GLOSSARY,
+    "minimap": MINIMAP,
+    "chapters": [TITLE, COLD, PITCH, RECIPE, MAP, OPERATOR, ADMIN, EXTENDER, LIMITS, STACK, EPILOGUE, CH1, CH2, CH3, CH4, CH5, CH6, CH7, DECISIONS],
 }

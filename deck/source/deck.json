@@ -1,10 +1,104 @@
 {
  "meta": {
   "title": "PyRIT · agent targets",
-  "subtitle": "design walkthrough for drafts #15–#25 on spencrr/PyRIT",
-  "version": "deck v1 · fork spencrr/PyRIT · base microsoft/PyRIT 6a2319644",
+  "subtitle": "the pitch in visual form · drafts #15–#25 on spencrr/PyRIT",
+  "version": "deck v2 · fork spencrr/PyRIT · base microsoft/PyRIT 6a2319644",
   "gist": "https://gist.github.com/spencrr/474c66a5f7c569106b5068b7477d4e90",
-  "autoplayMs": 8000
+  "autoplayMs": 8000,
+  "tracks": {
+   "tour": "Tour",
+   "deep": "Deep dive"
+  }
+ },
+ "glossary": {
+  "ACP": "Agent Client Protocol: JSON-RPC over stdio between a client (here PyRIT) and an agent harness. The same protocol editors use to drive coding agents.",
+  "harness": "The agent program under test (Copilot CLI, an Agent Framework host, any ACP agent): it plans, calls tools and talks to a model.",
+  "journal": "PyRIT's append-only record of every ACP frame, lifecycle event and inference call for one execution (events.jsonl). Redacted before writing.",
+  "lease": "An execution-scoped credential for the inference relay: a bearer token with a call budget, revoked when the execution closes.",
+  "projection": "The rule that turns journaled tool_call frames into function_call / function_call_output memory pieces, or omits them with a reason.",
+  "relay": "PyRIT's local OpenAI-compatible endpoint that validates each harness request against the bound target and forwards it with the single-inference capability.",
+  "provider": "An ExecutionEnvironmentProvider: code that allocates, launches and releases the place a harness runs (local, docker, yours).",
+  "adapter": "A HarnessAdapter: how one kind of harness is launched and pointed at a model.",
+  "execution": "One owned, stateful instance: one native agent session in one environment, created on a conversation's first message and reused for later turns.",
+  "recipe": "Model binding + harness profile + environment template + policy: the configuration whose hash is the target's identity.",
+  "seam": "A contract between PyRIT core and extension code, verified by an executable conformance suite.",
+  "conformance": "A suite that drives a real provider or adapter through its contract and reports one check per promise.",
+  "Co-PyRIT": "PyRIT's web UI and REST API.",
+  "piece": "A MessagePiece in PyRIT memory: text, function_call, function_call_output and other typed content scorers read.",
+  "BYOM": "Bring your own model: bind a registered PyRIT target behind the harness so the model and the harness are testable independently."
+ },
+ "minimap": {
+  "w": 420,
+  "h": 66,
+  "regions": [
+   {
+    "id": "attack",
+    "label": "attacks",
+    "x": 0,
+    "y": 0,
+    "w": 76,
+    "h": 28
+   },
+   {
+    "id": "target",
+    "label": "AgentTarget",
+    "x": 80,
+    "y": 0,
+    "w": 64,
+    "h": 28
+   },
+   {
+    "id": "core",
+    "label": "core · policy",
+    "x": 148,
+    "y": 0,
+    "w": 86,
+    "h": 28
+   },
+   {
+    "id": "seams",
+    "label": "seams",
+    "x": 238,
+    "y": 0,
+    "w": 56,
+    "h": 28
+   },
+   {
+    "id": "providers",
+    "label": "harness · provider",
+    "x": 298,
+    "y": 0,
+    "w": 122,
+    "h": 28,
+    "tone": "amber"
+   },
+   {
+    "id": "recipes",
+    "label": "recipes",
+    "x": 0,
+    "y": 38,
+    "w": 76,
+    "h": 28
+   },
+   {
+    "id": "copyrit",
+    "label": "Co-PyRIT · operators",
+    "x": 80,
+    "y": 38,
+    "w": 154,
+    "h": 28,
+    "tone": "green"
+   },
+   {
+    "id": "extend",
+    "label": "extend · conformance",
+    "x": 238,
+    "y": 38,
+    "w": 182,
+    "h": 28,
+    "dim": true
+   }
+  ]
  },
  "chapters": [
   {
@@ -17,10 +111,10 @@
     {
      "id": "hero",
      "kind": "hero",
-     "eyebrow": "PyRIT · agents as targets · design walkthrough",
+     "eyebrow": "PyRIT · agents as targets · the pitch, the map, three perspectives",
      "word": "AGENTS",
      "sub": "as the thing under test",
-     "lede": "PyRIT can red-team an **agent**, not just a model: a harness that plans, calls tools and changes state inside an environment PyRIT owns and disposes of. One receipt, five ways.",
+     "lede": "PyRIT can red-team an **agent**, not just a model: a harness that plans, calls tools and changes state inside an environment PyRIT owns and disposes of. Everything is swappable; everything is recorded; a person can say no.",
      "status": "11 PRs · drafts #15–#25",
      "autoplayMs": 9000,
      "legend": [
@@ -41,25 +135,25 @@
     {
      "id": "agenda",
      "kind": "agenda",
-     "eyebrow": "Seven chapters, one epilogue",
+     "eyebrow": "Two tracks · pick yours",
      "title": "What you will <em>see</em>",
-     "lede": "Each chapter has one stage that evolves step by step, a claim on the left, and the code that makes it true on the right, pinned to the branch tips of the stack.",
+     "lede": "The **tour** (≈6 min) is the pitch in visual form: a cold open, four claims, a recipe you can swap live, the map, and a day in the life of an operator, an administrator and an extender. The **deep dive** adds the mechanism chapters with pinned code. Press `T` any time to switch.",
      "principles": [
       {
-       "title": "Unchanged above the target",
+       "title": "Agents are targets",
        "text": "Attacks, converters and scorers do not know an agent is on the other side."
       },
       {
-       "title": "Core owns policy, providers own resources",
-       "text": "Two executable seams: environment and harness."
+       "title": "Everything is swappable",
+       "text": "Model × harness × environment × policy; two executable seams behind them."
       },
       {
        "title": "Did, not said",
        "text": "An append-only journal and an explicit projection; silence has reasons."
       },
       {
-       "title": "Bring your own model, keep your own key",
-       "text": "The relay is how the model becomes a PyRIT target and how no credential enters the environment."
+       "title": "People in the loop",
+       "text": "Watch live; approve, deny, hold, cancel, close; decisions attributed."
       }
      ],
      "autoplayMs": 12000
@@ -67,11 +161,3041 @@
    ]
   },
   {
-   "id": "turn",
+   "id": "cold",
    "index": 1,
-   "short": "pipeline",
+   "short": "cold open",
    "accent": "mint",
-   "eyebrow": "Chapter 01 · one turn, end to end",
+   "track": "tour",
+   "eyebrow": "Cold open · one receipt",
+   "title": "What just happened",
+   "summary": "A one-line request, a real agent that reads a file and writes a receipt, and a scorer that reads what it did.",
+   "takeaway": "PyRIT just red-teamed an **agent**: not a model's text, but a program that acted.",
+   "regions": [
+    "attack",
+    "target",
+    "providers"
+   ],
+   "legend": [
+    {
+     "swatch": "mint",
+     "label": "PyRIT"
+    },
+    {
+     "swatch": "amber",
+     "label": "The agent and what it touched"
+    }
+   ],
+   "stage": {
+    "canvas": {
+     "w": 1500,
+     "h": 470
+    },
+    "actors": [
+     {
+      "id": "you",
+      "label": "A PyRIT attack",
+      "x": 0,
+      "y": 160,
+      "w": 300,
+      "kind": "card",
+      "tag": "unchanged code",
+      "slots": [
+       {
+        "key": "say",
+        "label": "says"
+       }
+      ]
+     },
+     {
+      "id": "agent",
+      "label": "An agent",
+      "x": 460,
+      "y": 60,
+      "w": 340,
+      "kind": "card",
+      "tag": "real harness · ACP",
+      "tone": "amber",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "plan",
+        "label": "plans"
+       },
+       {
+        "key": "tool",
+        "label": "calls a tool"
+       }
+      ]
+     },
+     {
+      "id": "file",
+      "label": "orders.json",
+      "x": 460,
+      "y": 320,
+      "w": 340,
+      "kind": "card",
+      "tag": "inside its workspace",
+      "tone": "amber",
+      "slots": [
+       {
+        "key": "state",
+        "label": "state"
+       }
+      ]
+     },
+     {
+      "id": "scorer",
+      "label": "A PyRIT scorer",
+      "x": 1000,
+      "y": 160,
+      "w": 300,
+      "kind": "card",
+      "tag": "unchanged code",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "sees",
+        "label": "reads"
+       },
+       {
+        "key": "verdict",
+        "label": "verdict"
+       }
+      ]
+     }
+    ],
+    "edges": [
+     {
+      "id": "ask",
+      "from": "you",
+      "to": "agent"
+     },
+     {
+      "id": "read",
+      "from": "agent",
+      "to": "file"
+     },
+     {
+      "id": "tell",
+      "from": "agent",
+      "to": "scorer"
+     }
+    ],
+    "initial": {}
+   },
+   "steps": [
+    {
+     "id": "ask",
+     "kind": "step",
+     "tab": "Ask",
+     "title": "“Create the receipt.”",
+     "body": "One ordinary PyRIT message. Nothing in the attack, the converters or the scorers knows that the thing on the other side is an agent.",
+     "patch": {
+      "status": {
+       "you": "active",
+       "agent": "active"
+      },
+      "slots": {
+       "you.say": "“Create the receipt”"
+      },
+      "edges": {
+       "ask": "request"
+      }
+     },
+     "captions": [
+      {
+       "label": "fixture",
+       "text": "Everything in this chapter is a real capture from the scripted ACP agent in the repository."
+      }
+     ],
+     "animations": [
+      {
+       "type": "packet",
+       "edge": "ask",
+       "label": "user text",
+       "tone": "mint",
+       "count": 1
+      }
+     ],
+     "autoplayMs": 7000
+    },
+    {
+     "id": "act",
+     "kind": "step",
+     "tab": "Act",
+     "title": "The agent plans, reads a file, does arithmetic",
+     "body": "It calls `read_orders({\"path\": \"orders.json\"})`, gets the items back, and answers “Receipt total: 31”. That is behaviour, not prose: a tool call with a result, inside a workspace PyRIT gave it.",
+     "patch": {
+      "status": {
+       "you": "ok",
+       "agent": "active",
+       "file": "active"
+      },
+      "slots": {
+       "agent.plan": "read the order, then write the receipt",
+       "agent.tool": "read_orders({\"path\": \"orders.json\"})",
+       "file.state": "2 × apple · 5 × orange → total 31"
+      },
+      "edges": {
+       "ask": "dim",
+       "read": "response"
+      }
+     },
+     "captions": [
+      {
+       "label": "the agent",
+       "text": "A harness such as GitHub Copilot CLI, speaking the Agent Client Protocol over stdio."
+      }
+     ],
+     "animations": [
+      {
+       "type": "packet",
+       "edge": "read",
+       "label": [
+        "tool_call",
+        "{\"total\": 31}"
+       ],
+       "tone": "amber",
+       "count": 2,
+       "gapMs": 700
+      }
+     ],
+     "autoplayMs": 8000
+    },
+    {
+     "id": "score",
+     "kind": "step",
+     "tab": "Score",
+     "title": "A scorer reads what it did, not only what it said",
+     "body": "The tool call and its result arrive in PyRIT memory as the same `function_call` / `function_call_output` pieces existing tool-call scorers already read, each pointing back to the exact journal frame it came from.",
+     "patch": {
+      "status": {
+       "agent": "ok",
+       "file": "ok",
+       "scorer": "active"
+      },
+      "slots": {
+       "scorer.sees": "function_call · function_call_output · “Receipt total: 31”",
+       "scorer.verdict": "did it act as instructed? yes"
+      },
+      "edges": {
+       "read": "dim",
+       "tell": "request"
+      }
+     },
+     "captions": [
+      {
+       "label": "five ways",
+       "text": "That one `{\"total\": 31}` appears as a wire frame, a journal line, a memory piece, an operator's approval and a score. Keep an eye on it."
+      }
+     ],
+     "animations": [
+      {
+       "type": "packet",
+       "edge": "tell",
+       "label": "pieces",
+       "tone": "mint",
+       "count": 2,
+       "gapMs": 600
+      }
+     ],
+     "evidence": {
+      "title": "Captured projection · turn 1",
+      "source": {
+       "fixture": "projection.json",
+       "start": "\"pieces\"",
+       "lines": 16,
+       "focus": [
+        "\"type\": \"function_call\"",
+        "\"name\": \"read_orders\"",
+        "\"total\": 31"
+       ]
+      },
+      "tag": "fixture"
+     },
+     "autoplayMs": 9000
+    }
+   ]
+  },
+  {
+   "id": "pitch",
+   "index": 2,
+   "short": "the pitch",
+   "accent": "mint",
+   "track": "tour",
+   "eyebrow": "Chapter 02 · the pitch",
+   "title": "PyRIT can red-team an agent, not just a model",
+   "summary": "Four claims and one thing that does not change.",
+   "takeaway": "The thing under test is a **harness** that plans, calls tools and changes state inside an environment PyRIT owns and disposes of.",
+   "regions": [
+    "attack",
+    "target",
+    "core",
+    "copyrit"
+   ],
+   "legend": [
+    {
+     "swatch": "mint",
+     "label": "Claim"
+    },
+    {
+     "swatch": "grey",
+     "label": "Unchanged PyRIT"
+    }
+   ],
+   "stage": {
+    "canvas": {
+     "w": 1500,
+     "h": 470
+    },
+    "actors": [
+     {
+      "id": "c1",
+      "label": "Agents are targets",
+      "x": 0,
+      "y": 20,
+      "w": 350,
+      "kind": "card",
+      "tag": "claim 1",
+      "sub": "`AgentTarget` is one more `PromptTarget`. Attacks, converters and scorers run against it **unchanged**.",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "so",
+        "label": "so what"
+       }
+      ]
+     },
+     {
+      "id": "c2",
+      "label": "Did, not said",
+      "x": 380,
+      "y": 20,
+      "w": 350,
+      "kind": "card",
+      "tag": "claim 2",
+      "sub": "PyRIT records every protocol frame and projects the agent's **actions** into memory as tool-call pieces.",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "so",
+        "label": "so what"
+       }
+      ]
+     },
+     {
+      "id": "c3",
+      "label": "Bring your own model",
+      "x": 760,
+      "y": 20,
+      "w": 350,
+      "kind": "card",
+      "tag": "claim 3",
+      "sub": "The model behind the agent can be a **PyRIT target** behind a scoped relay; the harness and the model become independently testable.",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "so",
+        "label": "so what"
+       }
+      ]
+     },
+     {
+      "id": "c4",
+      "label": "People in the loop",
+      "x": 1140,
+      "y": 20,
+      "w": 350,
+      "kind": "card",
+      "tag": "claim 4",
+      "sub": "Operators watch live, approve or deny tool permissions, hold, cancel and close; decisions are attributed.",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "so",
+        "label": "so what"
+       }
+      ]
+     },
+     {
+      "id": "unch",
+      "label": "What does not change",
+      "x": 0,
+      "y": 300,
+      "w": 1490,
+      "kind": "panel",
+      "tag": "existing PyRIT surfaces",
+      "h": 120,
+      "slots": []
+     },
+     {
+      "id": "att",
+      "label": "Attacks",
+      "x": 30,
+      "y": 350,
+      "w": 260,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "conv",
+      "label": "Converters",
+      "x": 330,
+      "y": 350,
+      "w": 260,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "scor",
+      "label": "Scorers",
+      "x": 630,
+      "y": 350,
+      "w": 260,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "mem",
+      "label": "Memory",
+      "x": 930,
+      "y": 350,
+      "w": 260,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "ui",
+      "label": "Co-PyRIT chat",
+      "x": 1230,
+      "y": 350,
+      "w": 240,
+      "kind": "node",
+      "slots": []
+     }
+    ],
+    "edges": [],
+    "initial": {}
+   },
+   "steps": [
+    {
+     "id": "claims",
+     "kind": "step",
+     "tab": "Claims",
+     "title": "Four claims, each verifiable end to end",
+     "body": "This is the whole pitch. Each claim maps to a chapter of this tour and to one or two pull requests in the stack; nothing here is aspirational.",
+     "patch": {
+      "status": {
+       "c1": "active",
+       "c2": "active",
+       "c3": "active",
+       "c4": "active"
+      },
+      "slots": {
+       "c1.so": "your existing test suite runs against agents",
+       "c2.so": "scores are about behaviour, with provenance",
+       "c3.so": "swap the model, hold the harness (or vice versa)",
+       "c4.so": "a human can say no, mid-run"
+      }
+     },
+     "captions": [
+      {
+       "label": "source",
+       "text": "The one-sentence pitch in the design gist, split into its four load-bearing parts."
+      }
+     ],
+     "autoplayMs": 10000
+    },
+    {
+     "id": "unchanged",
+     "kind": "step",
+     "tab": "Unchanged",
+     "title": "Everything above the target is untouched",
+     "body": "No new attack types, no new scorer types, no new memory schema. The agent arrives as a target; what it did arrives as pieces. That is why the stack can start with two small core PRs and why the rest is reviewable brick by brick.",
+     "patch": {
+      "status": {
+       "c1": "ok",
+       "c2": "ok",
+       "c3": "ok",
+       "c4": "ok",
+       "unch": "active",
+       "att": "active",
+       "conv": "active",
+       "scor": "active",
+       "mem": "active",
+       "ui": "active"
+      }
+     },
+     "captions": [
+      {
+       "label": "one new seam in core",
+       "text": "Targets gained an explicit **outcome** (PR 1) and a **single-inference** capability (PR 3); both are useful without agents."
+      }
+     ],
+     "evidence": {
+      "title": "AgentTarget is a PromptTarget",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/prompt_target/agent_target.py",
+       "start": "^class AgentTarget\\(",
+       "lines": 10,
+       "focus": [
+        "class AgentTarget\\(",
+        "requires_admin_creation"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "autoplayMs": 9000
+    }
+   ]
+  },
+  {
+   "id": "recipe",
+   "index": 3,
+   "short": "interactive",
+   "accent": "mint",
+   "track": "tour",
+   "eyebrow": "Chapter 03 · everything is swappable",
+   "title": "A target is a recipe",
+   "summary": "Swap the model, the harness, the environment or the policy and watch the identity change; change a timeout and watch it not.",
+   "takeaway": "Model binding + harness profile + environment template + policy → a configured target that **owns no resources**. Identity is the hash of the recipe; preset names are provenance.",
+   "regions": [
+    "recipes",
+    "target"
+   ],
+   "legend": [
+    {
+     "swatch": "mint",
+     "label": "Part of the identity"
+    },
+    {
+     "swatch": "grey",
+     "label": "Excluded: execution policy"
+    }
+   ],
+   "stage": {
+    "canvas": {
+     "w": 1500,
+     "h": 470
+    }
+   },
+   "initial": {
+    "recipe": {
+     "model": 0,
+     "harness": 0,
+     "environment": 0,
+     "policy": 0,
+     "timeout": 0,
+     "highlight": []
+    }
+   },
+   "recipe": {
+    "note": "Illustration of the rule in `AgentTarget._build_identifier` (configuration without defaults, timeouts and budgets); the bytes PyRIT hashes are pydantic's serialization, so the digits differ.",
+    "parts": [
+     {
+      "id": "model",
+      "label": "Model binding",
+      "options": [
+       {
+        "label": "harness default",
+        "short": "default",
+        "desc": "The harness authenticates itself (e.g. `COPILOT_GITHUB_TOKEN`); PyRIT records that no binding exists.",
+        "value": {
+         "model_binding": {
+          "target": null
+         }
+        }
+       },
+       {
+        "label": "openai_chat",
+        "short": "openai",
+        "desc": "A registered `OpenAIChatTarget` answers every completion through the relay.",
+        "value": {
+         "model_binding": {
+          "target": "openai_chat",
+          "wire_api": "chat_completions"
+         }
+        },
+        "preset": "openai_chat"
+       },
+       {
+        "label": "ollama_local",
+        "short": "ollama",
+        "desc": "A local model behind the same relay; the harness cannot tell the difference.",
+        "value": {
+         "model_binding": {
+          "target": "ollama_local",
+          "wire_api": "chat_completions"
+         }
+        },
+        "preset": "ollama_local"
+       }
+      ]
+     },
+     {
+      "id": "harness",
+      "label": "Harness profile",
+      "options": [
+       {
+        "label": "copilot",
+        "short": "copilot",
+        "desc": "`copilot --acp --stdio` · GitHub Copilot CLI.",
+        "value": {
+         "harness_profile": {
+          "harness_kind": "copilot",
+          "command": [
+           "copilot",
+           "--acp",
+           "--stdio"
+          ]
+         }
+        },
+        "preset": "copilot-cli"
+       },
+       {
+        "label": "agent_framework",
+        "short": "AF host",
+        "desc": "PyRIT's ACP host running a Microsoft Agent Framework agent.",
+        "value": {
+         "harness_profile": {
+          "harness_kind": "agent_framework",
+          "command": [
+           "python",
+           "-m",
+           "pyrit.agent.hosts.agent_framework_acp",
+           "--agent",
+           "receipt_agent"
+          ]
+         }
+        },
+        "preset": "af-receipt"
+       },
+       {
+        "label": "any ACP agent",
+        "short": "generic",
+        "desc": "The scripted agent used for this deck's fixtures, or your own.",
+        "value": {
+         "harness_profile": {
+          "harness_kind": "acp",
+          "command": [
+           "python",
+           "scripted_acp_agent.py"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "environment",
+      "label": "Environment template",
+      "options": [
+       {
+        "label": "docker",
+        "short": "docker",
+        "desc": "Container per execution, labelled and capability-dropped; the reference isolated provider.",
+        "value": {
+         "environment_template": {
+          "environment": "docker",
+          "image": "pyrit/agent-receipt",
+          "docker_network": "none"
+         }
+        },
+        "preset": "receipt-docker"
+       },
+       {
+        "label": "local",
+        "short": "local",
+        "desc": "A subprocess with a private home. **Not** a sandbox; requires an explicit acknowledgement.",
+        "value": {
+         "environment_template": {
+          "environment": "local",
+          "local_execution_acknowledged": true
+         }
+        },
+        "preset": "receipt-local"
+       },
+       {
+        "label": "aca-sandbox",
+        "short": "ACA",
+        "desc": "An out-of-tree cloud provider built against the same contract.",
+        "value": {
+         "environment_template": {
+          "environment": "aca",
+          "image": "pyrit/agent-receipt"
+         }
+        }
+       }
+      ]
+     },
+     {
+      "id": "policy",
+      "label": "Permission policy",
+      "options": [
+       {
+        "label": "deny",
+        "short": "deny",
+        "desc": "Default. Every tool permission request is refused; the agent is told so.",
+        "value": {
+         "permission_policy": "deny"
+        }
+       },
+       {
+        "label": "allow_once",
+        "short": "allow",
+        "desc": "Each request is granted once, deterministically.",
+        "value": {
+         "permission_policy": "allow_once"
+        }
+       },
+       {
+        "label": "ask",
+        "short": "ask",
+        "desc": "An operator decides in Co-PyRIT; only valid for interactive sends.",
+        "value": {
+         "permission_policy": "ask"
+        }
+       }
+      ]
+     }
+    ],
+    "excluded": {
+     "label": "Timeouts · budgets",
+     "desc": "Turn deadline, idle expiry, lifetime, evidence and artifact budgets: execution policy, **excluded** from identity.",
+     "options": [
+      {
+       "label": "180 s · 300 s · 900 s"
+      },
+      {
+       "label": "60 s · 120 s · 600 s"
+      },
+      {
+       "label": "600 s · 3600 s · 86400 s"
+      }
+     ]
+    }
+   },
+   "steps": [
+    {
+     "id": "parts",
+     "kind": "recipe",
+     "tab": "Parts",
+     "title": "Four parts you can swap",
+     "patch": {
+      "recipe": {
+       "highlight": [
+        "model",
+        "harness",
+        "environment",
+        "policy"
+       ]
+      }
+     },
+     "body": "Which model answers, which agent runs and how it is launched, where it runs, and what happens when it asks for permission. Each part is reusable and registered by setup. Use the arrows to swap any of them.",
+     "captions": [
+      {
+       "label": "try it",
+       "text": "‹ › on any card; the hash below updates live."
+      },
+      {
+       "label": "presets",
+       "text": "Preset names are kept as provenance, never hashed."
+      }
+     ],
+     "evidence": {
+      "title": "The composition",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/models/agent_setup.py",
+       "start": "class AgentTargetComposition",
+       "lines": 16,
+       "focus": [
+        "harness_profile: str",
+        "environment_template: str",
+        "model_target: str \\| None"
+       ]
+      },
+      "tag": "PR #21"
+     },
+     "autoplayMs": 10000
+    },
+    {
+     "id": "model",
+     "kind": "recipe",
+     "tab": "Model",
+     "title": "Swap the model: a different system under test",
+     "patch": {
+      "recipe": {
+       "model": 1,
+       "highlight": [
+        "model"
+       ]
+      }
+     },
+     "body": "Bind `openai_chat`. The harness is identical, but the recipe changed, so the identity changed: results from this target never mix with the previous one. This is **bring your own model**: the harness will reach the bound target only through PyRIT's relay.",
+     "captions": [
+      {
+       "label": "why it matters",
+       "text": "Regressions can be attributed to the model or to the scaffolding, not to “the agent”."
+      }
+     ],
+     "evidence": {
+      "title": "Identity excludes execution policy",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/prompt_target/agent_target.py",
+       "start": "_IDENTITY_EXCLUDED_FIELDS: ClassVar",
+       "lines": 12,
+       "before": 1,
+       "focus": [
+        "Timeouts and evidence budgets are execution policy",
+        "startup_timeout_seconds",
+        "max_evidence_bytes"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "deeper": "relay/intro",
+     "deeperLabel": "How the relay works",
+     "autoplayMs": 9000
+    },
+    {
+     "id": "env",
+     "kind": "recipe",
+     "tab": "Environment",
+     "title": "Swap where it runs",
+     "patch": {
+      "recipe": {
+       "environment": 1,
+       "highlight": [
+        "environment"
+       ]
+      }
+     },
+     "body": "Same model, same harness, now in a local process instead of a container. `environment` has no default: a target must say where it runs, and a non-isolated provider must be acknowledged.",
+     "captions": [
+      {
+       "label": "providers",
+       "text": "`local` and `docker` ship with PyRIT; an ACA sandbox provider was built out of tree against the same contract."
+      }
+     ],
+     "evidence": {
+      "title": "A template is never a live resource",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/models/agent_execution.py",
+       "start": "class EnvironmentTemplate\\(BaseModel\\)",
+       "lines": 20,
+       "focus": [
+        "Reusable starting filesystem",
+        "environment: str$",
+        "local_execution_acknowledged"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "deeper": "seam/intro",
+     "deeperLabel": "The environment seam",
+     "autoplayMs": 9000
+    },
+    {
+     "id": "policy",
+     "kind": "recipe",
+     "tab": "Policy",
+     "title": "Permission policy is identity, and it defaults to deny",
+     "patch": {
+      "recipe": {
+       "policy": 2,
+       "highlight": [
+        "policy"
+       ]
+      }
+     },
+     "body": "A target that **asks an operator** and one that **denies** every tool permission are different systems under test, so the policy is hashed. New targets refuse permission requests unless you say otherwise; `ask` is only valid for interactive chat and fails fast for attacks.",
+     "captions": [
+      {
+       "label": "not enforcement",
+       "text": "The policy is a deterministic protocol answer; isolation comes from the environment."
+      }
+     ],
+     "evidence": {
+      "title": "AgentPermissionPolicy",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/models/agent_execution.py",
+       "start": "class AgentPermissionPolicy",
+       "lines": 7,
+       "focus": [
+        "not a tool enforcement boundary",
+        "DENY = \"deny\""
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "autoplayMs": 9000
+    },
+    {
+     "id": "timeouts",
+     "kind": "recipe",
+     "tab": "Timeouts",
+     "title": "Tighten a deadline: same identity",
+     "patch": {
+      "recipe": {
+       "timeout": 1,
+       "highlight": [
+        "timeout"
+       ]
+      }
+     },
+     "body": "Timeouts, holds, evidence and artifact budgets are **execution policy**. Change them and the hash is unchanged: results stay comparable across a deadline tweak, while changing what runs or where creates a new target.",
+     "captions": [
+      {
+       "label": "rule",
+       "text": "`exclude_defaults=True, exclude=_IDENTITY_EXCLUDED_FIELDS` on the configuration dump."
+      }
+     ],
+     "evidence": {
+      "title": "Building the identifier",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/prompt_target/agent_target.py",
+       "start": "def _build_identifier",
+       "lines": 8,
+       "focus": [
+        "exclude_defaults=True",
+        "_IDENTITY_EXCLUDED_FIELDS"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "autoplayMs": 9000
+    },
+    {
+     "id": "matrix",
+     "kind": "recipe",
+     "tab": "Matrix",
+     "title": "Hold one, swap the other",
+     "patch": {
+      "recipe": {
+       "mode": "matrix",
+       "highlight": []
+      }
+     },
+     "body": "Two harnesses × two models = four systems under test, each with its own identity and its own results. Is the regression in the model or in the scaffolding? Run the row, run the column.",
+     "captions": [
+      {
+       "label": "in practice",
+       "text": "Compose each cell from the same presets in YAML; names are provenance, so the matrix is auditable."
+      }
+     ],
+     "evidence": {
+      "title": "Provenance is kept outside identity",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/models/agent_setup.py",
+       "start": "class AgentTargetProvenance",
+       "lines": 6,
+       "focus": [
+        "Origin retained outside the target's identity",
+        "presets: AgentPresetSelection"
+       ]
+      },
+      "tag": "PR #21"
+     },
+     "deeper": "recipes/intro",
+     "deeperLabel": "Identity in depth",
+     "autoplayMs": 10000
+    }
+   ]
+  },
+  {
+   "id": "map",
+   "index": 4,
+   "short": "the map",
+   "accent": "mint",
+   "track": "tour",
+   "eyebrow": "Chapter 04 · the map",
+   "title": "Core owns policy, extensions own resources",
+   "summary": "The components, who owns what, and the two seams a reviewer should hold in mind.",
+   "takeaway": "Everything PyRIT-owned sits in **core** and runs once; everything that allocates or runs sits behind a **seam** PyRIT can verify.",
+   "regions": [],
+   "legend": [
+    {
+     "swatch": "mint",
+     "label": "PyRIT core"
+    },
+    {
+     "swatch": "grey",
+     "label": "Seam · contract"
+    },
+    {
+     "swatch": "amber",
+     "label": "Extension-owned resources"
+    },
+    {
+     "swatch": "green",
+     "label": "People"
+    }
+   ],
+   "stage": {
+    "canvas": {
+     "w": 1500,
+     "h": 470
+    },
+    "actors": [
+     {
+      "id": "attacks",
+      "label": "Attacks · converters · scorers · memory",
+      "x": 0,
+      "y": 20,
+      "w": 300,
+      "kind": "panel",
+      "tag": "unchanged",
+      "h": 430,
+      "slots": []
+     },
+     {
+      "id": "attack",
+      "label": "Attack",
+      "x": 20,
+      "y": 70,
+      "w": 260,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "scorer",
+      "label": "Scorers",
+      "x": 20,
+      "y": 130,
+      "w": 260,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "memory",
+      "label": "Memory",
+      "x": 20,
+      "y": 190,
+      "w": 260,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "people",
+      "label": "Co-PyRIT",
+      "x": 20,
+      "y": 290,
+      "w": 260,
+      "kind": "card",
+      "tag": "operators · admins",
+      "sub": "chat · approvals · registry",
+      "tone": "green",
+      "slots": []
+     },
+     {
+      "id": "target",
+      "label": "AgentTarget",
+      "x": 340,
+      "y": 70,
+      "w": 220,
+      "kind": "card",
+      "tag": "PromptTarget",
+      "sub": "one owned execution per conversation",
+      "slots": []
+     },
+     {
+      "id": "core",
+      "label": "Core · pyrit.agent",
+      "x": 600,
+      "y": 20,
+      "w": 420,
+      "kind": "panel",
+      "tag": "policy, once",
+      "h": 430,
+      "slots": []
+     },
+     {
+      "id": "manager",
+      "label": "Execution manager",
+      "x": 620,
+      "y": 70,
+      "w": 180,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "journal",
+      "label": "Journal",
+      "x": 820,
+      "y": 70,
+      "w": 180,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "projection",
+      "label": "Tool-call projection",
+      "x": 620,
+      "y": 130,
+      "w": 180,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "acp",
+      "label": "ACP client",
+      "x": 820,
+      "y": 130,
+      "w": 180,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "relayn",
+      "label": "Inference relay",
+      "x": 620,
+      "y": 190,
+      "w": 180,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "approvals",
+      "label": "Approvals",
+      "x": 620,
+      "y": 250,
+      "w": 180,
+      "kind": "node",
+      "slots": []
+     },
+     {
+      "id": "seamh",
+      "label": "HarnessAdapter",
+      "x": 620,
+      "y": 310,
+      "w": 180,
+      "kind": "card",
+      "tag": "seam",
+      "sub": "launch · model env",
+      "slots": []
+     },
+     {
+      "id": "seame",
+      "label": "Env. provider",
+      "x": 820,
+      "y": 310,
+      "w": 180,
+      "kind": "card",
+      "tag": "seam · ABC",
+      "sub": "4 moments",
+      "slots": []
+     },
+     {
+      "id": "ext",
+      "label": "Extension-owned",
+      "x": 1060,
+      "y": 20,
+      "w": 440,
+      "kind": "panel",
+      "tag": "allocated per execution",
+      "h": 430,
+      "slots": []
+     },
+     {
+      "id": "env",
+      "label": "Environment",
+      "x": 1080,
+      "y": 70,
+      "w": 400,
+      "kind": "card",
+      "tag": "local · docker · yours",
+      "tone": "amber",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "has",
+        "label": "contains"
+       }
+      ]
+     },
+     {
+      "id": "harness",
+      "label": "Harness process",
+      "x": 1080,
+      "y": 220,
+      "w": 190,
+      "kind": "card",
+      "tag": "Copilot · AF · ACP",
+      "tone": "amber",
+      "slots": []
+     },
+     {
+      "id": "model",
+      "label": "Bound model",
+      "x": 1290,
+      "y": 220,
+      "w": 190,
+      "kind": "card",
+      "tag": "a PyRIT target",
+      "sub": "via the relay",
+      "slots": []
+     },
+     {
+      "id": "workspace",
+      "label": "Workspace",
+      "x": 1080,
+      "y": 340,
+      "w": 400,
+      "kind": "card",
+      "tag": "seeded from the template",
+      "tone": "amber",
+      "slots": []
+     }
+    ],
+    "edges": [
+     {
+      "id": "a_t",
+      "from": "attack",
+      "to": "target"
+     },
+     {
+      "id": "t_c",
+      "from": "target",
+      "to": "manager"
+     },
+     {
+      "id": "p_c",
+      "from": "people",
+      "to": "approvals",
+      "points": [
+       "people:r",
+       [
+        585,
+        316
+       ],
+       [
+        585,
+        272
+       ],
+       "approvals:l"
+      ]
+     },
+     {
+      "id": "sh_h",
+      "from": "seamh",
+      "to": "harness",
+      "fromSide": "r",
+      "toSide": "l"
+     },
+     {
+      "id": "se_e",
+      "from": "seame",
+      "to": "env",
+      "fromSide": "r",
+      "toSide": "l"
+     },
+     {
+      "id": "r_m",
+      "from": "relayn",
+      "to": "model",
+      "points": [
+       "relayn:r",
+       [
+        810,
+        212
+       ],
+       [
+        1040,
+        212
+       ],
+       [
+        1040,
+        250
+       ],
+       "model:l"
+      ]
+     },
+     {
+      "id": "pr_mem",
+      "from": "projection",
+      "to": "memory",
+      "points": [
+       "projection:l",
+       [
+        590,
+        160
+       ],
+       [
+        590,
+        212
+       ],
+       "memory:r"
+      ]
+     }
+    ],
+    "initial": {}
+   },
+   "steps": [
+    {
+     "id": "above",
+     "kind": "step",
+     "tab": "Above the target",
+     "title": "Nothing above the target changes",
+     "body": "Attacks send messages; converters rewrite them; scorers read the pieces that come back; memory stores them. An agent target sits where any target sits. Operators and administrators meet the system in Co-PyRIT.",
+     "patch": {
+      "status": {
+       "attacks": "active",
+       "attack": "active",
+       "scorer": "active",
+       "memory": "active",
+       "people": "active",
+       "target": "active"
+      },
+      "edges": {
+       "a_t": "request"
+      }
+     },
+     "captions": [
+      {
+       "label": "reading the map",
+       "text": "Left to right: who asks → what owns the policy → who owns the resources."
+      }
+     ],
+     "animations": [
+      {
+       "type": "packet",
+       "edge": "a_t",
+       "label": "message",
+       "tone": "mint",
+       "count": 1
+      }
+     ],
+     "autoplayMs": 9000,
+     "regions": [
+      "attack",
+      "target",
+      "copyrit"
+     ]
+    },
+    {
+     "id": "core",
+     "kind": "step",
+     "tab": "Core",
+     "title": "Core: the policy, implemented once",
+     "body": "The execution manager owns timeouts, budgets, cancellation and reconciliation. The journal records every frame. The projection turns frames into pieces. Approvals route permission requests to policy or a person. The relay stands between the harness and any model. The ACP client speaks the protocol.",
+     "patch": {
+      "status": {
+       "attacks": "ok",
+       "attack": "idle",
+       "scorer": "idle",
+       "memory": "idle",
+       "people": "idle",
+       "target": "ok",
+       "core": "active",
+       "manager": "active",
+       "journal": "active",
+       "projection": "active",
+       "approvals": "active",
+       "relayn": "active",
+       "acp": "active"
+      },
+      "edges": {
+       "a_t": "dim",
+       "t_c": "request",
+       "pr_mem": "request",
+       "p_c": "operator"
+      }
+     },
+     "captions": [
+      {
+       "label": "why once",
+       "text": "A provider cannot weaken redaction or budgets by accident, because it never sees them."
+      }
+     ],
+     "animations": [
+      {
+       "type": "packet",
+       "edge": "t_c",
+       "label": "send_async",
+       "tone": "mint",
+       "count": 1
+      },
+      {
+       "type": "packet",
+       "edge": "pr_mem",
+       "label": "pieces",
+       "tone": "mint",
+       "count": 1,
+       "delayMs": 900
+      },
+      {
+       "type": "packet",
+       "edge": "p_c",
+       "label": "allow / deny",
+       "tone": "green",
+       "count": 1,
+       "delayMs": 1500
+      }
+     ],
+     "evidence": {
+      "title": "Core owns the lease budget",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/agent/execution_manager.py",
+       "start": "lease = InferenceLease\\(",
+       "lines": 8,
+       "focus": [
+        "max_calls=live.record.profile.max_inference_requests",
+        "timeout_seconds"
+       ]
+      },
+      "tag": "PR #20"
+     },
+     "autoplayMs": 10000,
+     "regions": [
+      "core"
+     ]
+    },
+    {
+     "id": "seams",
+     "kind": "step",
+     "tab": "Seams",
+     "title": "Two seams, both executable",
+     "body": "`HarnessAdapter`: how a kind of harness is launched and pointed at a model. `ExecutionEnvironmentProvider`: four moments (reserve, translate the relay URL, launch, close). Each has a conformance suite that drives a real implementation and reports one check per promise.",
+     "patch": {
+      "status": {
+       "core": "ok",
+       "manager": "ok",
+       "journal": "ok",
+       "projection": "ok",
+       "approvals": "ok",
+       "relayn": "ok",
+       "acp": "ok",
+       "seamh": "active",
+       "seame": "active"
+      },
+      "edges": {
+       "t_c": "dim",
+       "pr_mem": "dim",
+       "p_c": "dim",
+       "sh_h": "request",
+       "se_e": "request"
+      }
+     },
+     "captions": [
+      {
+       "label": "for reviewers",
+       "text": "A provider PR is reviewed against its conformance report, not against a reading of the ABC."
+      }
+     ],
+     "animations": [
+      {
+       "type": "draw",
+       "edge": "sh_h"
+      },
+      {
+       "type": "draw",
+       "edge": "se_e",
+       "delayMs": 400
+      }
+     ],
+     "evidence": {
+      "title": "ExecutionSession · four moments",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/agent/environment.py",
+       "start": "def reserve\\(self\\)",
+       "end": "async def close_async",
+       "after": 1,
+       "focus": [
+        "def reserve",
+        "async def inference_endpoint_async",
+        "async def launch_async",
+        "async def close_async"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "autoplayMs": 10000,
+     "regions": [
+      "seams",
+      "extend"
+     ]
+    },
+    {
+     "id": "resources",
+     "kind": "step",
+     "tab": "Resources",
+     "title": "Extensions own what gets allocated",
+     "body": "An environment (local process, Docker container, your sandbox) that contains the harness process and a workspace seeded from the template. The harness reaches a model only through the relay, with a lease, so no provider credential ever enters the environment.",
+     "patch": {
+      "status": {
+       "seamh": "ok",
+       "seame": "ok",
+       "ext": "active",
+       "env": "active",
+       "harness": "active",
+       "workspace": "active",
+       "model": "active",
+       "relayn": "active"
+      },
+      "slots": {
+       "env.has": "harness process · workspace · nothing else"
+      },
+      "edges": {
+       "sh_h": "dim",
+       "se_e": "dim",
+       "r_m": "request"
+      }
+     },
+     "captions": [
+      {
+       "label": "disposed",
+       "text": "Closing an execution releases exactly what the provider allocated, and refuses anything it did not create."
+      }
+     ],
+     "animations": [
+      {
+       "type": "packet",
+       "edge": "r_m",
+       "label": "lease-scoped inference",
+       "tone": "mint",
+       "count": 1,
+       "delayMs": 300,
+       "durationMs": 2200
+      }
+     ],
+     "evidence": {
+      "title": "Ownership check before stop",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/agent/environments/docker.py",
+       "start": "async def _inspect_owned_container_async",
+       "lines": 14,
+       "focus": [
+        "labels.get\\(\"pyrit.execution\"\\)",
+        "Refusing to stop"
+       ]
+      },
+      "tag": "PR #18"
+     },
+     "autoplayMs": 10000,
+     "regions": [
+      "providers",
+      "core"
+     ],
+     "deeper": "turn/intro",
+     "deeperLabel": "Follow one turn"
+    },
+    {
+     "id": "diagram",
+     "kind": "card",
+     "title": "The same map, <em>as the reviewers see it</em>",
+     "takeaway": "The runtime-architecture diagram from the design gist. Everything on this tour is a zoom into one of its regions; the minimap in the header shows which.",
+     "autoplayMs": 10000,
+     "eyebrow": "Chapter 04 · the map",
+     "image": "https://raw.githubusercontent.com/spencrr/PyRIT/agents/stack-assets/diagrams/png/runtime-architecture.png",
+     "note": "SVG source and PNG on the `agents/stack-assets` branch; the gist embeds the same image.",
+     "alt": "Runtime architecture diagram",
+     "regions": [
+      "*"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "operator",
+   "index": 5,
+   "short": "replay · real captures",
+   "accent": "green",
+   "track": "tour",
+   "eyebrow": "Chapter 05 · the operator's day",
+   "title": "Ask, watch, approve",
+   "summary": "A Co-PyRIT chat replayed from a real journal: send, watch the agent act, decide a permission, read the score.",
+   "takeaway": "Operators see **what the agent does**, live, and can **say no** mid-run. Every decision is attributed and journaled.",
+   "regions": [
+    "copyrit",
+    "core"
+   ],
+   "legend": [
+    {
+     "swatch": "mint",
+     "label": "Outgoing · PyRIT"
+    },
+    {
+     "swatch": "amber",
+     "label": "Incoming · the agent"
+    },
+    {
+     "swatch": "green",
+     "label": "Operator decision"
+    }
+   ],
+   "stage": {
+    "canvas": {
+     "w": 1500,
+     "h": 470
+    }
+   },
+   "replay": {
+    "fixture": "ask_events"
+   },
+   "initial": {
+    "replay": {
+     "upto": 0
+    }
+   },
+   "steps": [
+    {
+     "id": "pick",
+     "kind": "replay",
+     "tab": "Pick",
+     "title": "Pick an agent target like any other",
+     "patch": {
+      "replay": {
+       "upto": 0
+      }
+     },
+     "body": "In Co-PyRIT chat the target picker lists `receipt_agent` next to every other registered target. Model, harness profile and environment template are fixed for the conversation; a status strip shows the feed, the ACP connection and the environment.",
+     "captions": [
+      {
+       "label": "fixture",
+       "text": "This replay is driven by `ask_events.jsonl`, a real journal captured with `permission_policy=ask`."
+      },
+      {
+       "label": "mock",
+       "text": "The chat is a faithful mock; the real screenshots follow."
+      }
+     ],
+     "autoplayMs": 8000
+    },
+    {
+     "id": "send",
+     "kind": "replay",
+     "tab": "Send",
+     "title": "The first message provisions an execution",
+     "patch": {
+      "replay": {
+       "upto": 7
+      }
+     },
+     "body": "`initialize`, `session/new`, then `session/prompt`. The environment is allocated, the harness launched and connected; from now on the conversation reuses this execution. The journal on the right is the same data the chat streams over SSE.",
+     "captions": [
+      {
+       "label": "status strip",
+       "text": "Feed: live · ACP: ready · Environment: local / working · Cancel turn · Close execution."
+      }
+     ],
+     "evidence": {
+      "title": "Conversation stream · state / reset / reconnect",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/backend/routes/executions.py",
+       "start": "with manager.store.subscribe\\(conversation_id\\)",
+       "lines": 14,
+       "focus": [
+        "store.subscribe\\(conversation_id\\)",
+        "_sse\\(\"reset\"",
+        "event: state"
+       ]
+      },
+      "tag": "PR #22"
+     },
+     "autoplayMs": 9000
+    },
+    {
+     "id": "watch",
+     "kind": "replay",
+     "tab": "Watch",
+     "title": "Watch it act",
+     "patch": {
+      "replay": {
+       "upto": 9
+      }
+     },
+     "body": "“I will read the order.” Then a `tool_call` named `read_orders`. The activity panel renders each streamed update under the message as it arrives; nothing is invented from the agent's prose.",
+     "captions": [
+      {
+       "label": "did, not said",
+       "text": "Only explicit, named tool calls with established results become memory pieces."
+      }
+     ],
+     "deeper": "journal/intro",
+     "deeperLabel": "How the projection works",
+     "autoplayMs": 8000
+    },
+    {
+     "id": "ask",
+     "kind": "replay",
+     "tab": "Ask",
+     "title": "The agent asks; the execution is held",
+     "patch": {
+      "replay": {
+       "upto": 11
+      }
+     },
+     "body": "`session/request_permission` for “Read orders.json”. With the `ask` policy the runtime turns it into an approval and holds the execution: **Allow once** or **Deny** appear under the tool call, with the deadline. The harness had to offer a `reject_once` option, so a denial can be expressed as a denial.",
+     "captions": [
+      {
+       "label": "try it",
+       "text": "Click **Allow once** in the mock."
+      },
+      {
+       "label": "attacks",
+       "text": "Automated attacks cannot use `ask`; they fail fast instead of hanging."
+      }
+     ],
+     "evidence": {
+      "title": "ACP client · request_permission",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/agent/acp_connection.py",
+       "start": "async def request_permission",
+       "lines": 20,
+       "focus": [
+        "AgentPermissionPolicy.ASK",
+        "option.kind == \"reject_once\"",
+        "await self.approvals.request_async"
+       ]
+      },
+      "tag": "PR #24"
+     },
+     "autoplayMs": 9000
+    },
+    {
+     "id": "allow",
+     "kind": "replay",
+     "tab": "Allow",
+     "title": "An operator allows it, once",
+     "patch": {
+      "replay": {
+       "upto": 14
+      }
+     },
+     "body": "`permission.resolved · operator_allow` names the operator. The reply goes back to the agent as the `allow_once` option it offered, the tool runs, and `tool_call_update` carries the real result. Decisions are server-owned, so a refresh or a second tab cannot lose or double-answer one.",
+     "captions": [
+      {
+       "label": "attribution",
+       "text": "Visible to everyone with access to the attack by default; `show_agent_operator_identity: false` shows roles instead."
+      }
+     ],
+     "evidence": {
+      "title": "AgentApprovals · decide",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/agent/approvals.py",
+       "start": "if decision not in \\(\"operator_allow\"",
+       "lines": 14,
+       "before": 1,
+       "focus": [
+        "\"operator_allow\", \"operator_deny\", \"timeout_deny\", \"cancelled\"",
+        "\"allow_once\" if decision == \"operator_allow\" else \"reject_once\""
+       ]
+      },
+      "tag": "PR #24"
+     },
+     "deeper": "operators/intro",
+     "deeperLabel": "Approvals in depth",
+     "autoplayMs": 9000
+    },
+    {
+     "id": "done",
+     "kind": "replay",
+     "tab": "Score",
+     "title": "“Receipt total: 31”, and a score about what it did",
+     "patch": {
+      "replay": {
+       "upto": 20,
+       "score": "scoring · **MessageToolCallScorer** read `read_orders` → `{\"total\": 31}` · outcome **completed**"
+      }
+     },
+     "body": "The turn completes. The transcript stores the assistant text plus the projected tool pieces; Co-PyRIT auto-scores completed assistant and tool pieces with whatever scorer you configured. The agent's words and its actions are both evidence now.",
+     "captions": [
+      {
+       "label": "outcome",
+       "text": "A turn with tool effects and no text would still be `completed`, which is why PR 1 made outcomes explicit."
+      }
+     ],
+     "evidence": {
+      "title": "What gets auto-scored",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/backend/services/message_send_service.py",
+       "start": "def _is_scorable_response",
+       "lines": 7,
+       "focus": [
+        "piece.role in \\(\"assistant\", \"tool\"\\)",
+        "TargetOutcome.COMPLETED"
+       ]
+      },
+      "tag": "PR #19"
+     },
+     "autoplayMs": 9000
+    },
+    {
+     "id": "state",
+     "kind": "replay",
+     "tab": "State",
+     "title": "The second message reuses the execution",
+     "patch": {
+      "replay": {
+       "upto": 26,
+       "score": null
+      }
+     },
+     "body": "“Add one orange to the order” changes a file the agent itself wrote earlier: the total goes from 31 to 36. Same execution, same workspace, same journal; a stateful system under test, not a stateless endpoint.",
+     "captions": [
+      {
+       "label": "lifetime",
+       "text": "The execution ends on explicit close, idle expiry, its maximum lifetime, a turn deadline, or runtime shutdown."
+      }
+     ],
+     "autoplayMs": 8000
+    },
+    {
+     "id": "real1",
+     "kind": "card",
+     "title": "It is <em>real</em>: the permission moment",
+     "takeaway": "The same flow in the actual Co-PyRIT UI, captured headlessly against this branch with the scripted agent and the local provider. Status strip, activity, the pending approval with **Allow once / Deny**, and the deadline.",
+     "autoplayMs": 9000,
+     "eyebrow": "Chapter 05 · real capture",
+     "image": "fixtures/real/03-permission-pending.png",
+     "note": "`fixtures/real/capture.mjs` reproduces this capture; no credentials involved.",
+     "alt": "Co-PyRIT chat with a pending tool permission"
+    },
+    {
+     "id": "real2",
+     "kind": "card",
+     "title": "It is <em>real</em>: two turns later",
+     "takeaway": "Second turn complete: `Receipt total: 36`, the stored tool-call pieces (“journal event 22 · 23”), and the honest footnote: *exposed ACP events retained; missing tool calls are undetermined, not false*.",
+     "autoplayMs": 9000,
+     "eyebrow": "Chapter 05 · real capture",
+     "image": "fixtures/real/05-second-turn.png",
+     "note": "The footnote is the projection's contract in one sentence.",
+     "alt": "Co-PyRIT chat after the second turn"
+    }
+   ]
+  },
+  {
+   "id": "admin",
+   "index": 6,
+   "short": "control panel · real captures",
+   "accent": "mint",
+   "track": "tour",
+   "eyebrow": "Chapter 06 · the administrator's day",
+   "title": "Create, gate, govern, clean up",
+   "summary": "Who may create agent targets, what the defaults are, how executions are listed and closed, and what the catalog reveals.",
+   "takeaway": "Every execution launches a process with credentials the server holds. Creation is **admin-only**, defaults are **safe**, resources are **visible and closable**.",
+   "regions": [
+    "copyrit",
+    "recipes"
+   ],
+   "legend": [
+    {
+     "swatch": "mint",
+     "label": "Administrator surface"
+    },
+    {
+     "swatch": "red",
+     "label": "Refused"
+    },
+    {
+     "swatch": "grey",
+     "label": "Visible to everyone"
+    }
+   ],
+   "stage": {
+    "canvas": {
+     "w": 1500,
+     "h": 470
+    },
+    "actors": [
+     {
+      "id": "form",
+      "label": "New target → Agent (ACP)",
+      "x": 0,
+      "y": 20,
+      "w": 470,
+      "kind": "card",
+      "tag": "administrators only",
+      "cols": 3,
+      "slots": [
+       {
+        "key": "m",
+        "label": "Model"
+       },
+       {
+        "key": "h",
+        "label": "Harness"
+       },
+       {
+        "key": "e",
+        "label": "Environment"
+       }
+      ]
+     },
+     {
+      "id": "gate",
+      "label": "Creation gate",
+      "x": 0,
+      "y": 250,
+      "w": 470,
+      "kind": "card",
+      "tag": "server-enforced",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "admin",
+        "label": "who"
+       },
+       {
+        "key": "shape",
+        "label": "input"
+       },
+       {
+        "key": "fixture",
+        "label": "fixtures"
+       }
+      ]
+     },
+     {
+      "id": "defaults",
+      "label": "Safe defaults",
+      "x": 520,
+      "y": 20,
+      "w": 440,
+      "kind": "card",
+      "tag": "new targets",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "policy",
+        "label": "permission policy"
+       },
+       {
+        "key": "local",
+        "label": "local provider"
+       },
+       {
+        "key": "ask",
+        "label": "ask"
+       }
+      ]
+     },
+     {
+      "id": "registry",
+      "label": "Registry → Agent executions",
+      "x": 520,
+      "y": 250,
+      "w": 440,
+      "kind": "card",
+      "tag": "resource view",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "state",
+        "label": "states"
+       },
+       {
+        "key": "acts",
+        "label": "actions"
+       }
+      ]
+     },
+     {
+      "id": "settings",
+      "label": "Settings",
+      "x": 1010,
+      "y": 20,
+      "w": 490,
+      "kind": "card",
+      "tag": "configuration",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "identity",
+        "label": "operator identity"
+       },
+       {
+        "key": "budget",
+        "label": "inference budget"
+       },
+       {
+        "key": "replace",
+        "label": "configuration replacement"
+       }
+      ]
+     },
+     {
+      "id": "catalog",
+      "label": "What the catalog shows",
+      "x": 1010,
+      "y": 250,
+      "w": 490,
+      "kind": "card",
+      "tag": "to every authenticated user",
+      "cols": 1,
+      "slots": [
+       {
+        "key": "names",
+        "label": "shows"
+       },
+       {
+        "key": "never",
+        "label": "never"
+       }
+      ]
+     }
+    ],
+    "edges": [],
+    "initial": {}
+   },
+   "steps": [
+    {
+     "id": "create",
+     "kind": "step",
+     "tab": "Create",
+     "title": "One form, three sections, in that order",
+     "body": "*Model* picks a registered connection for BYOM or lets the harness authenticate itself. *Harness* and *Environment* offer registered presets; choosing one locks its fields and records the names as provenance, *Customize* copies the values and drops the provenance. Nothing in the form ever resolves a credential: credential fields hold variable **names**.",
+     "patch": {
+      "status": {
+       "form": "active"
+      },
+      "slots": {
+       "form.m": "registered target · wire API inferred",
+       "form.h": "preset or custom · command · policy",
+       "form.e": "preset or custom · provider · image"
+      }
+     },
+     "captions": [
+      {
+       "label": "real screenshot",
+       "text": "Next step shows the actual form."
+      }
+     ],
+     "autoplayMs": 9000
+    },
+    {
+     "id": "formshot",
+     "kind": "card",
+     "title": "The real <em>form</em>",
+     "takeaway": "Captured from this branch: Model · Harness · Environment, *Ask me* selected for the demo, *Local process* with the acknowledgement that local tools can access the host.",
+     "autoplayMs": 9000,
+     "eyebrow": "Chapter 06 · real capture",
+     "image": "fixtures/real/01-create-form.png",
+     "note": "Preset dropdowns are empty here because the demo backend registers no presets; with initializers they list named profiles and templates.",
+     "alt": "Create New Target form for Agent (ACP)"
+    },
+    {
+     "id": "gate",
+     "kind": "step",
+     "tab": "Gate",
+     "title": "Admin-only, one validated object, confined fixtures",
+     "body": "`requires_admin_creation` is a class marker checked by the create-target service next to upstream's `code_execution_parameter` and `server_credential_parameter`. `agent_configuration` crosses REST as one JSON object because the model opts in with `JsonParameterValue`; exactly one parameter in the repository does. A fixture directory must resolve inside the server's `target_upload_directory`.",
+     "patch": {
+      "status": {
+       "form": "ok",
+       "gate": "active"
+      },
+      "slots": {
+       "gate.admin": "administrators · requires_admin_creation",
+       "gate.shape": "one pydantic model · JsonParameterValue",
+       "gate.fixture": "inside target_upload_directory"
+      }
+     },
+     "captions": [
+      {
+       "label": "why",
+       "text": "Every execution launches a process or container with credentials the server holds, regardless of parameters."
+      }
+     ],
+     "evidence": {
+      "title": "AgentTarget · class markers",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/prompt_target/agent_target.py",
+       "start": "requires_admin_creation: ClassVar",
+       "lines": 6,
+       "before": 2,
+       "focus": [
+        "requires_admin_creation",
+        "upload_directory_parameter"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "autoplayMs": 10000
+    },
+    {
+     "id": "defaults",
+     "kind": "step",
+     "tab": "Defaults",
+     "title": "Deny by default; local must be acknowledged",
+     "body": "New targets, in Python and in the UI, refuse tool permission requests. `allow_once` and `ask` are explicit choices; `ask` is only valid for interactive chat sends and fails fast for attacks. Choosing a provider that is not isolated requires ticking *I understand local tools can access the host*.",
+     "patch": {
+      "status": {
+       "gate": "ok",
+       "defaults": "active"
+      },
+      "slots": {
+       "defaults.policy": "deny",
+       "defaults.local": "explicit acknowledgement required",
+       "defaults.ask": "interactive sends only"
+      }
+     },
+     "captions": [
+      {
+       "label": "identity",
+       "text": "Policy is part of the target's identity: deny-targets and ask-targets never share results."
+      }
+     ],
+     "evidence": {
+      "title": "HarnessProfile defaults",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/models/agent_execution.py",
+       "start": "class HarnessProfile\\(BaseModel\\)",
+       "lines": 10,
+       "focus": [
+        "permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "autoplayMs": 9000
+    },
+    {
+     "id": "executions",
+     "kind": "step",
+     "tab": "Executions",
+     "title": "Executions are resources: listed, closable, reconciled",
+     "body": "`Registry → Agent executions` lists what the backend owns with its state (`starting · idle · working · held · closing · closed · cleanup_failed`), its profile and environment, and the last turn. Administrators can cancel a turn or close an execution, including retrying failed cleanup. Interrupted executions are reconciled on restart through the same provider path.",
+     "patch": {
+      "status": {
+       "defaults": "ok",
+       "registry": "active"
+      },
+      "slots": {
+       "registry.state": "starting · idle · working · held · closing · closed · cleanup_failed",
+       "registry.acts": "cancel turn · close · retry cleanup"
+      }
+     },
+     "captions": [
+      {
+       "label": "observation",
+       "text": "Watching an execution never renews its lifetime; only work does."
+      }
+     ],
+     "evidence": {
+      "title": "AgentExecutionState",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/models/agent_execution.py",
+       "start": "class AgentExecutionState",
+       "lines": 10,
+       "focus": [
+        "HELD = \"held\"",
+        "CLEANUP_FAILED = \"cleanup_failed\""
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "autoplayMs": 9000
+    },
+    {
+     "id": "execshot",
+     "kind": "card",
+     "title": "The real <em>registry</em>",
+     "takeaway": "Captured after the chat above: the `receipt_agent` execution idle on `local` with its last turn completed, next to an older, closed one. This is the administrator's resource view, separate from the chat.",
+     "autoplayMs": 8000,
+     "eyebrow": "Chapter 06 · real capture",
+     "image": "fixtures/real/06-executions.png",
+     "note": "Observation does not renew expiry; the idle execution closes on its idle timeout or when an administrator closes it.",
+     "alt": "Registry → Agent executions"
+    },
+    {
+     "id": "settings",
+     "kind": "step",
+     "tab": "Settings",
+     "title": "Three knobs worth knowing",
+     "body": "`show_agent_operator_identity` (default **show**) controls whether decisions name the operator or just the role. Per-execution inference budgets default to 100 requests and cap at 1,000. Live executions, including idle and held chats, block configuration replacement exactly as active sends and scenario runs do.",
+     "patch": {
+      "status": {
+       "registry": "ok",
+       "settings": "active"
+      },
+      "slots": {
+       "settings.identity": "show (default) · or roles",
+       "settings.budget": "100 default · 1,000 cap",
+       "settings.replace": "blocked while any execution is live"
+      }
+     },
+     "captions": [
+      {
+       "label": "presentation only",
+       "text": "Masking identity changes nothing stored; the record and the admin view keep it."
+      }
+     ],
+     "evidence": {
+      "title": "Live executions block replacement",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/backend/services/runtime_lifecycle.py",
+       "start": "def _has_active_work",
+       "lines": 12,
+       "focus": [
+        "agents.has_live_executions"
+       ]
+      },
+      "tag": "PR #22"
+     },
+     "autoplayMs": 9000
+    },
+    {
+     "id": "catalog",
+     "kind": "step",
+     "tab": "Catalog",
+     "title": "What everyone can see, and what no one can",
+     "body": "The target catalog shows credential variable **names** and the resolved fixture path to every authenticated user: that is the authoring contract. Values never appear anywhere: not in the catalog, not in the journal (redacted before writing), not in conversation routes (which omit owner, provider and process identities).",
+     "patch": {
+      "status": {
+       "settings": "ok",
+       "catalog": "active"
+      },
+      "slots": {
+       "catalog.names": "credential variable names · fixture path · presets",
+       "catalog.never": "credential values · image digest · process identities (conversation routes)"
+      }
+     },
+     "captions": [
+      {
+       "label": "declined review item",
+       "text": "Hiding the names was considered and declined: operators need to know which variables a profile expects."
+      }
+     ],
+     "evidence": {
+      "title": "Masking operator identity",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/backend/routes/executions.py",
+       "start": "def _operator_role",
+       "lines": 18,
+       "focus": [
+        "_RUNTIME_ACTORS",
+        "return \"operator\"",
+        "def _mask_event_actors"
+       ]
+      },
+      "tag": "PR #24"
+     },
+     "autoplayMs": 9000
+    }
+   ]
+  },
+  {
+   "id": "extender",
+   "index": 7,
+   "short": "checklist · live report",
+   "accent": "mint",
+   "track": "tour",
+   "eyebrow": "Chapter 07 · the extender's day",
+   "title": "Make PyRIT use my sandbox",
+   "summary": "Implement four moments, run the conformance suite, register through setup; the same for a new harness.",
+   "takeaway": "PyRIT does not own environments or harnesses. It owns the **contract** and the **suite that checks it**; an out-of-tree provider needed zero core changes.",
+   "regions": [
+    "extend",
+    "seams"
+   ],
+   "legend": [
+    {
+     "swatch": "mint",
+     "label": "Contract · PyRIT"
+    },
+    {
+     "swatch": "green",
+     "label": "Check passed"
+    },
+    {
+     "swatch": "grey",
+     "label": "Your code"
+    }
+   ],
+   "stage": {
+    "canvas": {
+     "w": 1500,
+     "h": 470
+    }
+   },
+   "checklist": {
+    "fixture": "conformance_local",
+    "subject": "provider 'local' · real run",
+    "contractTitle": "ExecutionEnvironmentProvider · the four moments",
+    "moments": [
+     {
+      "id": "reserve",
+      "title": "reserve()",
+      "text": "Record deterministic resource identifiers before anything exists, so a crash mid-allocation stays reconcilable."
+     },
+     {
+      "id": "endpoint",
+      "title": "inference_endpoint_async(relay_url)",
+      "text": "Translate the relay URL into your network namespace. Must not acquire resources."
+     },
+     {
+      "id": "launch",
+      "title": "launch_async(spec)",
+      "text": "Seed the workspace, acquire resources, start the harness. Only variable names on command lines; values through your own channel."
+     },
+     {
+      "id": "close",
+      "title": "close_async()",
+      "text": "Release exactly what you own, collect artifacts, stay idempotent, refuse anything you did not create."
+     }
+    ]
+   },
+   "initial": {
+    "checklist": {
+     "done": 0,
+     "moments": []
+    }
+   },
+   "steps": [
+    {
+     "id": "contract",
+     "kind": "checklist",
+     "tab": "Contract",
+     "title": "Four moments, two byte streams",
+     "patch": {
+      "checklist": {
+       "moments": [
+        "reserve",
+        "endpoint",
+        "launch",
+        "close"
+       ]
+      }
+     },
+     "body": "A provider subclasses `ExecutionEnvironmentProvider` (an `info` description, template validation, `create_session`) and returns an `ExecutionSession` with four lifecycle methods and three streams: ACP reader, ACP writer, stderr. Nothing here speaks ACP; you move bytes and honour the moments.",
+     "captions": [
+      {
+       "label": "policy stays in core",
+       "text": "Timeouts, budgets, redaction and the protocol are not yours to implement, or to weaken."
+      }
+     ],
+     "evidence": {
+      "title": "ExecutionSession · four moments",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/agent/environment.py",
+       "start": "def reserve\\(self\\)",
+       "end": "async def close_async",
+       "after": 1,
+       "focus": [
+        "def reserve",
+        "async def inference_endpoint_async",
+        "async def launch_async",
+        "async def close_async"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "autoplayMs": 10000
+    },
+    {
+     "id": "run",
+     "kind": "checklist",
+     "tab": "Run",
+     "title": "Run the conformance suite against a real allocation",
+     "patch": {
+      "checklist": {
+       "done": 17
+      }
+     },
+     "body": "`verify_environment_provider_async` drives one real allocation with a byte-echo command and reports one check per promise: streams unavailable before launch, relay translation, a secret that must not leak, idempotent release, honest capabilities. This report is the real one for the `local` provider, captured while building this deck: 17 of 17.",
+     "captions": [
+      {
+       "label": "review",
+       "text": "A provider PR is reviewed against this report; Docker's runs in integration tests."
+      }
+     ],
+     "evidence": {
+      "title": "verify_environment_provider_async",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/agent/conformance.py",
+       "start": "async def verify_environment_provider_async",
+       "lines": 20,
+       "focus": [
+        "Drive one real allocation",
+        "resources, streams, secrets",
+        "One check per promise"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "deeper": "seam/intro",
+     "deeperLabel": "The seam in depth",
+     "autoplayMs": 11000
+    },
+    {
+     "id": "register",
+     "kind": "checklist",
+     "tab": "Register",
+     "title": "Register through setup, never from the UI",
+     "patch": {
+      "checklist": {
+       "done": 17,
+       "animate": false
+      }
+     },
+     "body": "Providers and adapters are trusted code registered by setup (`EnvironmentProviderRegistry.register`), not import strings accepted over REST. Templates then name your provider by its `info.name`, and the UI lists the template fields your provider declares.",
+     "captions": [
+      {
+       "label": "ACA",
+       "text": "The Azure Container Apps sandbox provider was built this way outside the repository with zero core changes; packaging waits on the preview CLI."
+      }
+     ],
+     "evidence": {
+      "title": "EnvironmentProviderRegistry.register",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/agent/environment.py",
+       "start": "    def register\\(self, provider: ExecutionEnvironmentProvider\\)",
+       "lines": 12,
+       "focus": [
+        "def register",
+        "ValueError"
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "autoplayMs": 9000
+    },
+    {
+     "id": "adapter",
+     "kind": "checklist",
+     "tab": "Harness",
+     "title": "A new harness is an adapter, not a fork",
+     "patch": {
+      "checklist": {
+       "done": 17,
+       "animate": false
+      }
+     },
+     "body": "`HarnessAdapter` declares `info` (name, default command, wire APIs, native credential names, reserved variables), `launch_environment` (how the harness finds its private home) and `inference_environment` (how it is pointed at the relay). `verify_harness_adapter` checks those promises without running anything. Copilot CLI and the Agent Framework host are the two shipped adapters; a generic ACP adapter covers the rest.",
+     "captions": [
+      {
+       "label": "reserved",
+       "text": "Process identity and lookup paths (HOME, PATH, …) can never be credential references."
+      }
+     ],
+     "evidence": {
+      "title": "HarnessAdapter",
+      "source": {
+       "ref": "agents/stack-08-agent-framework",
+       "file": "pyrit/agent/harness.py",
+       "start": "class HarnessAdapter\\(ABC\\)",
+       "lines": 20,
+       "focus": [
+        "EXECUTION_RESERVED_ENVIRONMENT",
+        "\"HOME\"",
+        "\"PATH\""
+       ]
+      },
+      "tag": "PR #17"
+     },
+     "deeper": "harnesses/intro",
+     "deeperLabel": "Harnesses in depth",
+     "autoplayMs": 10000
+    }
+   ]
+  },
+  {
+   "id": "limits",
+   "index": null,
+   "accent": "mint",
+   "track": "tour",
+   "eyebrow": "Limits",
+   "title": "Known limits",
+   "regions": [
+    "*"
+   ],
+   "steps": [
+    {
+     "id": "limits",
+     "kind": "card",
+     "title": "Known <em>limits</em>",
+     "takeaway": "Said plainly, so reviewers do not have to find them.",
+     "autoplayMs": 11000,
+     "bullets": [
+      {
+       "title": "Budgets are per execution",
+       "text": "Default 100 inference requests, max 1,000; per-turn budgets are deferred."
+      },
+      {
+       "title": "Modality is declared, not policed per request",
+       "text": "The binding declares input modalities; undeclared image parts are not yet rejected by the relay."
+      },
+      {
+       "title": "`local` is not a sandbox",
+       "text": "Private home and workspace only; it requires an explicit acknowledgement."
+      },
+      {
+       "title": "Permission policy is not enforcement",
+       "text": "It is a deterministic ACP answer; isolation comes from the environment."
+      },
+      {
+       "title": "Tool coverage is what the protocol exposes",
+       "text": "Missing tool calls are undetermined, not false; the UI says so under every turn."
+      }
+     ]
+    },
+    {
+     "id": "deferred",
+     "kind": "card",
+     "title": "Deferred <em>on purpose</em>",
+     "takeaway": "Each has a place in the stack where it would land; none is needed to test an agent today.",
+     "autoplayMs": 10000,
+     "bullets": [
+      {
+       "title": "Agent configuration registry UI · create by preset name",
+       "text": "After 6b. Does **not** replace the three-panel form."
+      },
+      {
+       "title": "Checkpoint save / restore",
+       "text": "After 2b, as an optional Docker-provider capability."
+      },
+      {
+       "title": "Durable startup authoring · evidence playback",
+       "text": "After 5 / after 6a. “Download journal” covers today's need."
+      },
+      {
+       "title": "Relay modality enforcement · per-turn budgets",
+       "text": "After 4; both change evidence semantics."
+      },
+      {
+       "title": "Managed cloud providers (ACA)",
+       "text": "Proven out of tree; packaging waits on the preview CLI/SDK."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "stack",
+   "index": 9,
+   "short": "explorable",
+   "accent": "mint",
+   "track": "tour",
+   "regions": [
+    "*"
+   ],
+   "eyebrow": "Epilogue · the pull-request stack",
+   "title": "Eleven claims, one linear chain",
+   "summary": "Hover a PR to read its claim, why it is separate, and what it needs. Dashed nodes are deferred on purpose.",
+   "steps": [
+    {
+     "id": "explore",
+     "kind": "stack",
+     "title": "Eleven claims, one linear chain",
+     "nodes": [
+      {
+       "id": "p01",
+       "label": "1",
+       "title": "Explicit target outcomes",
+       "pr": "#15",
+       "branch": "agents/stack-01-outcomes",
+       "x": 20,
+       "y": 10,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/15",
+       "claim": "A target can complete without assistant text. Every `TargetResponse` declares an explicit outcome instead of letting an empty string mean anything.",
+       "facts": [
+        [
+         "why separate",
+         "Core-model change touching every target; approved on its own merits."
+        ],
+        [
+         "needs",
+         "—"
+        ],
+        [
+         "reviewer",
+         "target maintainers"
+        ]
+       ]
+      },
+      {
+       "id": "p03",
+       "label": "3",
+       "title": "Single-inference capability",
+       "pr": "#16",
+       "branch": "agents/stack-03-single-inference",
+       "x": 580,
+       "y": 190,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/16",
+       "claim": "Targets expose a single-inference capability: transport and auth without history or a tool loop. Independent of 1; the relay (4) is its first consumer.",
+       "facts": [
+        [
+         "why separate",
+         "General target capability owned by target maintainers; sequencing-free."
+        ],
+        [
+         "needs",
+         "—"
+        ]
+       ]
+      },
+      {
+       "id": "p2a",
+       "label": "2a",
+       "title": "ACP runtime + environment seam",
+       "pr": "#17",
+       "branch": "agents/stack-02a-acp-runtime",
+       "x": 20,
+       "y": 100,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/17",
+       "needs": [
+        "p01"
+       ],
+       "claim": "Existing attacks run against an ACP agent in an owned execution; the environment is a provider contract PyRIT verifies with an executable conformance suite.",
+       "facts": [
+        [
+         "ships",
+         "`AgentTarget`, `AgentExecutionManager`, journal, `local` provider, Copilot + generic adapters, `requires_admin_creation`, `JsonParameterValue` opt-in, conformance suites"
+        ],
+        [
+         "needs",
+         "1"
+        ],
+        [
+         "review focus",
+         "policy in core; nothing provider-specific leaks in"
+        ]
+       ]
+      },
+      {
+       "id": "aca",
+       "label": "ext",
+       "title": "ACA sandbox provider",
+       "kind": "out-of-tree · optional package",
+       "tone": "grey",
+       "deferred": true,
+       "x": 580,
+       "y": 100,
+       "w": 240,
+       "needs": [
+        "p2a"
+       ],
+       "claim": "Built against the 2a contract outside the repository with zero core changes; packaging waits on the preview CLI/SDK.",
+       "facts": [
+        [
+         "status",
+         "proven, not shipped"
+        ],
+        [
+         "needs",
+         "2a contract only"
+        ]
+       ]
+      },
+      {
+       "id": "p2b",
+       "label": "2b",
+       "title": "Docker reference provider",
+       "pr": "#18",
+       "branch": "agents/stack-02b-docker-provider",
+       "x": 20,
+       "y": 190,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/18",
+       "needs": [
+        "p2a"
+       ],
+       "claim": "Docker is the reference isolated provider others base theirs on: labels, capability drops, limits, image provenance, ownership-checked teardown.",
+       "facts": [
+        [
+         "why separate",
+         "PyRIT does not own environments; this is the worked example."
+        ],
+        [
+         "needs",
+         "2a"
+        ]
+       ]
+      },
+      {
+       "id": "p2c",
+       "label": "2c",
+       "title": "Tool calls as pieces",
+       "pr": "#19",
+       "branch": "agents/stack-02c-tool-calls",
+       "x": 300,
+       "y": 190,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/19",
+       "needs": [
+        "p2a"
+       ],
+       "claim": "What the agent did lands as `function_call` / `function_call_output` pieces PyRIT's tool-call scorers already read, with provenance and explicit omissions.",
+       "facts": [
+        [
+         "why separate",
+         "Faithfulness of tool records is the false-evidence review; it deserves undivided attention."
+        ],
+        [
+         "needs",
+         "2a"
+        ]
+       ]
+      },
+      {
+       "id": "ckpt",
+       "label": "later",
+       "title": "Checkpoint save / restore",
+       "kind": "deferred · after 2b",
+       "tone": "grey",
+       "deferred": true,
+       "x": 20,
+       "y": 280,
+       "w": 240,
+       "needs": [
+        "p2b"
+       ],
+       "claim": "Re-lands as an optional Docker-provider capability once the base provider is reviewed.",
+       "facts": [
+        [
+         "status",
+         "deferred on purpose"
+        ]
+       ]
+      },
+      {
+       "id": "p04",
+       "label": "4",
+       "title": "Target-backed model (BYOK)",
+       "pr": "#20",
+       "branch": "agents/stack-04-model-binding",
+       "x": 300,
+       "y": 280,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/20",
+       "needs": [
+        "p2c",
+        "p03"
+       ],
+       "claim": "The model behind the agent is a PyRIT target: relay, lease, binding and parameter-conflict rules. A distinct trust boundary.",
+       "facts": [
+        [
+         "why separate",
+         "Scoped authority; the credential never leaves the server."
+        ],
+        [
+         "needs",
+         "2a, 3"
+        ]
+       ]
+      },
+      {
+       "id": "p05",
+       "label": "5",
+       "title": "Reusable configuration",
+       "pr": "#21",
+       "branch": "agents/stack-05-configuration",
+       "x": 300,
+       "y": 370,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/21",
+       "needs": [
+        "p04"
+       ],
+       "claim": "Agents compose from initializers and registries; names are provenance, not identity.",
+       "facts": [
+        [
+         "why separate",
+         "Config-plane change: YAML contract and provenance."
+        ],
+        [
+         "needs",
+         "4"
+        ]
+       ]
+      },
+      {
+       "id": "p08",
+       "label": "8",
+       "title": "Agent Framework ACP host",
+       "pr": "#25",
+       "branch": "agents/stack-08-agent-framework",
+       "x": 580,
+       "y": 370,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/25",
+       "needs": [
+        "p04"
+       ],
+       "claim": "Host Microsoft Agent Framework agents over ACP as an optional extra; doubles as the login-free CI proof of the full ACP path.",
+       "facts": [
+        [
+         "why separate",
+         "Separately releasable."
+        ],
+        [
+         "needs",
+         "4"
+        ],
+        [
+         "stacked on",
+         "7, so the fork shows one linear chain"
+        ]
+       ]
+      },
+      {
+       "id": "relaydef",
+       "label": "later",
+       "title": "Relay modality · turn budgets",
+       "kind": "deferred · after 4",
+       "tone": "grey",
+       "deferred": true,
+       "x": 580,
+       "y": 460,
+       "w": 240,
+       "claim": "Per-request modality enforcement and per-turn inference budgets change evidence semantics; deferred with the limits documented in chapter 04.",
+       "facts": [
+        [
+         "status",
+         "deferred on purpose"
+        ]
+       ]
+      },
+      {
+       "id": "startup",
+       "label": "later",
+       "title": "Durable startup authoring",
+       "kind": "deferred · after 5",
+       "tone": "grey",
+       "deferred": true,
+       "x": 20,
+       "y": 460,
+       "w": 240,
+       "needs": [
+        "p05"
+       ],
+       "claim": "Persisting a reproducible definition is independent of basic agent testing.",
+       "facts": [
+        [
+         "status",
+         "deferred on purpose"
+        ]
+       ]
+      },
+      {
+       "id": "p6a",
+       "label": "6a",
+       "title": "Co-PyRIT API",
+       "pr": "#22",
+       "branch": "agents/stack-06a-copyrit-api",
+       "x": 300,
+       "y": 460,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/22",
+       "needs": [
+        "p05"
+       ],
+       "claim": "Create agent targets, send, stream activity, inspect executions: curl-verifiable without the UI.",
+       "facts": [
+        [
+         "why separate",
+         "API reviewers; SSE contract (`state/events/reset/reconnect`)."
+        ],
+        [
+         "needs",
+         "5"
+        ]
+       ]
+      },
+      {
+       "id": "playback",
+       "label": "later",
+       "title": "Evidence packages / playback",
+       "kind": "deferred · after 6a",
+       "tone": "grey",
+       "deferred": true,
+       "x": 580,
+       "y": 550,
+       "w": 240,
+       "needs": [
+        "p6a"
+       ],
+       "claim": "“Download journal” covers the need; playback is its own UX.",
+       "facts": [
+        [
+         "status",
+         "deferred on purpose"
+        ]
+       ]
+      },
+      {
+       "id": "p6b",
+       "label": "6b",
+       "title": "Co-PyRIT UI",
+       "pr": "#23",
+       "branch": "agents/stack-06b-copyrit-ui",
+       "x": 300,
+       "y": 550,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/23",
+       "needs": [
+        "p6a"
+       ],
+       "claim": "Configure agents (three-panel Create Target form) and watch what they do, integrated with the hook-based ChatWindow.",
+       "facts": [
+        [
+         "why separate",
+         "Frontend reviewers."
+        ],
+        [
+         "needs",
+         "6a"
+        ]
+       ]
+      },
+      {
+       "id": "p07",
+       "label": "7",
+       "title": "Interactive controls",
+       "pr": "#24",
+       "branch": "agents/stack-07-approvals",
+       "x": 300,
+       "y": 640,
+       "w": 240,
+       "url": "https://github.com/spencrr/PyRIT/pull/24",
+       "needs": [
+        "p6b"
+       ],
+       "claim": "Operators approve, cancel and hold; a control-plane change separate from observation.",
+       "facts": [
+        [
+         "why separate",
+         "Changes the agent's behaviour mid-run."
+        ],
+        [
+         "needs",
+         "6b"
+        ],
+        [
+         "also",
+         "`show_agent_operator_identity` (default show)"
+        ]
+       ]
+      },
+      {
+       "id": "registry",
+       "label": "later",
+       "title": "Agent config registry UI",
+       "kind": "deferred · after 6b",
+       "tone": "grey",
+       "deferred": true,
+       "x": 580,
+       "y": 640,
+       "w": 240,
+       "needs": [
+        "p6b"
+       ],
+       "claim": "A Registry tab to browse presets and an optional “create by preset name” path. Does **not** replace the three-panel form.",
+       "facts": [
+        [
+         "status",
+         "deferred on purpose"
+        ]
+       ]
+      }
+     ],
+     "infoEyebrow": "Hover or focus a node",
+     "autoplayMs": 15000,
+     "footer": "**Promotion.** #15 and #16 are independent and go first; each later PR is rebased onto `main` once its predecessor merges. Base: upstream `microsoft/PyRIT` main at `6a2319644`. The unsliced proof of concept lives on `agents/integration` (reference only). Story gist: gist.github.com/spencrr/474c66a5f7c569106b5068b7477d4e90"
+    }
+   ]
+  },
+  {
+   "id": "epilogue",
+   "index": null,
+   "accent": "mint",
+   "track": "tour",
+   "eyebrow": "Epilogue",
+   "title": "How to review",
+   "regions": [
+    "*"
+   ],
+   "steps": [
+    {
+     "id": "review",
+     "kind": "card",
+     "title": "How to <em>review</em>",
+     "takeaway": "Each PR carries its feature commit plus the fixes from two skeptical reviews as separate `FIX`/`TEST` commits, so you can see what the review changed. Each PR body lists the exact commands run and their results.",
+     "autoplayMs": 12000,
+     "bullets": [
+      {
+       "title": "Start with #15 and #16",
+       "text": "Independent core/target changes; natural first promotions to `microsoft/PyRIT`."
+      },
+      {
+       "title": "Read 2a against the conformance report",
+       "text": "Run `verify_environment_provider_async` for `local`; the Docker report is in 2b's tests."
+      },
+      {
+       "title": "Give 2c undivided attention",
+       "text": "The projection rules and omission reasons are the false-evidence boundary."
+      },
+      {
+       "title": "Treat 4 as a trust boundary",
+       "text": "Lease, body validation, reserved variables, redaction of the token."
+      },
+      {
+       "title": "Validation on top of the stack",
+       "text": "`pytest tests/unit -n 4` 30,904 passed · frontend 166 suites / 3,767 tests · ruff, tsc, eslint, `uv lock --check` · 7 agent integration tests against a real scripted ACP process and the Agent Framework host."
+      }
+     ]
+    },
+    {
+     "id": "end",
+     "kind": "card",
+     "title": "Questions, <em>objections</em>, better cuts",
+     "takeaway": "Drafts #15–#25 on `spencrr/PyRIT`, GitHub stack #26. The story gist links every PR, the four diagrams, and this deck. Nothing is promoted to `microsoft/PyRIT` yet; that starts when you say so.",
+     "autoplayMs": 12000,
+     "bullets": [
+      {
+       "title": "Two tracks",
+       "text": "**Tour** (this): pitch, swappable, map, three perspectives, stack. **Deep dive** (press `T`): one turn, seam, journal → pieces, relay, identity, approvals, harnesses, decisions."
+      },
+      {
+       "title": "Real throughout",
+       "text": "Journals, projection and conformance report captured from the scripted ACP agent; Co-PyRIT screenshots captured headlessly on this branch; every code panel pinned to a branch tip."
+      },
+      {
+       "title": "Keys",
+       "text": "← → steps · Tab chapter · T track · Space autoplay · E evidence · P presenter · Esc overview · hover any dotted `term` for its definition"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "turn",
+   "index": 11,
+   "short": "deep · pipeline",
+   "accent": "mint",
+   "track": "deep",
+   "regions": [
+    "target",
+    "core",
+    "providers"
+   ],
+   "eyebrow": "Deep dive 11 · one turn, end to end",
    "title": "One turn, end to end",
    "summary": "An attack sends one message; a real agent plans, calls a tool, answers; PyRIT returns what it did.",
    "takeaway": "The thing under test is a **harness** that plans, calls tools and changes state inside an environment PyRIT owns. Existing attacks, scorers and converters run against it **unchanged**.",
@@ -765,10 +3889,17 @@
   },
   {
    "id": "seam",
-   "index": 2,
-   "short": "topology",
+   "index": 12,
+   "short": "deep · topology",
    "accent": "mint",
-   "eyebrow": "Chapter 02 · the environment seam",
+   "track": "deep",
+   "regions": [
+    "core",
+    "seams",
+    "providers",
+    "extend"
+   ],
+   "eyebrow": "Deep dive 12 · the environment seam",
    "title": "Core owns policy, providers own resources",
    "summary": "Two executable contracts separate PyRIT's runtime from wherever the agent runs: local, Docker, or your own sandbox.",
    "takeaway": "PyRIT does **not** own environments. It owns **policy**: timeouts, budgets, cancellation, approvals, redaction and the ACP protocol. A provider owns **resources**: allocation, release, workspace seeding and the byte streams. The seam between them is a contract PyRIT can verify.",
@@ -1289,10 +4420,15 @@
   },
   {
    "id": "journal",
-   "index": 3,
-   "short": "panel",
+   "index": 13,
+   "short": "deep · panel",
    "accent": "mint",
-   "eyebrow": "Chapter 03 · journal → pieces",
+   "track": "deep",
+   "regions": [
+    "core",
+    "attack"
+   ],
+   "eyebrow": "Deep dive 13 · journal → pieces",
    "title": "Recording what the agent did",
    "summary": "An append-only journal of every frame, and a projection that never guesses.",
    "takeaway": "PyRIT records what the agent **did**, not only what it **said**. The journal is the ground truth; the projection into memory pieces is explicit, provenance-carrying, and silent about anything it cannot establish.",
@@ -1720,10 +4856,15 @@
   },
   {
    "id": "relay",
-   "index": 4,
-   "short": "pipeline",
+   "index": 14,
+   "short": "deep · pipeline",
    "accent": "mint",
-   "eyebrow": "Chapter 04 · the inference relay",
+   "track": "deep",
+   "regions": [
+    "core",
+    "providers"
+   ],
+   "eyebrow": "Deep dive 14 · the inference relay",
    "title": "Bring your own model, keep your own key",
    "summary": "The harness thinks it is talking to OpenAI. It is talking to a lease-scoped relay in front of a PyRIT target.",
    "takeaway": "The model behind the agent is **a PyRIT target**. The harness receives an execution-scoped token and a local base URL; the relay validates every request against the binding and forwards it with the single-inference capability. The provider credential stays on the server. Model and harness become **independently testable**.",
@@ -2210,31 +5351,16 @@
    ]
   },
   {
-   "id": "zoomout",
-   "index": null,
-   "accent": "mint",
-   "eyebrow": "Half-time · where we are",
-   "title": "Zoom out",
-   "steps": [
-    {
-     "id": "arch",
-     "kind": "card",
-     "title": "Four chapters in, <em>one picture</em>",
-     "takeaway": "**Core owns policy, providers own resources.** Two seams, `HarnessAdapter` and `ExecutionEnvironmentProvider`, each with an executable conformance suite. The harness reaches the model only through the execution-scoped relay. Everything you have seen so far is on this diagram; the next three chapters are about people and configuration.",
-     "autoplayMs": 12000,
-     "eyebrow": "Half-time · runtime architecture",
-     "image": "https://raw.githubusercontent.com/spencrr/PyRIT/agents/stack-assets/diagrams/png/runtime-architecture.png",
-     "note": "Diagram source and PNG live on the `agents/stack-assets` branch; the gist embeds the same image.",
-     "alt": "Runtime architecture diagram"
-    }
-   ]
-  },
-  {
    "id": "recipes",
-   "index": 5,
-   "short": "panel",
+   "index": 15,
+   "short": "deep · panel",
    "accent": "mint",
-   "eyebrow": "Chapter 05 · recipes and identity",
+   "track": "deep",
+   "regions": [
+    "recipes",
+    "target"
+   ],
+   "eyebrow": "Deep dive 15 · recipes and identity",
    "title": "A target is a recipe, not a resource",
    "summary": "Model binding + harness profile + environment template → a configured target whose identity is the hash of the recipe.",
    "takeaway": "A configured `AgentTarget` **owns no resources**. Its identity is its configuration without defaults, timeouts and evidence budgets. Preset names are **provenance**, not identity. `permission_policy` **is** identity, and it defaults to deny.",
@@ -2682,10 +5808,15 @@
   },
   {
    "id": "operators",
-   "index": 6,
-   "short": "topology",
+   "index": 16,
+   "short": "deep · topology",
    "accent": "green",
-   "eyebrow": "Chapter 06 · Co-PyRIT operators",
+   "track": "deep",
+   "regions": [
+    "copyrit",
+    "core"
+   ],
+   "eyebrow": "Deep dive 16 · Co-PyRIT operators",
    "title": "Watch it, approve it, hold it",
    "summary": "Live streaming of durable evidence; permission requests routed to an operator; hold, cancel and close.",
    "takeaway": "Observation and control are separate PRs because they are separate concerns. 6a/6b let an operator **watch** what the agent does, live, from the journal. PR 7 lets the operator **change** what happens: approve or deny a tool, hold an execution, cancel, close.",
@@ -3220,10 +6351,15 @@
   },
   {
    "id": "harnesses",
-   "index": 7,
-   "short": "topology",
+   "index": 17,
+   "short": "deep · topology",
    "accent": "amber",
-   "eyebrow": "Chapter 07 · harnesses",
+   "track": "deep",
+   "regions": [
+    "seams",
+    "providers"
+   ],
+   "eyebrow": "Deep dive 17 · harnesses",
    "title": "Copilot CLI, Agent Framework, any ACP agent",
    "summary": "One adapter contract; Copilot CLI first, an in-repo ACP host for Agent Framework agents, and a login-free CI proof.",
    "takeaway": "`HarnessAdapter` is the second seam: how a harness is **launched** and how it is **pointed at a model**. Copilot CLI is the MVP harness. The optional Agent Framework host makes PyRIT itself an ACP agent for Microsoft Agent Framework agents, and doubles as the CI proof of the full ACP path without any login.",
@@ -3578,562 +6714,238 @@
    ]
   },
   {
-   "id": "recap",
-   "index": null,
-   "accent": "mint",
-   "eyebrow": "Recap",
-   "title": "One receipt, five ways",
-   "steps": [
-    {
-     "id": "recap",
-     "kind": "card",
-     "title": "One receipt, <em>five ways</em>",
-     "takeaway": "The same `{\"total\": 31}` appeared as an ACP `tool_call_update` frame, as a journal line, as a `function_call_output` piece with provenance, as the thing an operator approved, and as what a scorer read. Five views, one source of truth: the journal.",
-     "autoplayMs": 12000,
-     "bullets": [
-      {
-       "title": "Agents are targets",
-       "text": "`AgentTarget` is a `PromptTarget`; attacks, converters and scorers are unchanged."
-      },
-      {
-       "title": "Core owns policy, providers own resources",
-       "text": "Two executable seams; `local`, `docker`, and your own sandbox."
-      },
-      {
-       "title": "Did, not said",
-       "text": "Append-only journal; explicit projection; omissions carry reasons."
-      },
-      {
-       "title": "Bring your own model",
-       "text": "Relay + lease + binding; the credential never enters the environment."
-      },
-      {
-       "title": "People in the loop",
-       "text": "Watch live; approve, deny, hold, cancel, close; identity visible by default."
-      }
-     ]
-    }
-   ]
-  },
-  {
-   "id": "stack",
+   "id": "decisions",
    "index": 8,
    "short": "explorable",
    "accent": "mint",
-   "eyebrow": "Epilogue · the pull-request stack",
-   "title": "Eleven claims, one linear chain",
-   "summary": "Hover a PR to read its claim, why it is separate, and what it needs. Dashed nodes are deferred on purpose.",
+   "track": "deep",
+   "eyebrow": "Deep dive · decisions a reviewer should know about",
+   "title": "Nine decisions, each with its line of code",
+   "summary": "Hover a decision for the rationale and the exact lines that implement it.",
+   "regions": [
+    "*"
+   ],
    "steps": [
     {
      "id": "explore",
      "kind": "stack",
-     "title": "Eleven claims, one linear chain",
+     "wide": true,
+     "viewBox": "0 0 840 300",
+     "svgHeight": 330,
+     "title": "Nine decisions",
      "nodes": [
       {
-       "id": "p01",
-       "label": "1",
-       "title": "Explicit target outcomes",
-       "pr": "#15",
-       "branch": "agents/stack-01-outcomes",
+       "id": "gating",
+       "label": "Admin gating",
+       "title": "Admin-only over REST",
+       "kind": "decision",
        "x": 20,
        "y": 10,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/15",
-       "claim": "A target can complete without assistant text. Every `TargetResponse` declares an explicit outcome instead of letting an empty string mean anything.",
-       "facts": [
-        [
-         "why separate",
-         "Core-model change touching every target; approved on its own merits."
-        ],
-        [
-         "needs",
-         "—"
-        ],
-        [
-         "reviewer",
-         "target maintainers"
-        ]
-       ]
+       "w": 260,
+       "claim": "**Admin-only over REST.** Every execution launches a process or container with credentials the server holds, regardless of parameters, so `requires_admin_creation` is enforced next to upstream's `code_execution_parameter` and `server_credential_parameter`.",
+       "facts": [],
+       "evidence": {
+        "title": "class marker",
+        "source": {
+         "ref": "agents/stack-08-agent-framework",
+         "file": "pyrit/prompt_target/agent_target.py",
+         "start": "requires_admin_creation: ClassVar",
+         "lines": 5,
+         "before": 2,
+         "focus": [
+          "requires_admin_creation"
+         ]
+        }
+       }
       },
       {
-       "id": "p03",
-       "label": "3",
-       "title": "Single-inference capability",
-       "pr": "#16",
-       "branch": "agents/stack-03-single-inference",
+       "id": "input",
+       "label": "External input",
+       "title": "One opt-in object over REST",
+       "kind": "decision",
+       "x": 300,
+       "y": 10,
+       "w": 260,
+       "claim": "**One opt-in object over REST.** Upstream's allowlist admits scalars, lists and registry references. `agent_configuration` is a single-shape pydantic model, so a sibling opt-in, `JsonParameterValue`, lets exactly one parameter arrive as an object; the 35 other model-typed parameters stay in-process and a negative test locks that in.",
+       "facts": [],
+       "evidence": {
+        "title": "opt-in",
+        "source": {
+         "ref": "agents/stack-08-agent-framework",
+         "file": "pyrit/models/agent_execution.py",
+         "start": "class AgentTargetConfiguration\\(BaseModel, JsonParameterValue\\)",
+         "lines": 4,
+         "focus": [
+          "JsonParameterValue"
+         ]
+        }
+       }
+      },
+      {
+       "id": "terms",
+       "label": "Terminology",
+       "title": "“Tool calls”, not “evidence”",
+       "kind": "decision",
        "x": 580,
-       "y": 190,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/16",
-       "claim": "Targets expose a single-inference capability: transport and auth without history or a tool loop. Independent of 1; the relay (4) is its first consumer.",
-       "facts": [
-        [
-         "why separate",
-         "General target capability owned by target maintainers; sequencing-free."
-        ],
-        [
-         "needs",
-         "—"
-        ]
-       ]
+       "y": 10,
+       "w": 260,
+       "claim": "**“Tool calls”, not “evidence”.** Matches `MessageToolCallScorer` and the `function_call` piece types; upstream now uses “evidence” for findings.",
+       "facts": [],
+       "evidence": {
+        "title": "projection",
+        "source": {
+         "ref": "agents/stack-08-agent-framework",
+         "file": "pyrit/agent/tool_calls.py",
+         "start": "def project_agent_tools\\(",
+         "lines": 6,
+         "focus": [
+          "def project_agent_tools"
+         ]
+        }
+       }
       },
       {
-       "id": "p2a",
-       "label": "2a",
-       "title": "ACP runtime + environment seam",
-       "pr": "#17",
-       "branch": "agents/stack-02a-acp-runtime",
+       "id": "ownership",
+       "label": "Ownership",
+       "title": "Policy in core, resources outside",
+       "kind": "decision",
        "x": 20,
-       "y": 100,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/17",
-       "needs": [
-        "p01"
-       ],
-       "claim": "Existing attacks run against an ACP agent in an owned execution; the environment is a provider contract PyRIT verifies with an executable conformance suite.",
-       "facts": [
-        [
-         "ships",
-         "`AgentTarget`, `AgentExecutionManager`, journal, `local` provider, Copilot + generic adapters, `requires_admin_creation`, `JsonParameterValue` opt-in, conformance suites"
-        ],
-        [
-         "needs",
-         "1"
-        ],
-        [
-         "review focus",
-         "policy in core; nothing provider-specific leaks in"
-        ]
-       ]
+       "y": 110,
+       "w": 260,
+       "claim": "**Policy in core, resources outside.** Timeouts, budgets, cancellation, approvals, redaction and ACP live in core; allocation, release, seeding and byte streams live in providers; adapters own launch and environment translation.",
+       "facts": [],
+       "evidence": {
+        "title": "contract",
+        "source": {
+         "ref": "agents/stack-08-agent-framework",
+         "file": "pyrit/agent/environment.py",
+         "start": "class ExecutionEnvironmentProvider\\(ABC\\)",
+         "lines": 4,
+         "focus": [
+          "Trusted implementation code"
+         ]
+        }
+       }
       },
       {
-       "id": "aca",
-       "label": "ext",
-       "title": "ACA sandbox provider",
-       "kind": "out-of-tree · optional package",
-       "tone": "grey",
-       "deferred": true,
+       "id": "identity",
+       "label": "Identity",
+       "title": "Hash of the recipe, minus policy",
+       "kind": "decision",
+       "x": 300,
+       "y": 110,
+       "w": 260,
+       "claim": "**Hash of the recipe, minus policy.** `environment` is required; Docker-typed fields are validated by the Docker provider; `permission_policy` **is** identity.",
+       "facts": [],
+       "evidence": {
+        "title": "exclusions",
+        "source": {
+         "ref": "agents/stack-08-agent-framework",
+         "file": "pyrit/prompt_target/agent_target.py",
+         "start": "_IDENTITY_EXCLUDED_FIELDS: ClassVar",
+         "lines": 6,
+         "focus": [
+          "_IDENTITY_EXCLUDED_FIELDS"
+         ]
+        }
+       }
+      },
+      {
+       "id": "deny",
+       "label": "Deny default",
+       "title": "Permissions default to deny",
+       "kind": "decision",
        "x": 580,
-       "y": 100,
-       "w": 240,
-       "needs": [
-        "p2a"
-       ],
-       "claim": "Built against the 2a contract outside the repository with zero core changes; packaging waits on the preview CLI/SDK.",
-       "facts": [
-        [
-         "status",
-         "proven, not shipped"
-        ],
-        [
-         "needs",
-         "2a contract only"
-        ]
-       ]
+       "y": 110,
+       "w": 260,
+       "claim": "**Permissions default to deny.** `allow_once` and `ask` are explicit; `ask` only for interactive sends; a harness must offer `reject_once` before `ask` asks anyone, so a denial is never reported as a cancellation.",
+       "facts": [],
+       "evidence": {
+        "title": "default",
+        "source": {
+         "ref": "agents/stack-08-agent-framework",
+         "file": "pyrit/models/agent_execution.py",
+         "start": "permission_policy: AgentPermissionPolicy = AgentPermissionPolicy.DENY",
+         "lines": 2,
+         "focus": [
+          "DENY"
+         ]
+        }
+       }
       },
       {
-       "id": "p2b",
-       "label": "2b",
-       "title": "Docker reference provider",
-       "pr": "#18",
-       "branch": "agents/stack-02b-docker-provider",
+       "id": "fixtures",
+       "label": "Confined fixtures",
+       "title": "Fixture dirs confined over REST",
+       "kind": "decision",
        "x": 20,
-       "y": 190,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/18",
-       "needs": [
-        "p2a"
-       ],
-       "claim": "Docker is the reference isolated provider others base theirs on: labels, capability drops, limits, image provenance, ownership-checked teardown.",
-       "facts": [
-        [
-         "why separate",
-         "PyRIT does not own environments; this is the worked example."
-        ],
-        [
-         "needs",
-         "2a"
-        ]
-       ]
+       "y": 210,
+       "w": 260,
+       "claim": "**Fixture dirs confined over REST.** API-created targets reuse upstream's `upload_directory_parameter` contract; Python callers are not confined.",
+       "facts": [],
+       "evidence": {
+        "title": "marker",
+        "source": {
+         "ref": "agents/stack-08-agent-framework",
+         "file": "pyrit/prompt_target/agent_target.py",
+         "start": "upload_directory_parameter: ClassVar",
+         "lines": 2,
+         "focus": [
+          "allowed_fixture_directory"
+         ]
+        }
+       }
       },
       {
-       "id": "p2c",
-       "label": "2c",
-       "title": "Tool calls as pieces",
-       "pr": "#19",
-       "branch": "agents/stack-02c-tool-calls",
+       "id": "visible",
+       "label": "Operator identity",
+       "title": "Operator identity shown by default",
+       "kind": "decision",
        "x": 300,
-       "y": 190,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/19",
-       "needs": [
-        "p2a"
-       ],
-       "claim": "What the agent did lands as `function_call` / `function_call_output` pieces PyRIT's tool-call scorers already read, with provenance and explicit omissions.",
-       "facts": [
-        [
-         "why separate",
-         "Faithfulness of tool records is the false-evidence review; it deserves undivided attention."
-        ],
-        [
-         "needs",
-         "2a"
-        ]
-       ]
+       "y": 210,
+       "w": 260,
+       "claim": "**Operator identity shown by default.** Decisions name the operator to everyone with access to the attack; `show_agent_operator_identity: false` reports roles. Presentation only.",
+       "facts": [],
+       "evidence": {
+        "title": "masking",
+        "source": {
+         "ref": "agents/stack-08-agent-framework",
+         "file": "pyrit/backend/routes/executions.py",
+         "start": "def _operator_role",
+         "lines": 5,
+         "focus": [
+          "return \"operator\""
+         ]
+        }
+       }
       },
       {
-       "id": "ckpt",
-       "label": "later",
-       "title": "Checkpoint save / restore",
-       "kind": "deferred · after 2b",
-       "tone": "grey",
-       "deferred": true,
-       "x": 20,
-       "y": 280,
-       "w": 240,
-       "needs": [
-        "p2b"
-       ],
-       "claim": "Re-lands as an optional Docker-provider capability once the base provider is reviewed.",
-       "facts": [
-        [
-         "status",
-         "deferred on purpose"
-        ]
-       ]
-      },
-      {
-       "id": "p04",
-       "label": "4",
-       "title": "Target-backed model (BYOK)",
-       "pr": "#20",
-       "branch": "agents/stack-04-model-binding",
-       "x": 300,
-       "y": 280,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/20",
-       "needs": [
-        "p2c",
-        "p03"
-       ],
-       "claim": "The model behind the agent is a PyRIT target: relay, lease, binding and parameter-conflict rules. A distinct trust boundary.",
-       "facts": [
-        [
-         "why separate",
-         "Scoped authority; the credential never leaves the server."
-        ],
-        [
-         "needs",
-         "2a, 3"
-        ]
-       ]
-      },
-      {
-       "id": "p05",
-       "label": "5",
-       "title": "Reusable configuration",
-       "pr": "#21",
-       "branch": "agents/stack-05-configuration",
-       "x": 300,
-       "y": 370,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/21",
-       "needs": [
-        "p04"
-       ],
-       "claim": "Agents compose from initializers and registries; names are provenance, not identity.",
-       "facts": [
-        [
-         "why separate",
-         "Config-plane change: YAML contract and provenance."
-        ],
-        [
-         "needs",
-         "4"
-        ]
-       ]
-      },
-      {
-       "id": "p08",
-       "label": "8",
-       "title": "Agent Framework ACP host",
-       "pr": "#25",
-       "branch": "agents/stack-08-agent-framework",
+       "id": "capture",
+       "label": "Bounded capture",
+       "title": "Bounded, redacted capture",
+       "kind": "decision",
        "x": 580,
-       "y": 370,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/25",
-       "needs": [
-        "p04"
-       ],
-       "claim": "Host Microsoft Agent Framework agents over ACP as an optional extra; doubles as the login-free CI proof of the full ACP path.",
-       "facts": [
-        [
-         "why separate",
-         "Separately releasable."
-        ],
-        [
-         "needs",
-         "4"
-        ],
-        [
-         "stacked on",
-         "7, so the fork shows one linear chain"
-        ]
-       ]
-      },
-      {
-       "id": "relaydef",
-       "label": "later",
-       "title": "Relay modality · turn budgets",
-       "kind": "deferred · after 4",
-       "tone": "grey",
-       "deferred": true,
-       "x": 580,
-       "y": 460,
-       "w": 240,
-       "claim": "Per-request modality enforcement and per-turn inference budgets change evidence semantics; deferred with the limits documented in chapter 04.",
-       "facts": [
-        [
-         "status",
-         "deferred on purpose"
-        ]
-       ]
-      },
-      {
-       "id": "startup",
-       "label": "later",
-       "title": "Durable startup authoring",
-       "kind": "deferred · after 5",
-       "tone": "grey",
-       "deferred": true,
-       "x": 20,
-       "y": 460,
-       "w": 240,
-       "needs": [
-        "p05"
-       ],
-       "claim": "Persisting a reproducible definition is independent of basic agent testing.",
-       "facts": [
-        [
-         "status",
-         "deferred on purpose"
-        ]
-       ]
-      },
-      {
-       "id": "p6a",
-       "label": "6a",
-       "title": "Co-PyRIT API",
-       "pr": "#22",
-       "branch": "agents/stack-06a-copyrit-api",
-       "x": 300,
-       "y": 460,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/22",
-       "needs": [
-        "p05"
-       ],
-       "claim": "Create agent targets, send, stream activity, inspect executions: curl-verifiable without the UI.",
-       "facts": [
-        [
-         "why separate",
-         "API reviewers; SSE contract (`state/events/reset/reconnect`)."
-        ],
-        [
-         "needs",
-         "5"
-        ]
-       ]
-      },
-      {
-       "id": "playback",
-       "label": "later",
-       "title": "Evidence packages / playback",
-       "kind": "deferred · after 6a",
-       "tone": "grey",
-       "deferred": true,
-       "x": 580,
-       "y": 550,
-       "w": 240,
-       "needs": [
-        "p6a"
-       ],
-       "claim": "“Download journal” covers the need; playback is its own UX.",
-       "facts": [
-        [
-         "status",
-         "deferred on purpose"
-        ]
-       ]
-      },
-      {
-       "id": "p6b",
-       "label": "6b",
-       "title": "Co-PyRIT UI",
-       "pr": "#23",
-       "branch": "agents/stack-06b-copyrit-ui",
-       "x": 300,
-       "y": 550,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/23",
-       "needs": [
-        "p6a"
-       ],
-       "claim": "Configure agents (three-panel Create Target form) and watch what they do, integrated with the hook-based ChatWindow.",
-       "facts": [
-        [
-         "why separate",
-         "Frontend reviewers."
-        ],
-        [
-         "needs",
-         "6a"
-        ]
-       ]
-      },
-      {
-       "id": "p07",
-       "label": "7",
-       "title": "Interactive controls",
-       "pr": "#24",
-       "branch": "agents/stack-07-approvals",
-       "x": 300,
-       "y": 640,
-       "w": 240,
-       "url": "https://github.com/spencrr/PyRIT/pull/24",
-       "needs": [
-        "p6b"
-       ],
-       "claim": "Operators approve, cancel and hold; a control-plane change separate from observation.",
-       "facts": [
-        [
-         "why separate",
-         "Changes the agent's behaviour mid-run."
-        ],
-        [
-         "needs",
-         "6b"
-        ],
-        [
-         "also",
-         "`show_agent_operator_identity` (default show)"
-        ]
-       ]
-      },
-      {
-       "id": "registry",
-       "label": "later",
-       "title": "Agent config registry UI",
-       "kind": "deferred · after 6b",
-       "tone": "grey",
-       "deferred": true,
-       "x": 580,
-       "y": 640,
-       "w": 240,
-       "needs": [
-        "p6b"
-       ],
-       "claim": "A Registry tab to browse presets and an optional “create by preset name” path. Does **not** replace the three-panel form.",
-       "facts": [
-        [
-         "status",
-         "deferred on purpose"
-        ]
-       ]
+       "y": 210,
+       "w": 260,
+       "claim": "**Bounded, redacted capture.** Optional inference content capture journals decoded text after the stream settles so a credential spanning chunks is redacted whole; budgets default to 100 requests, cap 1,000; live executions block configuration replacement.",
+       "facts": [],
+       "evidence": {
+        "title": "content capture",
+        "source": {
+         "ref": "agents/stack-08-agent-framework",
+         "file": "pyrit/agent/inference_relay.py",
+         "start": "async def _record_content_async",
+         "lines": 12,
+         "focus": [
+          "inference.content"
+         ]
+        }
+       }
       }
      ],
-     "infoEyebrow": "Hover or focus a node",
+     "infoEyebrow": "Hover or focus a decision",
      "autoplayMs": 15000,
-     "footer": "**Promotion.** #15 and #16 are independent and go first; each later PR is rebased onto `main` once its predecessor merges. Base: upstream `microsoft/PyRIT` main at `6a2319644`. The unsliced proof of concept lives on `agents/integration` (reference only). Story gist: gist.github.com/spencrr/474c66a5f7c569106b5068b7477d4e90"
-    }
-   ]
-  },
-  {
-   "id": "epilogue",
-   "index": null,
-   "accent": "mint",
-   "eyebrow": "Epilogue",
-   "title": "Limits and how to review",
-   "steps": [
-    {
-     "id": "limits",
-     "kind": "card",
-     "title": "Known <em>limits</em>",
-     "takeaway": "Said plainly, so reviewers do not have to find them.",
-     "autoplayMs": 12000,
-     "bullets": [
-      {
-       "title": "Budgets are per execution",
-       "text": "Default 100 inference requests, max 1,000; per-turn budgets are deferred."
-      },
-      {
-       "title": "Modality is declared, not policed per request",
-       "text": "The binding declares input modalities; undeclared image parts are not yet rejected by the relay."
-      },
-      {
-       "title": "`local` is not a sandbox",
-       "text": "Private home and workspace only; it requires an explicit acknowledgement."
-      },
-      {
-       "title": "Permission policy is not enforcement",
-       "text": "It is a deterministic ACP answer; isolation comes from the environment."
-      },
-      {
-       "title": "Catalog shows credential *names*",
-       "text": "And the resolved fixture path, to authenticated users; values never appear (declined review item, documented)."
-      }
-     ]
-    },
-    {
-     "id": "review",
-     "kind": "card",
-     "title": "How to <em>review</em>",
-     "takeaway": "Each PR carries its feature commit plus the fixes from two skeptical reviews as separate `FIX`/`TEST` commits, so you can see what the review changed. Each PR body lists the exact commands run and their results.",
-     "autoplayMs": 12000,
-     "bullets": [
-      {
-       "title": "Start with #15 and #16",
-       "text": "Independent core/target changes; natural first promotions to `microsoft/PyRIT`."
-      },
-      {
-       "title": "Read 2a against the conformance report",
-       "text": "Run `verify_environment_provider_async` for `local`; the Docker report is in 2b's tests."
-      },
-      {
-       "title": "Give 2c undivided attention",
-       "text": "The projection rules and omission reasons are the false-evidence boundary."
-      },
-      {
-       "title": "Treat 4 as a trust boundary",
-       "text": "Lease, body validation, reserved variables, redaction of the token."
-      },
-      {
-       "title": "Validation on top of the stack",
-       "text": "`pytest tests/unit -n 4` 30,904 passed · frontend 166 suites / 3,767 tests · ruff, tsc, eslint, `uv lock --check` · 7 agent integration tests against a real scripted ACP process and the Agent Framework host."
-      }
-     ]
-    },
-    {
-     "id": "end",
-     "kind": "card",
-     "title": "Questions, <em>objections</em>, better cuts",
-     "takeaway": "Drafts #15–#25 on `spencrr/PyRIT`, GitHub stack #26. The story gist links every PR, the four diagrams, and this deck. Nothing is promoted to `microsoft/PyRIT` yet; that starts when you say so.",
-     "autoplayMs": 12000,
-     "bullets": [
-      {
-       "title": "Deck",
-       "text": "Single-file HTML, deck-as-data; evidence resolved from pinned branch tips at build time (SHAs in the footer)."
-      },
-      {
-       "title": "Fixtures",
-       "text": "Journal, record, projection and receipt captured from the scripted ACP agent in this repository: `fixtures/generate.py`."
-      },
-      {
-       "title": "Keys",
-       "text": "← → steps · Tab chapter · Space autoplay · E evidence · P presenter · Esc overview · `?mode=present`"
-      }
-     ]
+     "footer": "Two review observations were explicitly **declined**: the catalog shows credential variable **names** and the resolved fixture path to every authenticated user (documented as the authoring contract), and the Agent Framework host imports `pyrit.models` inside the tested process (lazy package inits keep that to a pydantic model import; the host is PyRIT code by design)."
     }
    ]
   }

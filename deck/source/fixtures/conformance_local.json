@@ -1,0 +1,90 @@
+{
+  "subject": "environment provider 'local'",
+  "checks": [
+    {
+      "name": "template names this provider",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "provider is registered under its name",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "unsandboxed providers require consent and isolated providers do not",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "create_session returns an ExecutionSession",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "acp_reader is unavailable before launch",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "acp_writer is unavailable before launch",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "stderr is unavailable before launch",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "inference_endpoint_async translates at least one relay address and rejects others with ValueError",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "launch_async starts the harness",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "ACP byte streams are full-duplex and order-preserving",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "closing ACP input ends the output stream",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "stderr is readable to end of stream",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "credential values never reach the record",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "provenance is a string mapping",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "close_async releases resources",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "close_async is idempotent",
+      "passed": true,
+      "detail": ""
+    },
+    {
+      "name": "a repeated close_async leaves the record unchanged",
+      "passed": true,
+      "detail": ""
+    }
+  ]
+}

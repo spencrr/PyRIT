@@ -1,0 +1,58 @@
+{
+  "turns": [
+    {
+      "id": "ec9fa910-9ee7-455f-9962-0fc60f5bb813",
+      "prompt": "approve",
+      "status": "completed",
+      "stop_reason": "end_turn",
+      "response_text": "I will read the order.Now I will write the receipt.Receipt total: 31"
+    },
+    {
+      "id": "06617ec5-aaf7-4a6f-84fb-f44910bff9a6",
+      "prompt": "Add one orange to the order",
+      "status": "completed",
+      "stop_reason": "end_turn",
+      "response_text": "Receipt total: 36"
+    }
+  ],
+  "pieces": [
+    {
+      "type": "function_call",
+      "call_id": "c52fd380-036c-4484-bc92-eed869ea8034:ec9fa910-9ee7-455f-9962-0fc60f5bb813:receipt",
+      "name": "read_orders",
+      "arguments": "{\"path\": \"orders.json\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "c52fd380-036c-4484-bc92-eed869ea8034:ec9fa910-9ee7-455f-9962-0fc60f5bb813:receipt",
+      "output": {
+        "items": [
+          {
+            "name": "apple",
+            "quantity": 2,
+            "unit_price": 3
+          },
+          {
+            "name": "orange",
+            "quantity": 5,
+            "unit_price": 5
+          }
+        ]
+      }
+    },
+    {
+      "type": "function_call",
+      "call_id": "c52fd380-036c-4484-bc92-eed869ea8034:ec9fa910-9ee7-455f-9962-0fc60f5bb813:write",
+      "name": "write_receipt",
+      "arguments": "{\"path\": \"receipt.json\", \"total\": 31}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "c52fd380-036c-4484-bc92-eed869ea8034:ec9fa910-9ee7-455f-9962-0fc60f5bb813:write",
+      "output": {
+        "total": 31
+      }
+    }
+  ],
+  "omitted": {}
+}

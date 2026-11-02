@@ -19,21 +19,23 @@ body{overflow:hidden}
 #frame{position:absolute;inset:0;padding:44px 210px 40px;display:grid;grid-template-rows:84px auto 46px minmax(0,1fr) 24px;row-gap:10px}
 #frame.bleedOnly{grid-template-rows:1fr}
 .micro{font:12.5px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--t3)}
+#header > div:first-child{flex:0 1 520px;min-width:0} #header > div:first-child .micro{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#tabs button{white-space:nowrap}
 .micro.mint{color:var(--mint)} .micro.amber{color:var(--amber)} .micro.green{color:var(--green)}
 code,.mono{font-family:var(--mono)}
 p code{font-size:.92em;color:var(--t1);background:rgba(255,255,255,.05);padding:1px 5px;border-radius:5px}
 
 /* header + transport */
 #header{display:flex;justify-content:space-between;align-items:flex-start;height:84px}
-#header h1{margin:6px 0 4px;font-size:30px;line-height:1.1;font-weight:600;color:var(--t1);letter-spacing:-.01em}
+#header h1{margin:6px 0 4px;font-size:27px;line-height:1.1;font-weight:600;color:var(--t1);letter-spacing:-.01em}
 #crumb{font:12.5px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--t4);display:flex;gap:10px;flex-wrap:wrap}
 #crumb span.on{color:var(--mint)} #crumb i{font-style:normal;color:var(--t4)}
 #transport{display:flex;align-items:center;gap:18px;justify-content:flex-end}
 #play{width:48px;height:48px;border-radius:50%;border:1px solid var(--line2);background:var(--panel);color:var(--t1);display:grid;place-items:center;cursor:pointer;position:relative}
 #play svg{width:16px;height:16px;fill:currentColor} #play .ring{position:absolute;inset:-1px;border-radius:50%;background:conic-gradient(var(--mint) var(--p,0%),transparent 0);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));opacity:0}
 body.playing #play .ring{opacity:1}
-#tabs{display:flex;gap:22px}
-#tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:6px 2px 8px;color:var(--t3);font:16px var(--sans);cursor:pointer}
+#tabs{display:flex;gap:16px}
+#tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:6px 2px 8px;color:var(--t3);font:15px var(--sans);cursor:pointer}
 #tabs button b{font:14px var(--mono);color:var(--t4);margin-right:6px;font-weight:500}
 #tabs button.on{color:var(--t1);border-color:var(--mint)} #tabs button.on b{color:var(--mint)}
 #tabs button:focus-visible{outline:2px solid var(--mint);outline-offset:3px;border-radius:4px}
@@ -87,6 +89,7 @@ path.edge[data-state="dim"]{stroke:var(--mint-dim)}
 #narr .limit b{color:var(--amber);font-weight:600}
 body.present #narr h2{font-size:46px} body.present #narr p{font-size:23px}
 #evid{background:var(--code);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+#evid.empty{display:none} #lower:has(#evid.empty){grid-template-columns:1fr} #lower:has(#evid.empty) #narr p{max-width:1100px}
 #evid .head{display:flex;justify-content:space-between;align-items:center;padding:8px 16px;border-bottom:1px solid var(--line);font:13.5px var(--mono);color:var(--t2)}
 #evid .head .tag{color:var(--t4);border:1px solid var(--line2);border-radius:6px;padding:2px 8px;font-size:11.5px}
 #evid pre{margin:0;padding:8px 0;font:12.5px/1.45 var(--mono);color:var(--t4);overflow:hidden}
@@ -128,7 +131,7 @@ body.present.hideEvid #evid{display:none} body.present.hideEvid #lower{grid-temp
 .agenda .arrow{color:var(--t4);font-size:20px}
 .card .take{font-size:24px;line-height:1.45;color:var(--t2);margin-top:26px;max-width:680px} .card .take b{color:var(--mint)}
 .card img{width:100%;border-radius:var(--r);border:1px solid var(--line);background:#fff}
-.bleed.imgCard{grid-template-columns:.8fr 1.2fr}
+.bleed.imgCard{grid-template-columns:.8fr 1.2fr} .bleed.imgCard.shot{grid-template-columns:.55fr 1.45fr}
 #stageWrap::before{background:linear-gradient(90deg,var(--bg) 35%,transparent)} #stageWrap::after{background:linear-gradient(270deg,var(--bg) 35%,transparent)}
 .card .note{font-size:16px;color:var(--t3);margin-top:16px;line-height:1.5}
 
@@ -148,6 +151,7 @@ body.present.hideEvid #evid{display:none} body.present.hideEvid #lower{grid-temp
 
 /* stack explorable */
 .stack{grid-row:2/-1;display:grid;grid-template-columns:1.25fr 1fr;column-gap:40px;align-items:start;padding-top:10px}
+.stack.wide{grid-template-columns:1fr 1fr}
 .stack svg{width:100%;height:860px} .stack .n rect{fill:var(--panel);stroke:var(--line2);stroke-width:1.3;rx:9;cursor:pointer;transition:stroke .2s}
 .stack .n:hover rect,.stack .n.on rect{stroke:var(--mint)} .stack .n.amber:hover rect,.stack .n.amber.on rect{stroke:var(--amber)} .stack .n.green:hover rect,.stack .n.green.on rect{stroke:var(--green)}
 .stack .n text{pointer-events:none} .stack .n .id{font:14px var(--mono);font-weight:700;fill:var(--mint)} .stack .n.amber .id{fill:var(--amber)} .stack .n.green .id{fill:var(--green)}
@@ -165,6 +169,87 @@ body.present.hideEvid #evid{display:none} body.present.hideEvid #lower{grid-temp
 #overview{position:absolute;inset:0;background:rgba(6,7,12,.94);display:none;place-items:center;z-index:50}
 #overview.on{display:grid} #overview .agenda{width:900px}
 #ariaLive{position:absolute;left:-9999px}
+/* tracks + minimap */
+#trackToggle{display:inline-flex;border:1px solid var(--line2);border-radius:999px;overflow:hidden;margin-right:14px}
+#trackToggle button{background:none;border:0;color:var(--t3);font:12px var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:7px 12px;cursor:pointer}
+#trackToggle button.on{background:var(--mint);color:#06070c;font-weight:700}
+#mmWrap{display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin:0 24px;min-width:300px}
+#mmWrap .micro{font-size:10.5px;color:var(--t4)}
+#minimap{width:300px;height:60px;overflow:visible}
+#minimap .mr rect{fill:rgba(12,17,25,.9);stroke:var(--line2);stroke-width:1}
+#minimap .mr text{font:8.5px var(--mono);fill:var(--t4);letter-spacing:.06em}
+#minimap .mr.on rect{stroke:var(--mint);fill:rgba(98,230,195,.10)} #minimap .mr.on text{fill:var(--mint)}
+#minimap .mr.amber.on rect{stroke:var(--amber);fill:rgba(227,181,43,.10)} #minimap .mr.amber.on text{fill:var(--amber)}
+#minimap .mr.green.on rect{stroke:var(--green);fill:rgba(123,216,143,.10)} #minimap .mr.green.on text{fill:var(--green)}
+#minimap .mr.dim rect{stroke-dasharray:3 3}
+.deeper{display:inline-block;margin-top:14px;font:13px var(--mono);letter-spacing:.08em;color:var(--mint);text-decoration:none;border:1px solid var(--mint-dim);border-radius:999px;padding:6px 12px}
+.deeper:hover{border-color:var(--mint)}
+.trackBadge{font:10.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--amber);border:1px solid var(--amber-dim);border-radius:6px;padding:2px 6px;margin-left:8px;vertical-align:middle}
+/* glossary */
+code.g{border-bottom:1px dotted var(--mint);cursor:help;position:relative}
+code.g:hover::after,code.g:focus::after{content:attr(data-def);position:absolute;left:0;top:140%;z-index:30;background:var(--panel);border:1px solid var(--line2);color:var(--t2);font:13.5px/1.45 var(--sans);padding:9px 12px;border-radius:8px;width:max-content;max-width:380px;white-space:normal;letter-spacing:0;text-transform:none;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+/* recipe builder */
+.recipe{display:grid;grid-template-columns:repeat(4,1fr) .8fr;gap:16px}
+.part{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:14px 16px;position:relative;transition:border-color .3s,box-shadow .3s}
+.part.on{border-color:var(--mint);box-shadow:0 0 28px rgba(98,230,195,.2)}
+.part.excluded{border-style:dashed} .part.excluded .val{color:var(--t3)}
+.part .label{font:12px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--t3)}
+.part .val{margin-top:10px;font:600 20px/1.2 var(--mono);color:var(--t1);min-height:48px;overflow-wrap:anywhere}
+.part .desc{margin-top:8px;font-size:13.5px;color:var(--t3);line-height:1.4;min-height:38px}
+.part .ctl{position:absolute;right:12px;top:10px;display:flex;gap:4px}
+.part .ctl button{width:26px;height:26px;border-radius:50%;border:1px solid var(--line2);background:var(--bg);color:var(--t2);cursor:pointer;font-size:12px}
+.part .ctl button:hover{border-color:var(--mint);color:var(--mint)}
+.part .opts{margin-top:10px;display:flex;flex-wrap:wrap;gap:5px} .part .opts span{font:10.5px var(--mono);color:var(--t4);border:1px solid var(--line);border-radius:5px;padding:2px 6px} .part .opts span.on{color:var(--mint);border-color:var(--mint-dim)}
+.identity{margin-top:16px;display:grid;grid-template-columns:1.2fr 1fr;gap:16px}
+.identity .box{border:1px solid var(--line);border-radius:var(--r);background:var(--code);padding:12px 16px}
+.identity pre{margin:6px 0 0;font:12.5px/1.45 var(--mono);color:var(--t2);white-space:pre-wrap}
+.identity .hash{font:700 26px/1.1 var(--mono);color:var(--mint);margin-top:8px;letter-spacing:.02em;transition:opacity .2s}
+.identity .hash.flip{animation:flip .5s} @keyframes flip{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:none}}
+.identity .prov{margin-top:10px;font:12.5px var(--mono);color:var(--t4)} .identity .prov b{color:var(--t3);font-weight:500}
+.identity .same{color:var(--amber);font:12.5px var(--mono);margin-top:8px}
+.matrix{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin:6px 4px 0}
+.matrix .cell{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:14px 16px}
+.matrix .cell .k{font:11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--t4)} .matrix .cell .v{font:600 16px var(--mono);color:var(--t1);margin-top:4px} .matrix .cell .h{font:700 18px var(--mono);color:var(--mint);margin-top:10px}
+.matrix .cell.hold{border-color:var(--mint-dim)}
+/* replay (Co-PyRIT mock) */
+.replay{display:grid;grid-template-columns:1.35fr .9fr;gap:16px;height:100%}
+.mock{border:1px solid var(--line);border-radius:var(--r);background:#0b0f16;padding:14px 18px;position:relative;overflow:hidden}
+.mock .strip{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{font:12px var(--mono);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;color:var(--t2)} .chip.live{border-color:var(--mint-dim);color:var(--mint)} .chip.warn{border-color:var(--amber);color:var(--amber);background:rgba(227,181,43,.08)} .chip.btn{background:var(--panel);color:var(--t1)}
+.mock .bubble{margin:14px 0 0 auto;max-width:46%;background:#0f2238;border:1px solid #1d3b5c;border-radius:12px;padding:10px 14px;font-size:15px;color:var(--t1)} .mock .bubble small{display:block;margin-top:6px;font:11px var(--mono);color:var(--t4)}
+.mock .activity{margin-top:14px;border-left:2px solid var(--line2);padding:8px 14px}
+.mock .activity .h{font-size:14.5px;color:var(--t1);font-weight:600} .mock .badge{font:11px var(--mono);border:1px solid var(--line2);border-radius:999px;padding:2px 8px;margin-left:8px;color:var(--t2)} .mock .badge.run{border-color:#3b82f6;color:#8ab4ff} .mock .badge.done{border-color:var(--mint-dim);color:var(--mint)}
+.mock .line{font-size:14.5px;color:var(--t2);margin-top:8px} .mock .tool{margin-top:8px;font-size:14px;color:var(--t2)} .mock .tool b{color:var(--t1);font-weight:600} .mock .tool i{font-style:normal;color:var(--t4)}
+.mock .perm{margin-top:10px;border:1px solid var(--amber);border-radius:10px;padding:10px 14px;background:rgba(227,181,43,.06)} .mock .perm .t{font-size:14.5px;color:var(--t1);font-weight:600} .mock .perm .d{font-size:13px;color:var(--t3);margin-top:3px}
+.mock .perm .acts{margin-top:10px;display:flex;gap:8px} .mock .perm .acts button{font:600 13px var(--sans);padding:7px 14px;border-radius:7px;border:1px solid var(--line2);background:var(--panel);color:var(--t1);cursor:pointer} .mock .perm .acts button.ok{border-color:var(--green);color:var(--green)}
+.mock .perm.resolved{border-color:var(--green);background:rgba(123,216,143,.06)} .mock .perm.resolved .t{color:var(--green)}
+.mock .answer{margin-top:12px;max-width:60%;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:15px;color:var(--t1)} .mock .answer small{display:block;margin-top:6px;font:11px var(--mono);color:var(--t4)}
+.mock .score{margin-top:10px;font:12.5px var(--mono);color:var(--mint)} .mock .score b{color:var(--t1)}
+.mock .empty{color:var(--t4);font-size:14px;text-align:center;margin-top:120px}
+.mock .cap{position:absolute;right:14px;bottom:10px;font:10.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--t4)}
+.feed{border:1px solid var(--line);border-radius:var(--r);background:var(--code);padding:10px 0;overflow:hidden;position:relative}
+.feed .h{font:12px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--t3);padding:0 16px 8px;border-bottom:1px solid var(--line)}
+.feed .row{display:grid;grid-template-columns:30px 76px 1fr;gap:10px;padding:5px 16px;font:12.5px var(--mono);color:var(--t3);align-items:baseline}
+.feed .row i{font-style:normal;color:var(--t4)} .feed .row b{font-weight:500} .feed .row.in b{color:var(--amber)} .feed .row.out b{color:var(--mint)} .feed .row.life b{color:var(--t3)} .feed .row.op b{color:var(--green)}
+.feed .row.new{background:rgba(98,230,195,.07);color:var(--t1)} .feed .row .d{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* checklist */
+.check{display:grid;grid-template-columns:.9fr 1.3fr;gap:16px;height:100%}
+.contract{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:14px 18px}
+.contract .m{display:flex;gap:12px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line)} .contract .m:last-child{border:0}
+.contract .m .n{font:700 14px var(--mono);color:var(--mint);width:26px;flex:none} .contract .m b{display:block;color:var(--t1);font:600 14.5px var(--mono)} .contract .m span{font-size:13px;color:var(--t3);line-height:1.4}
+.contract .m.on b{color:var(--mint)}
+.report{border:1px solid var(--line);border-radius:var(--r);background:var(--code);padding:10px 0;overflow:hidden}
+.report .h{display:flex;justify-content:space-between;font:12px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--t3);padding:0 16px 8px;border-bottom:1px solid var(--line)}
+.report .h .score{color:var(--mint)}
+.report .c{display:grid;grid-template-columns:22px 1fr;gap:10px;padding:4px 16px;font:12.5px var(--mono);color:var(--t4);opacity:.35;transition:opacity .3s}
+.report .c.on{opacity:1;color:var(--t2)} .report .c.on .tick{color:var(--green)} .report .c .tick{color:var(--t4)}
+.report .c.fail.on .tick{color:var(--red)}
+/* explorable evidence */
+#stackInfo pre{margin:12px 0 0;padding:8px 0;border-top:1px solid var(--line);font:11.5px/1.4 var(--mono);color:var(--t4);max-height:170px;overflow:hidden}
+#stackInfo pre .f{color:var(--t1)}
+#stackInfo .src{font:11px var(--mono);color:var(--t4);letter-spacing:.06em;margin-top:6px}
+#overview .ovTop{display:flex;justify-content:space-between;align-items:center;width:900px;margin-bottom:14px}
+#overview .ovTop h2{margin:0;font-size:22px;color:var(--t1)}
 .hidden{display:none !important}
 @media (prefers-reduced-motion:reduce){#canvas{transition:none}}
 </style>
@@ -190,17 +275,34 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches || params
 if (reduced) document.documentElement.classList.add('no-motion');
 if (params.get('mode') === 'present') document.body.classList.add('present', 'hideEvid');
 
-const inline = (text) => (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/&lt;(\/?em)>/g, '<$1>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+const GLOSSARY = DECK.glossary || {};
+const escAttr = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+const inline = (text) => (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/&lt;(\/?em)>/g, '<$1>')
+  .replace(/`([^`]+)`/g, (m, term) => { const def = GLOSSARY[term] || GLOSSARY[term.toLowerCase()]; return def ? `<code class="g" tabindex="0" data-def="${escAttr(def)}">${term}</code>` : `<code>${term}</code>`; })
+  .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
 const deepMerge = (a, b) => { for (const [k, v] of Object.entries(b || {})) { if (v && typeof v === 'object' && !Array.isArray(v)) { a[k] = deepMerge(a[k] ? { ...a[k] } : {}, v); } else a[k] = v; } return a; };
 
-// Flatten steps for linear navigation.
-const flat = [];
-DECK.chapters.forEach((ch, c) => ch.steps.forEach((st, s) => { st.kind = st.kind || 'step'; flat.push({ c, s }); }));
-const state = { i: 0, playing: false, timer: null, raf: [], anims: [] };
+// Two tracks through one deck: the tour shows steps tagged tour/both; the deep dive shows everything.
+const TRACKS = DECK.meta.tracks || { tour: 'Tour', deep: 'Deep dive' };
+const STAGE_KINDS = new Set(['step', 'recipe', 'replay', 'checklist']);
+DECK.chapters.forEach((ch) => ch.steps.forEach((st) => { st.kind = st.kind || 'step'; }));
+const state = { i: 0, track: params.get('track') === 'deep' ? 'deep' : 'tour', playing: false, timer: null, raf: [], anims: [], recipe: null };
+const trackOf = (ch, st) => st.track || ch.track || 'both';
+const visible = (ch, st) => state.track === 'deep' || trackOf(ch, st) !== 'deep';
+const buildFlat = () => { const out = []; DECK.chapters.forEach((ch, c) => ch.steps.forEach((st, s) => { if (visible(ch, st)) out.push({ c, s }); })); return out; };
+let flat = buildFlat();
 const chapterOf = (i) => DECK.chapters[flat[i].c];
 const stepOf = (i) => chapterOf(i).steps[flat[i].s];
-const numbered = (ch) => ch.steps.filter((s) => s.kind === 'step');
-const reduce = (ch, s) => { let acc = structuredClone(ch.stage.initial || {}); for (let k = 0; k <= s; k++) if (ch.steps[k].patch) acc = deepMerge(acc, ch.steps[k].patch); return acc; };
+const numbered = (ch) => ch.steps.filter((s) => STAGE_KINDS.has(s.kind) && visible(ch, s));
+const reduce = (ch, s) => { let acc = structuredClone((ch.stage && ch.stage.initial) || ch.initial || {}); for (let k = 0; k <= s; k++) if (ch.steps[k].patch) acc = deepMerge(acc, ch.steps[k].patch); return acc; };
+const indexOf = (chId, stId) => flat.findIndex((f) => DECK.chapters[f.c].id === chId && DECK.chapters[f.c].steps[f.s].id === stId);
+function setTrack(track) {
+  if (track === state.track) return;
+  const { c, s } = flat[state.i]; state.track = track; flat = buildFlat();
+  let i = flat.findIndex((f) => f.c === c && f.s === s);
+  if (i < 0) { i = flat.findIndex((f) => f.c > c || (f.c === c && f.s > s)); if (i < 0) i = flat.length - 1; }
+  state.i = Math.max(0, i); const url = new URL(location.href); url.searchParams.set('track', track); history.replaceState(null, '', url); render();
+}
 
 const frame = $('#frame');
 let stageCache = { chapterId: null, canvas: null, edges: null, actors: {}, paths: {}, edgeSpecs: {} };
@@ -222,10 +324,13 @@ function render() {
   else if (st.kind === 'agenda') renderAgenda(ch, st);
   else if (st.kind === 'card') renderCard(ch, st);
   else if (st.kind === 'stack') renderStack(ch, st);
+  else if (st.kind === 'recipe') renderRecipe(ch, st);
+  else if (st.kind === 'replay') renderReplay(ch, st);
+  else if (st.kind === 'checklist') renderChecklist(ch, st);
   else renderStep(ch, st);
   const total = flat.length;
-  $('#footL').innerHTML = `<b>${DECK.meta.title}</b> · evidence pinned to ${Object.entries(DECK.meta.pins || {}).map(([k, v]) => `${k.replace('agents/stack-', '')} @ ${v}`).join(' · ')} · built ${DECK.meta.built || ''}`;
-  $('#footR').innerHTML = `<b>${String(state.i + 1).padStart(2, '0')} / ${total}</b> · ←/→ steps · tab chapter · space play · e evidence · p present · esc overview`;
+  $('#footL').innerHTML = `<b>${DECK.meta.title}</b> · ${TRACKS[state.track]} · evidence pinned to ${Object.entries(DECK.meta.pins || {}).map(([k, v]) => `${k.replace('agents/stack-', '')} @ ${v}`).join(' · ')} · built ${DECK.meta.built || ''}`;
+  $('#footR').innerHTML = `<b>${String(state.i + 1).padStart(2, '0')} / ${total}</b> · ←/→ steps · tab chapter · t track · space play · e evidence · p present · esc overview`;
   $('#ariaLive').textContent = `${ch.title}. ${st.title || ''}`;
   if (state.playing) schedule();
 }
@@ -238,8 +343,24 @@ function header(ch, st, withTabs) {
   const tabRow = el('div', { id: 'tabs' });
   tabs.forEach((t, k) => tabRow.append(el('button', { class: k === idx ? 'on' : '', onclick: () => go(flat.findIndex((f) => f.c === DECK.chapters.indexOf(ch) && f.s === ch.steps.indexOf(t))) }, el('b', {}, String(k + 1).padStart(2, '0')), t.tab || t.title)));
   const play = el('button', { id: 'play', 'aria-label': 'Play / pause', onclick: toggle }, el('span', { class: 'ring' }), el('span', { html: state.playing ? '<svg viewBox="0 0 16 16"><rect x="3" y="2" width="3.5" height="12"/><rect x="9.5" y="2" width="3.5" height="12"/></svg>' : '<svg viewBox="0 0 16 16"><path d="M4 2l10 6-10 6z"/></svg>' }));
-  const right = el('div', {}, el('div', { id: 'transport' }, play, withTabs ? tabRow : null), el('div', { id: 'hints' }, '→ next step · ← previous · space pause'));
-  return el('div', { id: 'header' }, left, right);
+  const right = el('div', {}, el('div', { id: 'transport' }, trackToggle(), play, withTabs ? tabRow : null), el('div', { id: 'hints' }, '→ next step · ← previous · space pause'));
+  return el('div', { id: 'header' }, left, minimap(ch, st), right);
+}
+function trackToggle() {
+  const w = el('div', { id: 'trackToggle', role: 'group', 'aria-label': 'Track' });
+  for (const [k, label] of Object.entries(TRACKS)) w.append(el('button', { class: k === state.track ? 'on' : '', 'aria-pressed': String(k === state.track), onclick: () => setTrack(k) }, label));
+  return w;
+}
+function minimap(ch, st) {
+  const mm = DECK.minimap; if (!mm) return null;
+  const on = st.regions || ch.regions || [];
+  const svg = svgEl('svg', { id: 'minimap', viewBox: `0 0 ${mm.w} ${mm.h}`, 'aria-hidden': 'true' });
+  for (const r of mm.regions) {
+    const g = svgEl('g', { class: `mr ${r.tone || ''}${on.includes(r.id) || on.includes('*') ? ' on' : ''}${r.dim ? ' dim' : ''}` });
+    g.append(svgEl('rect', { x: r.x, y: r.y, width: r.w, height: r.h, rx: 5 }));
+    const tx = svgEl('text', { x: r.x + r.w / 2, y: r.y + r.h / 2 + 3, 'text-anchor': 'middle' }); tx.textContent = r.label; g.append(tx); svg.append(g);
+  }
+  return el('div', { id: 'mmWrap' }, el('div', { class: 'micro' }, on.length ? 'where this chapter sits' : 'the map'), svg);
 }
 
 function renderStep(ch, st) {
@@ -256,6 +377,7 @@ function renderStep(ch, st) {
   const narr = el('div', { id: 'narr' }, el('div', { class: 'micro mint' }, `Step ${String(n).padStart(2, '0')} / ${String(tabs.length).padStart(2, '0')}`), el('h2', {}, st.title), el('p', { html: inline(st.body) }));
   if (st.limit) narr.append(el('div', { class: 'limit', html: `<b>Limit · </b>${inline(st.limit)}` }));
   if (st.review) narr.append(el('div', { class: 'limit', style: 'border-color:var(--mint-dim)', html: `<b style="color:var(--mint)">Review · </b>${inline(st.review)}` }));
+  deeperLink(narr, st);
   const evid = el('div', { id: 'evid' });
   if (st.evidence) {
     const e = st.evidence, r = e.resolved;
@@ -382,7 +504,7 @@ function pulse(a) { const n = stageCache.actors[a.actor]; if (!n) return; const 
 function renderCard(ch, st) {
   const left = el('div', { class: 'card' }, el('div', { class: `micro ${ch.accent || 'mint'} eyebrow` }, st.eyebrow || ch.eyebrow || ''), el('h1', { html: inline(st.title) }), el('div', { class: 'take', html: inline(st.takeaway || ch.takeaway || '') }));
   const right = st.image ? el('div', { class: 'card' }, el('img', { src: st.image, alt: st.alt || '' }), st.note ? el('div', { class: 'note', html: inline(st.note) }) : null) : el('div', { class: 'card' }, ...(st.bullets || []).map((b) => el('div', { class: 'principles' }, el('div', {}, el('b', {}, b.title), el('span', { html: inline(b.text) })))));
-  frame.append(el('div', { class: `bleed card${st.image ? ' imgCard' : ''}` }, left, right));
+  frame.append(el('div', { class: `bleed card${st.image ? ' imgCard' : ''}${st.image && st.image.startsWith('data:') ? ' shot' : ''}` }, left, right));
 }
 
 function renderHero(ch, st) {
@@ -407,6 +529,160 @@ function renderHero(ch, st) {
   $('#app').append(el('div', { id: 'heroVersion', style: 'position:absolute;right:210px;bottom:52px;font:12px var(--mono);letter-spacing:.14em;color:var(--t4)' }, DECK.meta.version));
 }
 function setTimeoutAnim(fn, ms) { const id = setTimeout(fn, ms); return { cancel: () => clearTimeout(id) }; }
+function deeperLink(container, st) {
+  if (!st.deeper) return;
+  const [chId, stId] = st.deeper.split('/'); const ch = DECK.chapters.find((c) => c.id === chId); if (!ch) return;
+  const target = ch.steps.find((s) => s.id === stId) || ch.steps[0];
+  container.append(el('a', { class: 'deeper', href: `#/${ch.id}/${target.id}`, onclick: (e) => { e.preventDefault(); state.track = 'deep'; flat = buildFlat(); const url = new URL(location.href); url.searchParams.set('track', 'deep'); history.replaceState(null, '', url); go(indexOf(ch.id, target.id)); } }, `${st.deeperLabel || 'Go deeper'} → ${ch.title}`));
+}
+function narrative(ch, st) {
+  const tabs = numbered(ch); const n = tabs.indexOf(st) + 1;
+  const narr = el('div', { id: 'narr' }, el('div', { class: 'micro mint' }, `Step ${String(n).padStart(2, '0')} / ${String(tabs.length).padStart(2, '0')}`), el('h2', {}, st.title), el('p', { html: inline(st.body) }));
+  if (st.limit) narr.append(el('div', { class: 'limit', html: `<b>Limit · </b>${inline(st.limit)}` }));
+  if (st.review) narr.append(el('div', { class: 'limit', style: 'border-color:var(--mint-dim)', html: `<b style="color:var(--mint)">Review · </b>${inline(st.review)}` }));
+  deeperLink(narr, st);
+  return narr;
+}
+function evidencePanel(st) {
+  const evid = el('div', { id: 'evid' });
+  if (!st.evidence) { evid.classList.add('empty'); return evid; }
+  const e = st.evidence, r = e.resolved;
+  evid.append(el('div', { class: 'head' }, el('span', {}, e.title), el('span', { class: 'tag' }, e.tag || (r ? r.file.split('/').pop() : ''))));
+  const pre = el('pre');
+  if (r) r.lines.forEach(([no, line, f]) => pre.append(el('div', { class: `ln${f ? ' f' : ''}${f && e.tone === 'amber' ? ' amber' : ''}${no == null ? ' gap' : ''}` }, el('i', {}, no == null ? '' : String(no)), el('span', {}, line || ' '))));
+  else if (e.text) e.text.split('\n').forEach((line, k) => pre.append(el('div', { class: `ln${(e.focus || []).includes(k + 1) ? ' f' : ''}` }, el('i', {}, String(k + 1)), el('span', {}, line || ' '))));
+  evid.append(pre);
+  evid.append(el('div', { class: 'foot' }, el('span', {}, r ? `${r.file}` : (e.footer || '')), el('span', {}, r ? (r.sha ? `${r.ref.replace('agents/stack-', '')} · ${r.sha}` : 'captured fixture') : '')));
+  return evid;
+}
+function lowerBand(ch, st) {
+  frame.append(el('div', { id: 'lower' }, narrative(ch, st), evidencePanel(st)));
+  const legend = el('div', { id: 'legend' });
+  (ch.legend || []).forEach((l) => legend.append(el('span', { class: l.swatch }, l.label)));
+  frame.append(legend);
+}
+function captions(ch, st) {
+  const caps = el('div', { id: 'captions' });
+  (st.captions || ch.captions || []).forEach((c) => caps.append(el('div', {}, el('div', { class: 'micro' }, c.label), el('span', { html: inline(c.text) }))));
+  frame.append(caps);
+}
+
+// ---- SHA-256 (for the live identity hash; same rule as the code, illustrative bytes)
+function sha256(str) {
+  const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  const bytes = new TextEncoder().encode(str); const l = bytes.length; const padded = new Uint8Array(((l + 9 + 63) >> 6) << 6); padded.set(bytes); padded[l] = 0x80;
+  const dv = new DataView(padded.buffer); dv.setUint32(padded.length - 4, l * 8 >>> 0); dv.setUint32(padded.length - 8, Math.floor(l * 8 / 4294967296));
+  let h = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]; const w = new Uint32Array(64);
+  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4);
+    for (let i = 16; i < 64; i++) { const s0 = rotr(w[i-15],7) ^ rotr(w[i-15],18) ^ (w[i-15] >>> 3); const s1 = rotr(w[i-2],17) ^ rotr(w[i-2],19) ^ (w[i-2] >>> 10); w[i] = (w[i-16] + s0 + w[i-7] + s1) >>> 0; }
+    let [a,b,c,d,e,f,g,hh] = h;
+    for (let i = 0; i < 64; i++) { const S1 = rotr(e,6) ^ rotr(e,11) ^ rotr(e,25); const ch = (e & f) ^ (~e & g); const t1 = (hh + S1 + ch + K[i] + w[i]) >>> 0; const S0 = rotr(a,2) ^ rotr(a,13) ^ rotr(a,22); const maj = (a & b) ^ (a & c) ^ (b & c); const t2 = (S0 + maj) >>> 0; hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0; }
+    h = h.map((v, i) => (v + [a,b,c,d,e,f,g,hh][i]) >>> 0);
+  }
+  return h.map((v) => v.toString(16).padStart(8, '0')).join('');
+}
+const canonical = (v) => Array.isArray(v) ? `[${v.map(canonical).join(',')}]` : v && typeof v === 'object' ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}` : JSON.stringify(v);
+
+// ---- recipe builder: swap any part, watch the identity hash; timeouts are excluded by rule
+function renderRecipe(ch, st) {
+  frame.append(header(ch, st, true));
+  const wrap = el('div', { id: 'stageWrap', style: `height:${(ch.stage && ch.stage.canvas && ch.stage.canvas.h) || 470}px` }); frame.append(wrap);
+  const s = reduce(ch, ch.steps.indexOf(st)); const sel = { ...(s.recipe || {}) };
+  if (state.recipe && state.recipe.chapter === ch.id && state.recipe.step === st.id) Object.assign(sel, state.recipe.sel);
+  const spec = ch.recipe; let lastHash = null;
+  const draw = () => {
+    wrap.innerHTML = '';
+    const recipe = {}; const prov = [];
+    for (const part of spec.parts) { const opt = part.options[(sel[part.id] || 0) % part.options.length]; Object.assign(recipe, opt.value); if (opt.preset) prov.push(`${part.id}=${opt.preset}`); }
+    const hash = sha256(canonical(recipe));
+    if (sel.mode === 'matrix') { wrap.append(matrixView(spec, sel)); return; }
+    const row = el('div', { class: 'recipe' });
+    for (const part of spec.parts) {
+      const idx = (sel[part.id] || 0) % part.options.length; const opt = part.options[idx];
+      const card = el('div', { class: `part${(sel.highlight || []).includes(part.id) ? ' on' : ''}` }, el('div', { class: 'label' }, part.label), el('div', { class: 'val' }, opt.label), el('div', { class: 'desc', html: inline(opt.desc || '') }));
+      const opts = el('div', { class: 'opts' }); part.options.forEach((o, k) => opts.append(el('span', { class: k === idx ? 'on' : '' }, o.short || o.label))); card.append(opts);
+      const ctl = el('div', { class: 'ctl' }, el('button', { 'aria-label': `previous ${part.label}`, onclick: () => { sel[part.id] = (idx - 1 + part.options.length) % part.options.length; remember(); draw(); } }, '‹'), el('button', { 'aria-label': `next ${part.label}`, onclick: () => { sel[part.id] = (idx + 1) % part.options.length; remember(); draw(); } }, '›'));
+      card.append(ctl); row.append(card);
+    }
+    const tIdx = (sel.timeout || 0) % spec.excluded.options.length; const tOpt = spec.excluded.options[tIdx];
+    const ex = el('div', { class: `part excluded${(sel.highlight || []).includes('timeout') ? ' on' : ''}` }, el('div', { class: 'label' }, spec.excluded.label), el('div', { class: 'val' }, tOpt.label), el('div', { class: 'desc', html: inline(spec.excluded.desc) }));
+    ex.append(el('div', { class: 'ctl' }, el('button', { 'aria-label': 'previous timeouts', onclick: () => { sel.timeout = (tIdx - 1 + spec.excluded.options.length) % spec.excluded.options.length; remember(); draw(); } }, '‹'), el('button', { 'aria-label': 'next timeouts', onclick: () => { sel.timeout = (tIdx + 1) % spec.excluded.options.length; remember(); draw(); } }, '›')));
+    row.append(ex); wrap.append(row);
+    const pre = el('pre'); pre.textContent = Object.keys(recipe).sort().map((k) => `${k}: ${canonical(recipe[k]).replace(/,/g, ', ').replace(/":/g, '": ')}`).join('\n');
+    const hashEl = el('div', { class: `hash${lastHash && lastHash !== hash ? ' flip' : ''}` }, `${hash.slice(0, 16)}…`);
+    const same = lastHash === hash && state.recipe && state.recipe.touched === 'timeout' ? el('div', { class: 'same' }, '= unchanged: timeouts are execution policy, not identity') : null;
+    lastHash = hash;
+    wrap.append(el('div', { class: 'identity' }, el('div', { class: 'box' }, el('div', { class: 'micro' }, 'recipe · configuration without defaults, timeouts and budgets'), pre), el('div', { class: 'box' }, el('div', { class: 'micro mint' }, 'identity = sha256(recipe)'), hashEl, same, el('div', { class: 'prov', html: `<b>provenance (kept, not hashed):</b> ${prov.length ? prov.join(' · ') : 'customised, no preset names'}` }), el('div', { class: 'prov' }, spec.note || ''))));
+  };
+  const remember = () => { state.recipe = { chapter: ch.id, step: st.id, sel: { ...sel }, touched: null }; };
+  draw();
+  // expose for the timeout "unchanged" hint
+  wrap.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && /timeouts/.test(b.getAttribute('aria-label') || '')) { state.recipe.touched = 'timeout'; draw(); } });
+  captions(ch, st); lowerBand(ch, st);
+}
+function matrixView(spec, sel) {
+  const H = spec.parts.find((p) => p.id === 'harness'), M = spec.parts.find((p) => p.id === 'model');
+  const others = spec.parts.filter((p) => p.id !== 'harness' && p.id !== 'model');
+  const base = {}; for (const p of others) Object.assign(base, p.options[(sel[p.id] || 0) % p.options.length].value);
+  const grid = el('div', { class: 'matrix' });
+  const hs = [H.options[(sel.harness || 0) % H.options.length], H.options[((sel.harness || 0) + 1) % H.options.length]];
+  const ms = [M.options[(sel.model || 0) % M.options.length], M.options[((sel.model || 0) + 1) % M.options.length]];
+  for (const h of hs) for (const m of ms) { const recipe = { ...base, ...h.value, ...m.value }; const hash = sha256(canonical(recipe)); grid.append(el('div', { class: `cell${h === hs[0] && m === ms[0] ? ' hold' : ''}` }, el('div', { class: 'k' }, 'harness'), el('div', { class: 'v' }, h.label), el('div', { class: 'k', style: 'margin-top:8px' }, 'model'), el('div', { class: 'v' }, m.label), el('div', { class: 'h' }, `${hash.slice(0, 16)}…`))); }
+  return el('div', { style: 'padding:4px 4px 0' }, el('div', { class: 'micro mint', style: 'margin-bottom:10px' }, 'hold one, swap the other · four different systems under test, each with its own identity and its own results'), grid);
+}
+
+// ---- Co-PyRIT replay: the real journal, rendered the way the operator sees it
+function renderReplay(ch, st) {
+  frame.append(header(ch, st, true));
+  const wrap = el('div', { id: 'stageWrap', style: `height:${(ch.stage && ch.stage.canvas && ch.stage.canvas.h) || 470}px` }); frame.append(wrap);
+  const s = reduce(ch, ch.steps.indexOf(st)); const r = s.replay || {}; const rows = (DECK.fixtures && DECK.fixtures[ch.replay.fixture]) || [];
+  const upto = r.upto == null ? 0 : r.upto; const shown = rows.filter((e) => e.sequence <= upto);
+  const mock = el('div', { class: 'mock' }, el('div', { class: 'cap' }, 'Co-PyRIT · chat · mock driven by the real journal'));
+  const env = shown.some((e) => e.kind === 'connected') ? (shown.at(-1) && shown.at(-1).kind === 'turn_finished' ? 'local / idle' : 'local / working') : 'not provisioned';
+  const pending = shown.some((e) => e.kind === 'permission_request') && !shown.some((e) => e.kind === 'permission_resolved');
+  const strip = el('div', { class: 'strip' }, el('span', { class: `chip${shown.length ? ' live' : ''}` }, `Feed: ${shown.length ? 'live' : 'connecting'}`), el('span', { class: `chip${shown.some((e) => e.kind === 'connected') ? ' live' : ''}` }, `ACP: ${shown.some((e) => e.kind === 'connected') ? 'ready' : 'not started'}`), el('span', { class: 'chip' }, `Environment: ${env}`));
+  if (pending) strip.append(el('span', { class: 'chip warn' }, 'Awaiting 1 approval'));
+  if (shown.some((e) => e.kind === 'prompt') && env === 'local / working') strip.append(el('span', { class: 'chip btn' }, 'Cancel turn'));
+  if (shown.some((e) => e.kind === 'connected')) strip.append(el('span', { class: 'chip btn' }, 'Close execution'));
+  mock.append(strip);
+  if (!shown.some((e) => e.kind === 'prompt')) mock.append(el('div', { class: 'empty' }, 'There are no messages in this conversation yet.'));
+  // Group by turn
+  const turns = []; let cur = null;
+  for (const e of shown) { if (e.kind === 'prompt') { cur = { prompt: e.text, text: '', tools: [], perm: null, done: false, response: null }; turns.push(cur); continue; } if (!cur) continue;
+    if (e.kind === 'chunk') cur.text += e.text; else if (e.kind === 'tool_call') cur.tools.push({ id: e.call_id, title: e.title, name: e.name, status: 'pending' }); else if (e.kind === 'tool_update') { const tcall = cur.tools.find((x) => x.id === e.call_id); if (tcall) { tcall.status = e.status || 'completed'; tcall.output = e.output; } }
+    else if (e.kind === 'permission_request') cur.perm = { title: e.title, state: 'pending' }; else if (e.kind === 'permission_resolved') { if (cur.perm) { cur.perm.state = e.decision; cur.perm.actor = e.actor; } } else if (e.kind === 'turn_finished') { cur.done = true; cur.response = e.response; } }
+  turns.forEach((tn, k) => {
+    mock.append(el('div', { class: 'bubble' }, tn.prompt, el('small', {}, 'user')));
+    const act = el('div', { class: 'activity' }, el('div', { class: 'h' }, 'Agent activity', el('span', { class: `badge ${tn.done ? 'done' : 'run'}` }, tn.done ? 'completed' : 'running')));
+    if (tn.text) act.append(el('div', { class: 'line' }, tn.text));
+    for (const tl of tn.tools) act.append(el('div', { class: 'tool' }, '▸ ', el('b', {}, tl.title || tl.name), el('i', {}, ` — ${tl.status}${tl.output ? ` · ${tl.output}` : ''}`)));
+    if (tn.perm) { const pe = el('div', { class: `perm${tn.perm.state !== 'pending' ? ' resolved' : ''}` }, el('div', { class: 't' }, tn.perm.title), el('div', { class: 'd' }, tn.perm.state === 'pending' ? 'Harness requested approval. Expires in 120 s.' : `${tn.perm.state.replace('_', ' ')} · by ${tn.perm.actor}`)); if (tn.perm.state === 'pending') pe.append(el('div', { class: 'acts' }, el('button', { class: 'ok', onclick: () => go(state.i + 1) }, 'Allow once'), el('button', {}, 'Deny'))); act.append(pe); }
+    mock.append(act);
+    if (tn.done && tn.response) mock.append(el('div', { class: 'answer' }, tn.response, el('small', {}, 'assistant · tool calls stored as pieces')));
+    if (tn.done && r.score && k === turns.length - 1) mock.append(el('div', { class: 'score', html: inline(r.score) }));
+  });
+  const feed = el('div', { class: 'feed' }, el('div', { class: 'h' }, `journal · events.jsonl · ${shown.length} / ${rows.length}`));
+  const tail = shown.slice(-13);
+  tail.forEach((e, k) => feed.append(el('div', { class: `row ${e.direction === 'incoming' ? 'in' : e.direction === 'outgoing' ? 'out' : 'life'}${e.kind === 'permission_resolved' ? ' op' : ''}${k === tail.length - 1 ? ' new' : ''}` }, el('i', {}, String(e.sequence)), el('b', {}, e.direction), el('span', { class: 'd' }, e.label))));
+  wrap.append(el('div', { class: 'replay' }, mock, feed));
+  captions(ch, st); lowerBand(ch, st);
+}
+
+// ---- conformance checklist: the contract, and a real report ticking through
+function renderChecklist(ch, st) {
+  frame.append(header(ch, st, true));
+  const wrap = el('div', { id: 'stageWrap', style: `height:${(ch.stage && ch.stage.canvas && ch.stage.canvas.h) || 470}px` }); frame.append(wrap);
+  const s = reduce(ch, ch.steps.indexOf(st)); const c = s.checklist || {}; const report = (DECK.fixtures && DECK.fixtures[ch.checklist.fixture]) || { checks: [] };
+  const contract = el('div', { class: 'contract' }, el('div', { class: 'micro mint', style: 'margin-bottom:6px' }, ch.checklist.contractTitle || 'the contract'));
+  ch.checklist.moments.forEach((m, k) => contract.append(el('div', { class: `m${(c.moments || []).includes(m.id) ? ' on' : ''}` }, el('div', { class: 'n' }, String(k + 1).padStart(2, '0')), el('div', {}, el('b', {}, m.title), el('span', { html: inline(m.text) })))));
+  const done = c.done == null ? 0 : c.done; const passed = report.checks.filter((x) => x.passed).length;
+  const rep = el('div', { class: 'report' }, el('div', { class: 'h' }, el('span', {}, `ConformanceReport · ${ch.checklist.subject}`), el('span', { class: 'score' }, done ? `${Math.min(done, report.checks.length)} / ${report.checks.length} checks · ${passed === report.checks.length ? 'all passed' : `${report.checks.length - passed} failed`}` : 'not run')));
+  report.checks.forEach((x, k) => { const row = el('div', { class: `c${k < done ? ' on' : ''}${x.passed ? '' : ' fail'}` }, el('span', { class: 'tick' }, x.passed ? '✓' : '✗'), el('span', {}, x.name)); rep.append(row); if (!reduced && k < done && c.animate !== false) { row.classList.remove('on'); setTimeoutAnim(() => row.classList.add('on'), 120 + k * 90); } });
+  wrap.append(el('div', { class: 'check' }, contract, rep));
+  captions(ch, st); lowerBand(ch, st);
+}
 
 function renderAgenda(ch, st) {
   const left = el('div', {}, el('div', { class: 'micro mint eyebrow' }, st.eyebrow), el('h1', { html: inline(st.title) }), el('p', { class: 'lede', html: inline(st.lede) }));
@@ -415,13 +691,17 @@ function renderAgenda(ch, st) {
 }
 function agendaList(current) {
   const list = el('div', { class: 'agenda' });
-  for (const c of DECK.chapters) { if (!c.index) continue; const target = flat.findIndex((f) => DECK.chapters[f.c] === c); list.append(el('a', { href: `#/${c.id}/${c.steps[0].id}`, class: `${c.accent || ''}${current === c ? ' on' : ''}`, onclick: (e) => { e.preventDefault(); go(target); $('#overview').classList.remove('on'); } }, el('div', { class: 'num' }, String(c.index).padStart(2, '0'), el('small', {}, c.short || '')), el('div', {}, el('h3', {}, c.title), el('p', {}, c.summary || c.takeaway || ''), el('div', { class: 'tags' }, numbered(c).map((s) => s.tab || s.title).join(' · '))), el('div', { class: 'arrow' }, '→'))); }
+  for (const c of DECK.chapters) {
+    if (!c.index) continue; const target = flat.findIndex((f) => DECK.chapters[f.c] === c); if (target < 0) continue;
+    const deepOnly = (c.track || 'both') === 'deep';
+    list.append(el('a', { href: `#/${c.id}/${c.steps[0].id}`, class: `${c.accent || ''}${current === c ? ' on' : ''}`, onclick: (e) => { e.preventDefault(); go(target); $('#overview').classList.remove('on'); } }, el('div', { class: 'num' }, String(c.index).padStart(2, '0'), el('small', {}, c.short || '')), el('div', {}, el('h3', {}, c.title, deepOnly ? el('span', { class: 'trackBadge' }, 'deep dive') : null), el('p', {}, c.summary || c.takeaway || ''), el('div', { class: 'tags' }, numbered(c).map((s) => s.tab || s.title).join(' · '))), el('div', { class: 'arrow' }, '→')));
+  }
   return list;
 }
 
 function renderStack(ch, st) {
   frame.append(header(ch, st, false));
-  const svg = svgEl('svg', { viewBox: st.viewBox || '0 0 840 710' });
+  const svg = svgEl('svg', { viewBox: st.viewBox || '0 0 840 710' }); if (st.svgHeight) svg.style.height = st.svgHeight + 'px';
   const nodes = st.nodes, byId = {};
   for (const n of nodes) byId[n.id] = n;
   for (const n of nodes) for (const d of n.needs || []) {
@@ -432,11 +712,12 @@ function renderStack(ch, st) {
   }
   const defs = svgEl('defs'); const m = svgEl('marker', { id: 'arr-stack', viewBox: '0 0 10 10', refX: '10', refY: '5', markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse' }); m.append(svgEl('path', { d: 'M0,0 L10,5 L0,10 z', fill: '#3a4452' })); defs.append(m); svg.prepend(defs);
   const info = el('div', { id: 'stackInfo' });
-  const show = (n) => { svg.querySelectorAll('.n').forEach((g) => g.classList.toggle('on', g.dataset.id === n.id)); info.innerHTML = ''; info.append(el('div', { class: `micro ${n.tone || 'mint'}` }, n.pr ? `${n.pr} · ${n.branch}` : n.kind || 'deferred'), el('h3', {}, n.title), el('p', { class: 'claim', html: inline(n.claim) })); const dl = el('dl'); for (const [k, v] of n.facts || []) { dl.append(el('dt', {}, k)); dl.append(el('dd', { html: inline(v) })); } info.append(dl); if (n.url) info.append(el('p', {}, el('a', { href: n.url, target: '_blank', rel: 'noopener' }, n.url.replace('https://github.com/', '')))); };
+  const show = (n) => { svg.querySelectorAll('.n').forEach((g) => g.classList.toggle('on', g.dataset.id === n.id)); info.innerHTML = ''; info.append(el('div', { class: `micro ${n.tone || 'mint'}` }, n.pr ? `${n.pr} · ${n.branch}` : n.kind || 'deferred'), el('h3', {}, n.title), el('p', { class: 'claim', html: inline(n.claim) })); const dl = el('dl'); for (const [k, v] of n.facts || []) { dl.append(el('dt', {}, k)); dl.append(el('dd', { html: inline(v) })); } info.append(dl); if (n.url) info.append(el('p', {}, el('a', { href: n.url, target: '_blank', rel: 'noopener' }, n.url.replace('https://github.com/', ''))));
+    if (n.evidence && n.evidence.resolved) { const r = n.evidence.resolved; const pre = el('pre'); r.lines.forEach(([no, line, f]) => pre.append(el('div', { class: f ? 'f' : '' }, `${no == null ? '   ' : String(no).padStart(3)}  ${line}`))); info.append(pre); info.append(el('div', { class: 'src' }, `${r.file} · ${r.ref.replace('agents/stack-', '')} @ ${r.sha}`)); } };
   for (const n of nodes) { const g = svgEl('g', { class: `n ${n.tone || ''}${n.deferred ? ' def' : ''}`, 'data-id': n.id, tabindex: '0', role: 'button' }); g.append(svgEl('rect', { x: n.x, y: n.y, width: n.w, height: 56 })); const id = svgEl('text', { class: 'id', x: n.x + 14, y: n.y + 24 }); id.textContent = n.label; g.append(id); const t = svgEl('text', { class: 't', x: n.x + 14, y: n.y + 44 }); t.textContent = n.title; g.append(t); if (n.pr) { const pr = svgEl('text', { class: 'pr', x: n.x + n.w - 14, y: n.y + 24, 'text-anchor': 'end' }); pr.textContent = n.pr; g.append(pr); } g.addEventListener('mouseenter', () => show(n)); g.addEventListener('focus', () => show(n)); g.addEventListener('click', () => { if (n.url) open(n.url, '_blank', 'noopener'); }); svg.append(g); }
   const right = el('div', {}, el('div', { class: 'micro mint', style: 'margin-bottom:10px' }, st.infoEyebrow || 'Hover or focus a pull request'), info);
   if (st.footer) right.append(el('div', { class: 'defer', html: inline(st.footer) }));
-  frame.append(el('div', { class: 'stack' }, svg, right));
+  frame.append(el('div', { class: `stack${st.wide ? ' wide' : ''}` }, svg, right));
   show(nodes.find((n) => n.pr) || nodes[0]);
 }
 
@@ -448,16 +729,28 @@ function schedule() {
   const tick = (now) => { const p = Math.min(1, (now - t0) / ms); if (ring) ring.style.setProperty('--p', `${p * 100}%`); if (p < 1 && state.playing) state.raf.push(requestAnimationFrame(tick)); }; state.raf.push(requestAnimationFrame(tick));
   state.timer = setTimeout(() => { if (!state.playing) return; if (state.i + 1 >= flat.length) { state.playing = false; document.body.classList.remove('playing'); render(); return; } go(state.i + 1); }, ms);
 }
-function syncFromHash() { const m = location.hash.match(/^#\/([^/]+)\/([^/]+)/); if (!m) return false; const i = flat.findIndex((f) => DECK.chapters[f.c].id === m[1] && DECK.chapters[f.c].steps[f.s].id === m[2]); if (i >= 0 && i !== state.i) { state.i = i; render(); } return i >= 0; }
+function syncFromHash() {
+  const m = location.hash.match(/^#\/([^/]+)\/([^/]+)/); if (!m) return false;
+  let i = indexOf(m[1], m[2]);
+  if (i < 0 && state.track !== 'deep') { // a deep link into deep-only content switches the track
+    const ch = DECK.chapters.find((c) => c.id === m[1]); if (ch && ch.steps.some((s) => s.id === m[2])) { state.track = 'deep'; flat = buildFlat(); i = indexOf(m[1], m[2]); }
+  }
+  if (i >= 0 && i !== state.i) { state.i = i; render(); } return i >= 0;
+}
+function openOverview() {
+  const ov = $('#overview'); ov.classList.toggle('on'); if (!ov.classList.contains('on')) return;
+  ov.innerHTML = '';
+  const top = el('div', { class: 'ovTop' }, el('h2', {}, `${TRACKS[state.track]} · ${flat.length} steps`), trackToggle());
+  ov.append(el('div', {}, top, agendaList(chapterOf(state.i))));
+}
 addEventListener('hashchange', syncFromHash);
 addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;
-  const ov = $('#overview');
   const map = {
     ArrowRight: () => go(state.i + 1), ArrowLeft: () => go(state.i - 1), PageDown: () => go(state.i + 1), PageUp: () => go(state.i - 1),
     Tab: () => { const c = flat[state.i].c; const next = e.shiftKey ? flat.findIndex((f) => f.c === c - 1) : flat.findIndex((f) => f.c === c + 1); if (next >= 0) go(next); },
     ' ': () => toggle(), e: () => document.body.classList.toggle('hideEvid'), p: () => { document.body.classList.toggle('present'); document.body.classList.toggle('hideEvid', document.body.classList.contains('present')); render(); },
-    Escape: () => { ov.classList.toggle('on'); if (ov.classList.contains('on')) { ov.innerHTML = ''; ov.append(agendaList(chapterOf(state.i))); } },
+    Escape: () => openOverview(), t: () => setTrack(state.track === 'tour' ? 'deep' : 'tour'),
     Home: () => go(0), End: () => go(flat.length - 1),
   };
   const fn = map[e.key]; if (fn) { e.preventDefault(); if (state.playing && e.key !== ' ') { state.playing = false; document.body.classList.remove('playing'); clearTimeout(state.timer); } fn(); }
@@ -466,7 +759,7 @@ addEventListener('keydown', (e) => {
 if (!syncFromHash()) render();
 if (params.get('play') === '1') toggle();
 if (params.get('step')) { const i = parseInt(params.get('step'), 10); if (!Number.isNaN(i)) go(i); }
-window.__deck = { go, flat, DECK, state };
+window.__deck = { go, get flat() { return flat; }, DECK, state, setTrack, sha256 };
 })();
 </script>
 </body>

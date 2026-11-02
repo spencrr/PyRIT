@@ -22,11 +22,14 @@ const context = await browser.newContext({ viewport: { width: 1920, height: 1080
 const page = await context.newPage();
 page.on('pageerror', (e) => console.error('pageerror', e.message));
 page.on('console', (m) => { if (m.type() === 'error') console.error('console', m.text()); });
-await page.goto(indexUrl + (flag('--present') ? '?mode=present' : ''));
+const track = opt('--track', 'deep');
+const q = new URLSearchParams(); q.set('track', track); if (flag('--present')) q.set('mode', 'present');
+await page.goto(indexUrl + '?' + q.toString());
 await page.waitForFunction(() => window.__deck);
 const total = await page.evaluate(() => window.__deck.flat.length);
 const ids = await page.evaluate(() => window.__deck.flat.map(({ c, s }) => `${window.__deck.DECK.chapters[c].id}--${window.__deck.DECK.chapters[c].steps[s].id}`));
-mkdirSync(resolve(out, 'png'), { recursive: true });
+const pngDir = resolve(out, track === 'deep' ? 'png' : 'png-' + track);
+mkdirSync(pngDir, { recursive: true });
 
 if (flag('--video')) {
   for (let i = 0; i < total; i++) {
@@ -40,7 +43,7 @@ if (flag('--video')) {
     if (only && !only.includes(i)) continue;
     await page.evaluate((k) => window.__deck.go(k), i);
     await page.waitForTimeout(2600);
-    const file = resolve(out, 'png', `${String(i).padStart(2, '0')}-${ids[i]}.png`);
+    const file = resolve(pngDir, `${String(i).padStart(2, '0')}-${ids[i]}.png`);
     await page.screenshot({ path: file });
     const overflow = await page.evaluate(() => {
       const bad = [];

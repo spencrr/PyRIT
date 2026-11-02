@@ -113,6 +113,83 @@ def _gaps(kept: set[int], total: int) -> int:
     return gaps + (1 if ordered and ordered[-1] != total - 1 else 0)
 
 
+def data_uri(path: Path) -> str:
+    import base64
+
+    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "svg": "image/svg+xml", "webp": "image/webp"}[path.suffix.lstrip(".").lower()]
+    return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+
+
+def summarize_journal(path: Path) -> list[dict]:
+    """Reduce journal events to the rows the Co-PyRIT replay renders; the full journal stays in fixtures/."""
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        payload = event["payload"]
+        row = {"sequence": event["sequence"], "direction": event["direction"], "kind": "other", "label": ""}
+        method = payload.get("method")
+        update = payload.get("params", {}).get("update", {}) if isinstance(payload.get("params"), dict) else {}
+        if event["direction"] == "lifecycle":
+            kind = payload.get("type", "")
+            row["label"] = kind
+            if kind == "connection.state":
+                row["label"] = f"connection.state · {payload.get('state')}"
+                if payload.get("state") == "ready":
+                    row["kind"] = "connected"
+            elif kind == "permission.resolved":
+                approval = payload.get("approval", {})
+                row.update(kind="permission_resolved", decision=approval.get("decision", ""), actor=approval.get("actor", ""))
+                row["label"] = f"permission.resolved · {approval.get('decision')} · {approval.get('actor')}"
+            elif kind == "turn_finished":
+                row.update(kind="turn_finished", status=payload.get("status"))
+                row["label"] = f"turn_finished · {payload.get('status')}"
+        elif method == "session/prompt":
+            text = "".join(part.get("text", "") for part in payload["params"].get("prompt", []))
+            row.update(kind="prompt", text=text, label=f"session/prompt · “{text}”")
+        elif method == "session/update":
+            which = update.get("sessionUpdate")
+            if which == "agent_message_chunk":
+                text = update.get("content", {}).get("text", "")
+                row.update(kind="chunk", text=text, label=f"agent_message_chunk · “{text}”")
+            elif which == "tool_call":
+                row.update(kind="tool_call", call_id=update.get("toolCallId"), title=update.get("title"), name=update.get("name"), label=f"tool_call · {update.get('name')} ({update.get('toolCallId')})")
+            elif which == "tool_call_update":
+                output = json.dumps(update.get("rawOutput"), separators=(",", ":")) if "rawOutput" in update else ""
+                row.update(kind="tool_update", call_id=update.get("toolCallId"), status=update.get("status"), output=(output[:60] + "…") if len(output) > 60 else output, label=f"tool_call_update · {update.get('status')} · {output[:40]}")
+            else:
+                row["label"] = f"session/update · {which}"
+        elif method == "session/request_permission":
+            tool_call = payload["params"].get("toolCall", {})
+            row.update(kind="permission_request", title=tool_call.get("title"), label=f"session/request_permission · {tool_call.get('title')}")
+        elif method:
+            row["label"] = method
+        elif "result" in payload:
+            result = payload["result"]
+            if isinstance(result, dict) and "stopReason" in result:
+                row.update(kind="result", label=f"result · stopReason {result['stopReason']}")
+            elif isinstance(result, dict) and "outcome" in result:
+                row["label"] = f"permission reply · {result['outcome'].get('optionId')} ({result['outcome'].get('outcome')})"
+            elif isinstance(result, dict) and "sessionId" in result:
+                row["label"] = "session/new ✓"
+            elif isinstance(result, dict) and "protocolVersion" in result:
+                row["label"] = "initialize ✓"
+            else:
+                row["label"] = "result"
+        rows.append(row)
+    # attach the response text to each turn_finished row from the trailing chunks
+    text = ""
+    for row in rows:
+        if row["kind"] == "prompt":
+            text = ""
+        elif row["kind"] == "chunk":
+            text += row["text"]
+        elif row["kind"] == "turn_finished":
+            row["response"] = text
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
@@ -131,6 +208,16 @@ def main() -> None:
             if evidence and "source" in evidence:
                 evidence["resolved"] = resolve_source(args.repo, evidence["source"], sha_cache)
                 count += 1
+            for node in step.get("nodes", []):
+                if node.get("evidence") and "source" in node["evidence"]:
+                    node["evidence"]["resolved"] = resolve_source(args.repo, node["evidence"]["source"], sha_cache)
+                    count += 1
+            if step.get("image") and not step["image"].startswith("http"):
+                step["image"] = data_uri(HERE / step["image"])
+    deck["fixtures"] = {
+        "ask_events": summarize_journal(HERE / "fixtures" / "ask_events.jsonl"),
+        "conformance_local": json.loads((HERE / "fixtures" / "conformance_local.json").read_text(encoding="utf-8")),
+    }
     deck["meta"]["pins"] = sha_cache
     deck["meta"]["built"] = git(args.repo, "log", "-1", "--format=%cs", "agents/stack-08-agent-framework").strip()
 
