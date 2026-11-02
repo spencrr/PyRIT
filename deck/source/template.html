@@ -48,6 +48,7 @@ body.playing #play .ring{opacity:1}
 #edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
 .actor{position:absolute;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:14px 16px;transition:border-color .3s,box-shadow .3s,opacity .3s}
 .actor.panel{background:rgba(12,17,25,.55);border-style:dashed;border-color:var(--line2);padding:12px 14px}
+.actor.ghost{border-style:dashed;border-color:var(--line2)} .actor.ghost .label,.actor.ghost .sub{color:var(--t4)}
 .actor.node{border-radius:999px;padding:10px 18px;display:flex;align-items:center;justify-content:center;text-align:center}
 .actor .head{display:flex;justify-content:space-between;gap:6px 10px;align-items:baseline;flex-wrap:wrap}
 .actor .label{font:12.5px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--t3)}
@@ -132,7 +133,7 @@ body.present.hideEvid #evid{display:none} body.present.hideEvid #lower{grid-temp
 .card .note{font-size:16px;color:var(--t3);margin-top:16px;line-height:1.5}
 
 /* hero ring */
-#ring{width:840px;height:840px;justify-self:center;margin-right:40px}
+#ring{width:840px;height:840px;justify-self:center;margin-right:40px;overflow:visible}
 #ring .r{fill:none;stroke:var(--line2);stroke-width:1.2} #ring .r.env{stroke-dasharray:4 8;stroke:#3a4452}
 #ring .r.pyrit{stroke:var(--mint-dim)} #ring .tick{stroke:#2a3340;stroke-width:1}
 #ring .core{fill:var(--amber);filter:drop-shadow(0 0 18px rgba(227,181,43,.6))}
@@ -147,7 +148,7 @@ body.present.hideEvid #evid{display:none} body.present.hideEvid #lower{grid-temp
 
 /* stack explorable */
 .stack{grid-row:2/-1;display:grid;grid-template-columns:1.25fr 1fr;column-gap:40px;align-items:start;padding-top:10px}
-.stack svg{width:100%;height:760px} .stack .n rect{fill:var(--panel);stroke:var(--line2);stroke-width:1.3;rx:9;cursor:pointer;transition:stroke .2s}
+.stack svg{width:100%;height:860px} .stack .n rect{fill:var(--panel);stroke:var(--line2);stroke-width:1.3;rx:9;cursor:pointer;transition:stroke .2s}
 .stack .n:hover rect,.stack .n.on rect{stroke:var(--mint)} .stack .n.amber:hover rect,.stack .n.amber.on rect{stroke:var(--amber)} .stack .n.green:hover rect,.stack .n.green.on rect{stroke:var(--green)}
 .stack .n text{pointer-events:none} .stack .n .id{font:14px var(--mono);font-weight:700;fill:var(--mint)} .stack .n.amber .id{fill:var(--amber)} .stack .n.green .id{fill:var(--green)}
 .stack .n .t{font:14.5px var(--sans);fill:var(--t1)} .stack .n .pr{font:11.5px var(--mono);fill:var(--t4);letter-spacing:.1em}
@@ -202,7 +203,7 @@ const numbered = (ch) => ch.steps.filter((s) => s.kind === 'step');
 const reduce = (ch, s) => { let acc = structuredClone(ch.stage.initial || {}); for (let k = 0; k <= s; k++) if (ch.steps[k].patch) acc = deepMerge(acc, ch.steps[k].patch); return acc; };
 
 const frame = $('#frame');
-let stageCache = { chapterId: null, canvas: null, edges: null, actors: {}, paths: {} };
+let stageCache = { chapterId: null, canvas: null, edges: null, actors: {}, paths: {}, edgeSpecs: {} };
 
 function fitApp() { const sc = Math.min(innerWidth / 1920, innerHeight / 1080); $('#app').style.transform = `translate(-50%,-50%) scale(${sc})`; }
 addEventListener('resize', fitApp); fitApp();
@@ -277,11 +278,11 @@ function buildStage(ch, wrap) {
   const svg = svgEl('svg', { id: 'edges', width: W, height: H, viewBox: `0 0 ${W} ${H}` });
   const defs = svgEl('defs');
   for (const [id, color] of [['mint', '#62e6c3'], ['amber', '#e3b52b'], ['grey', '#3a4452'], ['red', '#ef6f6f'], ['dim', '#2b6e5f'], ['green', '#7bd88f']]) {
-    const m = svgEl('marker', { id: `arr-${id}`, viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse' });
+    const m = svgEl('marker', { id: `arr-${id}`, viewBox: '0 0 10 10', refX: '10', refY: '5', markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse' });
     m.append(svgEl('path', { d: 'M0,0 L10,5 L0,10 z', fill: color })); defs.append(m);
   }
   svg.append(defs);
-  stageCache = { chapterId: ch.id, canvas, edges: svg, actors: {}, paths: {}, spec };
+  stageCache = { chapterId: ch.id, canvas, edges: svg, actors: {}, paths: {}, edgeSpecs: {}, spec };
   canvas.append(svg);
   for (const a of spec.actors) {
     const node = el('div', { class: `actor ${a.kind || 'card'} ${a.tone || ''}`, style: `left:${a.x}px;top:${a.y}px;width:${a.w}px;${a.h ? `height:${a.h}px;` : ''}`, 'data-id': a.id });
@@ -293,30 +294,54 @@ function buildStage(ch, wrap) {
     }
     canvas.append(node); stageCache.actors[a.id] = { spec: a, node };
   }
-  for (const e of spec.edges || []) {
-    const d = pathFor(e);
-    const p = svgEl('path', { class: 'edge', d, 'data-id': e.id, 'data-state': 'hidden' });
-    svg.append(p); stageCache.paths[e.id] = p;
-    if (e.label) { const pt = p.getPointAtLength(p.getTotalLength() / 2); const t = svgEl('text', { class: 'edgeLabel', x: pt.x, y: pt.y - 8, 'text-anchor': 'middle', 'data-for': e.id }); t.textContent = e.label; svg.append(t); }
-  }
+  // Attach before measuring: edge anchors use the rendered card sizes, not assumed ones.
   wrap.append(canvas);
+  for (const e of spec.edges || []) {
+    const p = svgEl('path', { class: 'edge', 'data-id': e.id, 'data-state': 'hidden' });
+    svg.append(p); stageCache.paths[e.id] = p; stageCache.edgeSpecs[e.id] = e;
+    if (e.label) { const t = svgEl('text', { class: 'edgeLabel', 'text-anchor': 'middle', 'data-for': e.id }); t.textContent = e.label; svg.append(t); }
+  }
+  relayoutEdges();
 }
 
-function anchor(a, side) { const { x, y, w, h = 110 } = a; return side === 'r' ? [x + w, y + h / 2] : side === 'l' ? [x, y + h / 2] : side === 't' ? [x + w / 2, y] : [x + w / 2, y + h]; }
+function geom(id) { const a = stageCache.actors[id]; if (!a) throw new Error(`unknown actor ${id}`); const n = a.node; return { x: n.offsetLeft, y: n.offsetTop, w: n.offsetWidth, h: n.offsetHeight }; }
+function anchor(g, side) { const { x, y, w, h } = g; return side === 'r' ? [x + w, y + h / 2] : side === 'l' ? [x, y + h / 2] : side === 't' ? [x + w / 2, y] : [x + w / 2, y + h]; }
+function resolvePoint(pt) { if (Array.isArray(pt)) return pt; const [id, side] = pt.split(':'); return anchor(geom(id), side || 'b'); }
+// Polyline with rounded corners so routed edges read like the curved ones.
+function roundedPath(points, radius = 18) {
+  let d = `M${points[0][0]},${points[0][1]}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const [px, py] = points[i - 1], [cx, cy] = points[i], [nx, ny] = points[i + 1];
+    const inLen = Math.hypot(cx - px, cy - py), outLen = Math.hypot(nx - cx, ny - cy);
+    const r = Math.min(radius, inLen / 2, outLen / 2);
+    const ax = cx - ((cx - px) / inLen) * r, ay = cy - ((cy - py) / inLen) * r;
+    const bx = cx + ((nx - cx) / outLen) * r, by = cy + ((ny - cy) / outLen) * r;
+    d += ` L${ax},${ay} Q${cx},${cy} ${bx},${by}`;
+  }
+  const [ex, ey] = points[points.length - 1];
+  return d + ` L${ex},${ey}`;
+}
 function pathFor(e) {
-  if (e.points) return e.points.map(([x, y], k) => `${k ? 'L' : 'M'}${x},${y}`).join(' ');
-  const A = stageCache.spec.actors.find((a) => a.id === e.from), B = stageCache.spec.actors.find((a) => a.id === e.to);
-  if (!A || !B) throw new Error(`edge ${e.id}: unknown actor`);
+  if (e.points) return roundedPath(e.points.map(resolvePoint), e.radius);
+  const A = geom(e.from), B = geom(e.to);
   let fs = e.fromSide, ts = e.toSide;
   if (!fs || !ts) { if (B.x >= A.x + A.w) { fs = fs || 'r'; ts = ts || 'l'; } else if (A.x >= B.x + B.w) { fs = fs || 'l'; ts = ts || 'r'; } else if (B.y > A.y) { fs = fs || 'b'; ts = ts || 't'; } else { fs = fs || 't'; ts = ts || 'b'; } }
-  const [ax, ay0] = anchor(A, fs), [bx, by0] = anchor(B, ts); const off = e.offset || 0; const ay = ay0 + off, by = by0 + off;
-  if (fs === 'r' || fs === 'l') { const dx = (bx - ax) / 2; return `M${ax},${ay} C${ax + dx},${ay} ${bx - dx},${by} ${bx},${by}`; }
-  const dy = (by - ay) / 2; return `M${ax},${ay} C${ax},${ay + dy} ${bx},${by - dy} ${bx},${by}`;
+  const [ax, ay0] = anchor(A, fs), [bx, by0] = anchor(B, ts); const off = e.offset || 0; const toOff = e.toOffset ?? off;
+  if (fs === 'r' || fs === 'l') { const ay = ay0 + off, by = by0 + toOff; const dx = (bx - ax) / 2; return `M${ax},${ay} C${ax + dx},${ay} ${bx - dx},${by} ${bx},${by}`; }
+  const axo = ax + off, bxo = bx + toOff; const dy = (by0 - ay0) / 2; return `M${axo},${ay0} C${axo},${ay0 + dy} ${bxo},${by0 - dy} ${bxo},${by0}`;
+}
+function relayoutEdges() {
+  for (const [id, p] of Object.entries(stageCache.paths)) {
+    p.setAttribute('d', pathFor(stageCache.edgeSpecs[id]));
+    const lbl = stageCache.edges.querySelector(`text[data-for="${id}"]`);
+    if (lbl) { const pt = p.getPointAtLength(p.getTotalLength() / 2); lbl.setAttribute('x', pt.x); lbl.setAttribute('y', pt.y - 8); }
+  }
 }
 
 function applyState(ch, s, st) {
   for (const [id, { node }] of Object.entries(stageCache.actors)) node.dataset.status = (s.status || {})[id] || 'idle';
   for (const [key, value] of Object.entries(s.slots || {})) { const v = stageCache.canvas.querySelector(`[data-slot="${key}"] .v`); if (v) { v.textContent = value == null || value === '' ? '—' : value; v.classList.toggle('empty', value == null || value === ''); } }
+  relayoutEdges(); // slot text changes card heights
   for (const [id, p] of Object.entries(stageCache.paths)) {
     const stt = (s.edges || {})[id] || 'hidden'; p.dataset.state = stt;
     const color = stt === 'request' ? 'mint' : stt === 'response' ? 'amber' : stt === 'blocked' ? 'red' : stt === 'dim' ? 'dim' : stt === 'operator' ? 'green' : 'grey';
@@ -346,7 +371,7 @@ function packets(a) {
   for (let k = 0; k < n; k++) {
     const pill = el('div', { class: `pill live ${a.tone || 'mint'}` }, labels[k % labels.length]); stageCache.canvas.append(pill);
     const t0 = performance.now() + (a.delayMs || 300) + k * gap; let last = 0;
-    const tick = (now) => { const t = Math.min(1, Math.max(0, (now - t0) / dur)); if (t > 0) { const pt = p.getPointAtLength((a.reverse ? 1 - t : t) * L); pill.style.left = `${pt.x}px`; pill.style.top = `${pt.y}px`; pill.style.opacity = t < 0.05 || t > 0.95 ? (t < 0.05 ? t / 0.05 : (1 - t) / 0.05) : 1; } if (t < 1) state.raf.push(requestAnimationFrame(tick)); else if (a.loop) { last++; const again = () => { const t1 = performance.now(); const re = (now2) => { const u = Math.min(1, (now2 - t1) / dur); const pt = p.getPointAtLength((a.reverse ? 1 - u : u) * L); pill.style.left = `${pt.x}px`; pill.style.top = `${pt.y}px`; if (u < 1) state.raf.push(requestAnimationFrame(re)); else state.raf.push(requestAnimationFrame(again)); }; state.raf.push(requestAnimationFrame(re)); }; again(); } else pill.remove(); };
+    const tick = (now) => { const t = Math.min(1, Math.max(0, (now - t0) / dur)); if (t > 0) { const pt = p.getPointAtLength((a.reverse ? 1 - t : t) * L); pill.style.left = `${pt.x}px`; pill.style.top = `${pt.y}px`; pill.style.opacity = t < 0.1 ? t / 0.1 : t > 0.82 ? Math.max(0, (1 - t) / 0.18) : 1; } if (t < 1) state.raf.push(requestAnimationFrame(tick)); else if (a.loop) { last++; const again = () => { const t1 = performance.now(); const re = (now2) => { const u = Math.min(1, (now2 - t1) / dur); const pt = p.getPointAtLength((a.reverse ? 1 - u : u) * L); pill.style.left = `${pt.x}px`; pill.style.top = `${pt.y}px`; if (u < 1) state.raf.push(requestAnimationFrame(re)); else state.raf.push(requestAnimationFrame(again)); }; state.raf.push(requestAnimationFrame(re)); }; again(); } else pill.remove(); };
     state.raf.push(requestAnimationFrame(tick));
   }
 }
@@ -373,7 +398,7 @@ function renderHero(ch, st) {
   const lblP = svgEl('text', { class: 'lbl', x: C, y: C + 432 }); lblP.textContent = 'PYRIT RUNTIME · POLICY · JOURNAL · RELAY'; svg.append(lblP);
   const orbit = svgEl('g', { class: 'orbit' }); for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2; orbit.append(svgEl('circle', { class: `pk${i % 2 ? ' m' : ''}`, cx: C + 190 * Math.cos(a), cy: C + 190 * Math.sin(a), r: 4 })); } svg.append(orbit);
   const orbit2 = svgEl('g', { class: 'orbit2' }); for (let i = 0; i < 3; i++) { const a = (i / 3) * Math.PI * 2; orbit2.append(svgEl('circle', { class: 'pk m', cx: C + 300 * Math.cos(a), cy: C + 300 * Math.sin(a), r: 3.5 })); } svg.append(orbit2);
-  const gates = [[-Math.PI / 2, 'ACP · STDIO', 'mint'], [0.15, 'INFERENCE RELAY', 'mint'], [2.4, 'TOOL CALLS → MEMORY', 'mint'], [Math.PI - 0.6, 'JOURNAL', 'amber']];
+  const gates = [[-Math.PI / 2, 'ACP · STDIO', 'mint'], [0.35, 'INFERENCE RELAY', 'mint'], [2.45, 'TOOL CALLS → MEMORY', 'mint'], [Math.PI + 0.45, 'JOURNAL', 'amber']];
   for (const [a, txt, tone] of gates) { const g = svgEl('g', { class: `gate ${tone}` }); const x = C + 400 * Math.cos(a), y = C + 400 * Math.sin(a); const w = txt.length * 8.6 + 28; g.append(svgEl('rect', { x: x - w / 2, y: y - 15, width: w, height: 30 })); const t = svgEl('text', { x, y: y + 4 }); t.textContent = txt; g.append(t); svg.append(g); }
   const counterT = svgEl('text', { class: 'counter', x: C, y: C + 250 }); counterT.textContent = 'event_count 0'; svg.append(counterT);
   frame.append(el('div', { class: 'bleed hero' }, left, svg));
@@ -396,7 +421,7 @@ function agendaList(current) {
 
 function renderStack(ch, st) {
   frame.append(header(ch, st, false));
-  const svg = svgEl('svg', { viewBox: '0 0 980 760' });
+  const svg = svgEl('svg', { viewBox: st.viewBox || '0 0 840 710' });
   const nodes = st.nodes, byId = {};
   for (const n of nodes) byId[n.id] = n;
   for (const n of nodes) for (const d of n.needs || []) {
@@ -405,7 +430,7 @@ function renderStack(ch, st) {
     else { const x1 = a.x + a.w / 2, y1 = a.y + 56, x2 = n.x + n.w / 2, y2 = n.y; const dy = (y2 - y1) / 2; dAttr = `M${x1},${y1} C${x1},${y1 + dy} ${x2},${y2 - dy} ${x2},${y2}`; }
     svg.append(svgEl('path', { d: dAttr, class: n.deferred ? 'def' : '', 'marker-end': 'url(#arr-stack)' }));
   }
-  const defs = svgEl('defs'); const m = svgEl('marker', { id: 'arr-stack', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse' }); m.append(svgEl('path', { d: 'M0,0 L10,5 L0,10 z', fill: '#3a4452' })); defs.append(m); svg.prepend(defs);
+  const defs = svgEl('defs'); const m = svgEl('marker', { id: 'arr-stack', viewBox: '0 0 10 10', refX: '10', refY: '5', markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse' }); m.append(svgEl('path', { d: 'M0,0 L10,5 L0,10 z', fill: '#3a4452' })); defs.append(m); svg.prepend(defs);
   const info = el('div', { id: 'stackInfo' });
   const show = (n) => { svg.querySelectorAll('.n').forEach((g) => g.classList.toggle('on', g.dataset.id === n.id)); info.innerHTML = ''; info.append(el('div', { class: `micro ${n.tone || 'mint'}` }, n.pr ? `${n.pr} · ${n.branch}` : n.kind || 'deferred'), el('h3', {}, n.title), el('p', { class: 'claim', html: inline(n.claim) })); const dl = el('dl'); for (const [k, v] of n.facts || []) { dl.append(el('dt', {}, k)); dl.append(el('dd', { html: inline(v) })); } info.append(dl); if (n.url) info.append(el('p', {}, el('a', { href: n.url, target: '_blank', rel: 'noopener' }, n.url.replace('https://github.com/', '')))); };
   for (const n of nodes) { const g = svgEl('g', { class: `n ${n.tone || ''}${n.deferred ? ' def' : ''}`, 'data-id': n.id, tabindex: '0', role: 'button' }); g.append(svgEl('rect', { x: n.x, y: n.y, width: n.w, height: 56 })); const id = svgEl('text', { class: 'id', x: n.x + 14, y: n.y + 24 }); id.textContent = n.label; g.append(id); const t = svgEl('text', { class: 't', x: n.x + 14, y: n.y + 44 }); t.textContent = n.title; g.append(t); if (n.pr) { const pr = svgEl('text', { class: 'pr', x: n.x + n.w - 14, y: n.y + 24, 'text-anchor': 'end' }); pr.textContent = n.pr; g.append(pr); } g.addEventListener('mouseenter', () => show(n)); g.addEventListener('focus', () => show(n)); g.addEventListener('click', () => { if (n.url) open(n.url, '_blank', 'noopener'); }); svg.append(g); }

@@ -233,7 +233,7 @@
       "id": "workspace",
       "label": "Workspace",
       "x": 1070,
-      "y": 290,
+      "y": 330,
       "w": 290,
       "kind": "card",
       "tag": "template → filesystem",
@@ -866,6 +866,17 @@
       "slots": []
      },
      {
+      "id": "conformance",
+      "label": "Conformance suite",
+      "x": 20,
+      "y": 330,
+      "w": 390,
+      "kind": "card",
+      "tag": "executable · core",
+      "sub": "`verify_environment_provider_async` · `verify_harness_adapter`",
+      "slots": []
+     },
+     {
       "id": "providers",
       "label": "Providers · resources",
       "x": 920,
@@ -877,26 +888,10 @@
       "slots": []
      },
      {
-      "id": "local",
-      "label": "local",
-      "x": 950,
-      "y": 80,
-      "w": 250,
-      "kind": "card",
-      "tag": "first-party",
-      "sub": "subprocess, private home; **not** a sandbox",
-      "slots": [
-       {
-        "key": "gives",
-        "label": "gives"
-       }
-      ]
-     },
-     {
       "id": "docker",
       "label": "docker",
-      "x": 1230,
-      "y": 80,
+      "x": 950,
+      "y": 70,
       "w": 250,
       "kind": "card",
       "tag": "reference isolated",
@@ -911,23 +906,40 @@
      {
       "id": "aca",
       "label": "ACA sandbox",
-      "x": 950,
-      "y": 300,
+      "x": 1230,
+      "y": 70,
       "w": 250,
       "kind": "card",
       "tag": "out-of-tree",
-      "sub": "built against the same contract · zero core changes",
+      "sub": "modelled on the Docker provider · zero core changes",
       "slots": []
      },
      {
-      "id": "conformance",
-      "label": "Conformance suite",
-      "x": 1230,
-      "y": 300,
+      "id": "local",
+      "label": "local",
+      "x": 950,
+      "y": 275,
       "w": 250,
       "kind": "card",
-      "tag": "executable",
-      "sub": "`verify_environment_provider_async`",
+      "tag": "first-party",
+      "sub": "subprocess, private home; **not** a sandbox",
+      "slots": [
+       {
+        "key": "gives",
+        "label": "gives"
+       }
+      ]
+     },
+     {
+      "id": "yours",
+      "label": "your provider",
+      "x": 1230,
+      "y": 275,
+      "w": 250,
+      "kind": "card",
+      "tag": "implements the ABC",
+      "sub": "any place that can move bytes and honour four moments",
+      "tone": "ghost",
       "slots": []
      }
     ],
@@ -945,20 +957,18 @@
       "offset": 30
      },
      {
-      "id": "env_local",
-      "from": "envseam",
-      "to": "local",
-      "offset": -10
-     },
-     {
       "id": "env_docker",
       "from": "envseam",
-      "to": "docker",
-      "offset": 10
+      "to": "docker"
      },
      {
-      "id": "env_aca",
+      "id": "env_local",
       "from": "envseam",
+      "to": "local"
+     },
+     {
+      "id": "docker_aca",
+      "from": "docker",
       "to": "aca"
      },
      {
@@ -1097,7 +1107,9 @@
        "local.gives": "process tree · workspace dir · artifacts"
       },
       "edges": {
-       "env_local": "request"
+       "env_local": "request",
+       "c_env": "dim",
+       "c_sess": "dim"
       }
      },
      "captions": [
@@ -1143,7 +1155,8 @@
        "docker.gives": "container · image provenance · network"
       },
       "edges": {
-       "env_docker": "request"
+       "env_docker": "request",
+       "env_local": "dim"
       }
      },
      "captions": [
@@ -1225,11 +1238,13 @@
        "docker": "ok",
        "conformance": "active",
        "aca": "active",
-       "session": "active"
+       "session": "active",
+       "core": "active"
       },
       "edges": {
        "conf": "request",
-       "env_aca": "request"
+       "docker_aca": "request",
+       "env_docker": "dim"
       }
      },
      "captions": [
@@ -1249,7 +1264,7 @@
       },
       {
        "type": "draw",
-       "edge": "env_aca",
+       "edge": "docker_aca",
        "delayMs": 500
       }
      ],
@@ -1803,7 +1818,7 @@
       "label": "ResolvedModelBinding",
       "x": 820,
       "y": 40,
-      "w": 320,
+      "w": 280,
       "kind": "card",
       "tag": "which PyRIT target answers",
       "slots": [
@@ -1840,7 +1855,7 @@
       "w": 340,
       "kind": "card",
       "tag": "direction = inference",
-      "cols": 1,
+      "cols": 2,
       "slots": [
        {
         "key": "ev",
@@ -1879,22 +1894,16 @@
       "from": "harness",
       "to": "provider",
       "points": [
+       "harness:b",
        [
         165,
-        395
-       ],
-       [
-        165,
-        445
+        455
        ],
        [
         1350,
-        445
+        455
        ],
-       [
-        1350,
-        165
-       ]
+       "provider:b"
       ],
       "label": "no direct path"
      }
@@ -2259,18 +2268,14 @@
       "id": "binding",
       "label": "Model binding",
       "x": 0,
-      "y": 30,
+      "y": 10,
       "w": 340,
       "kind": "card",
-      "tag": "which model answers",
+      "cols": 1,
       "slots": [
        {
-        "key": "target",
-        "label": "target"
-       },
-       {
-        "key": "wire",
-        "label": "wire api"
+        "key": "v",
+        "label": "which model answers"
        }
       ]
      },
@@ -2278,65 +2283,53 @@
       "id": "hprofile",
       "label": "Harness profile",
       "x": 0,
-      "y": 260,
+      "y": 122,
       "w": 340,
       "kind": "card",
-      "tag": "which agent, how launched",
+      "cols": 1,
       "slots": [
        {
-        "key": "kind",
-        "label": "kind"
-       },
-       {
-        "key": "cmd",
-        "label": "command"
+        "key": "v",
+        "label": "which agent · how launched"
        }
       ]
      },
      {
       "id": "template",
       "label": "Environment template",
-      "x": 400,
-      "y": 30,
+      "x": 0,
+      "y": 234,
       "w": 340,
       "kind": "card",
-      "tag": "where it runs",
+      "cols": 1,
       "slots": [
        {
-        "key": "provider",
-        "label": "provider"
-       },
-       {
-        "key": "image",
-        "label": "image"
+        "key": "v",
+        "label": "where it runs"
        }
       ]
      },
      {
       "id": "policy",
       "label": "Policy",
-      "x": 400,
-      "y": 260,
+      "x": 0,
+      "y": 346,
       "w": 340,
       "kind": "card",
-      "tag": "part of the recipe",
+      "cols": 1,
       "slots": [
        {
-        "key": "perm",
-        "label": "permission"
-       },
-       {
-        "key": "timeouts",
-        "label": "timeouts"
+        "key": "v",
+        "label": "permission · timeouts"
        }
       ]
      },
      {
       "id": "config",
       "label": "AgentTargetConfiguration",
-      "x": 820,
-      "y": 30,
-      "w": 340,
+      "x": 520,
+      "y": 80,
+      "w": 380,
       "kind": "card",
       "tag": "owns no resources",
       "cols": 1,
@@ -2354,9 +2347,9 @@
      {
       "id": "init",
       "label": "AgentTargetInitializer",
-      "x": 820,
-      "y": 300,
-      "w": 340,
+      "x": 520,
+      "y": 330,
+      "w": 380,
       "kind": "card",
       "tag": "YAML · setup",
       "slots": [
@@ -2369,9 +2362,9 @@
      {
       "id": "target",
       "label": "AgentTarget",
-      "x": 1220,
-      "y": 30,
-      "w": 280,
+      "x": 1020,
+      "y": 80,
+      "w": 320,
       "kind": "card",
       "tag": "PromptTarget",
       "cols": 1,
@@ -2392,25 +2385,25 @@
       "id": "b_c",
       "from": "binding",
       "to": "config",
-      "offset": -30
+      "toOffset": -36
      },
      {
       "id": "h_c",
       "from": "hprofile",
       "to": "config",
-      "offset": -10
+      "toOffset": -12
      },
      {
       "id": "t_c",
       "from": "template",
       "to": "config",
-      "offset": 10
+      "toOffset": 12
      },
      {
       "id": "p_c",
       "from": "policy",
       "to": "config",
-      "offset": 30
+      "toOffset": 36
      },
      {
       "id": "i_c",
@@ -2446,12 +2439,9 @@
        "template": "active"
       },
       "slots": {
-       "binding.target": "openai_chat  (registry name)",
-       "binding.wire": "chat_completions",
-       "hprofile.kind": "copilot",
-       "hprofile.cmd": "copilot --acp --stdio",
-       "template.provider": "docker",
-       "template.image": "pyrit/agent-receipt (resolved id recorded)"
+       "binding.v": "openai_chat · chat_completions",
+       "hprofile.v": "copilot · copilot --acp --stdio",
+       "template.v": "docker · pyrit/agent-receipt"
       },
       "edges": {
        "b_c": "request",
@@ -2555,8 +2545,7 @@
        "config": "active"
       },
       "slots": {
-       "policy.perm": "deny  (default) · allow_once · ask (interactive only)",
-       "policy.timeouts": "excluded from identity"
+       "policy.v": "deny (default) · allow_once · ask"
       },
       "edges": {
        "p_c": "request"
@@ -2731,7 +2720,7 @@
       "label": "Co-PyRIT chat",
       "x": 0,
       "y": 40,
-      "w": 320,
+      "w": 300,
       "kind": "card",
       "tag": "browser",
       "tone": "green",
@@ -2750,9 +2739,9 @@
      {
       "id": "api",
       "label": "Backend routes",
-      "x": 400,
+      "x": 390,
       "y": 40,
-      "w": 340,
+      "w": 320,
       "kind": "card",
       "tag": "/execution/stream · /permissions",
       "cols": 1,
@@ -2772,7 +2761,7 @@
       "label": "AgentExecutionManager",
       "x": 800,
       "y": 40,
-      "w": 340,
+      "w": 320,
       "kind": "card",
       "tag": "core",
       "slots": [
@@ -2789,9 +2778,9 @@
      {
       "id": "harness",
       "label": "Harness",
-      "x": 1200,
+      "x": 1210,
       "y": 40,
-      "w": 300,
+      "w": 290,
       "kind": "card",
       "tag": "session/request_permission",
       "tone": "amber",
@@ -2812,7 +2801,7 @@
       "label": "AgentApprovals",
       "x": 800,
       "y": 300,
-      "w": 340,
+      "w": 320,
       "kind": "card",
       "tag": "decisions",
       "cols": 1,
@@ -2830,9 +2819,9 @@
      {
       "id": "journal",
       "label": "Journal · lifecycle",
-      "x": 400,
+      "x": 390,
       "y": 300,
-      "w": 340,
+      "w": 320,
       "kind": "card",
       "tag": "who did what",
       "cols": 1,
@@ -2982,7 +2971,7 @@
       {
        "type": "packet",
        "edge": "hm",
-       "label": "request_permission",
+       "label": "permission?",
        "tone": "amber",
        "count": 1
       }
@@ -3047,7 +3036,7 @@
       {
        "type": "packet",
        "edge": "am",
-       "label": "decide_permission_async",
+       "label": "decide",
        "tone": "green",
        "count": 1,
        "delayMs": 1100
@@ -3264,8 +3253,8 @@
       "id": "seam",
       "label": "HarnessAdapter",
       "x": 0,
-      "y": 40,
-      "w": 340,
+      "y": 130,
+      "w": 330,
       "kind": "card",
       "tag": "ABC",
       "cols": 1,
@@ -3287,9 +3276,9 @@
      {
       "id": "copilot",
       "label": "copilot",
-      "x": 420,
-      "y": 40,
-      "w": 280,
+      "x": 440,
+      "y": 10,
+      "w": 340,
       "kind": "card",
       "tag": "GitHub Copilot CLI",
       "sub": "`copilot --acp --stdio`",
@@ -3302,28 +3291,16 @@
       ]
      },
      {
-      "id": "generic",
-      "label": "generic ACP",
-      "x": 420,
-      "y": 300,
-      "w": 280,
-      "kind": "card",
-      "tag": "any ACP agent",
-      "sub": "command from the harness profile",
-      "tone": "amber",
-      "slots": []
-     },
-     {
       "id": "af",
       "label": "agent_framework",
-      "x": 780,
-      "y": 40,
+      "x": 440,
+      "y": 175,
       "w": 340,
       "kind": "card",
       "tag": "PyRIT ACP host",
-      "sub": "`python -m pyrit.agent.hosts.agent_framework_acp`",
+      "sub": "`pyrit.agent.hosts.agent_framework_acp`",
       "tone": "amber",
-      "cols": 1,
+      "cols": 2,
       "slots": [
        {
         "key": "tools",
@@ -3336,25 +3313,37 @@
       ]
      },
      {
-      "id": "conf",
-      "label": "verify_harness_adapter",
-      "x": 780,
-      "y": 300,
+      "id": "generic",
+      "label": "generic ACP",
+      "x": 440,
+      "y": 365,
       "w": 340,
       "kind": "card",
-      "tag": "executable",
-      "sub": "reserved names, credential rules, environment translation",
+      "tag": "any ACP agent",
+      "sub": "command from the harness profile",
+      "tone": "amber",
       "slots": []
      },
      {
       "id": "ci",
       "label": "CI proof",
-      "x": 1180,
+      "x": 1150,
       "y": 40,
-      "w": 320,
+      "w": 350,
       "kind": "card",
       "tag": "login-free",
       "sub": "scripted ACP agent + Agent Framework agent through the relay",
+      "slots": []
+     },
+     {
+      "id": "conf",
+      "label": "verify_harness_adapter",
+      "x": 1150,
+      "y": 300,
+      "w": 350,
+      "kind": "card",
+      "tag": "executable",
+      "sub": "reserved names, credential rules, environment translation",
       "slots": []
      }
     ],
@@ -3365,50 +3354,26 @@
       "to": "copilot"
      },
      {
+      "id": "s_af",
+      "from": "seam",
+      "to": "af"
+     },
+     {
       "id": "s_gen",
       "from": "seam",
       "to": "generic"
      },
      {
-      "id": "s_af",
-      "from": "seam",
-      "to": "af",
-      "points": [
-       [
-        340,
-        150
-       ],
-       [
-        380,
-        150
-       ],
-       [
-        380,
-        250
-       ],
-       [
-        740,
-        250
-       ],
-       [
-        740,
-        110
-       ],
-       [
-        780,
-        110
-       ]
-      ]
+      "id": "af_ci",
+      "from": "af",
+      "to": "ci",
+      "offset": -28
      },
      {
       "id": "c_af",
       "from": "conf",
-      "to": "af"
-     },
-     {
-      "id": "af_ci",
-      "from": "af",
-      "to": "ci"
+      "to": "af",
+      "toOffset": 28
      }
     ],
     "initial": {}
@@ -3471,7 +3436,7 @@
        "copilot": "active"
       },
       "slots": {
-       "copilot.creds": "COPILOT_GITHUB_TOKEN (native) · or relay via COPILOT_PROVIDER_*"
+       "copilot.creds": "COPILOT_GITHUB_TOKEN (native) · or the relay"
       },
       "edges": {
        "s_cop": "request",
@@ -3523,8 +3488,8 @@
        "af": "active"
       },
       "slots": {
-       "af.tools": "TOOL_NAME_META_KEY = pyrit.tool_name",
-       "af.cancel": "cancel_requested → stopReason cancelled"
+       "af.tools": "declared · pyrit.tool_name",
+       "af.cancel": "only on session/cancel"
       },
       "edges": {
        "s_af": "request"
@@ -3540,7 +3505,7 @@
       {
        "type": "draw",
        "edge": "s_af",
-       "durationMs": 1200
+       "durationMs": 900
       }
      ],
      "evidence": {
@@ -3670,9 +3635,9 @@
        "title": "Explicit target outcomes",
        "pr": "#15",
        "branch": "agents/stack-01-outcomes",
-       "x": 40,
+       "x": 20,
        "y": 10,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/15",
        "claim": "A target can complete without assistant text. Every `TargetResponse` declares an explicit outcome instead of letting an empty string mean anything.",
        "facts": [
@@ -3696,9 +3661,9 @@
        "title": "Single-inference capability",
        "pr": "#16",
        "branch": "agents/stack-03-single-inference",
-       "x": 680,
-       "y": 10,
-       "w": 260,
+       "x": 580,
+       "y": 190,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/16",
        "claim": "Targets expose a single-inference capability: transport and auth without history or a tool loop. Independent of 1; the relay (4) is its first consumer.",
        "facts": [
@@ -3718,9 +3683,9 @@
        "title": "ACP runtime + environment seam",
        "pr": "#17",
        "branch": "agents/stack-02a-acp-runtime",
-       "x": 40,
+       "x": 20,
        "y": 100,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/17",
        "needs": [
         "p01"
@@ -3748,9 +3713,12 @@
        "kind": "out-of-tree · optional package",
        "tone": "grey",
        "deferred": true,
-       "x": 680,
-       "y": 190,
-       "w": 260,
+       "x": 580,
+       "y": 100,
+       "w": 240,
+       "needs": [
+        "p2a"
+       ],
        "claim": "Built against the 2a contract outside the repository with zero core changes; packaging waits on the preview CLI/SDK.",
        "facts": [
         [
@@ -3769,9 +3737,9 @@
        "title": "Docker reference provider",
        "pr": "#18",
        "branch": "agents/stack-02b-docker-provider",
-       "x": 40,
+       "x": 20,
        "y": 190,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/18",
        "needs": [
         "p2a"
@@ -3794,9 +3762,9 @@
        "title": "Tool calls as pieces",
        "pr": "#19",
        "branch": "agents/stack-02c-tool-calls",
-       "x": 360,
+       "x": 300,
        "y": 190,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/19",
        "needs": [
         "p2a"
@@ -3820,9 +3788,9 @@
        "kind": "deferred · after 2b",
        "tone": "grey",
        "deferred": true,
-       "x": 40,
+       "x": 20,
        "y": 280,
-       "w": 260,
+       "w": 240,
        "needs": [
         "p2b"
        ],
@@ -3840,9 +3808,9 @@
        "title": "Target-backed model (BYOK)",
        "pr": "#20",
        "branch": "agents/stack-04-model-binding",
-       "x": 360,
+       "x": 300,
        "y": 280,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/20",
        "needs": [
         "p2c",
@@ -3866,9 +3834,9 @@
        "title": "Reusable configuration",
        "pr": "#21",
        "branch": "agents/stack-05-configuration",
-       "x": 360,
+       "x": 300,
        "y": 370,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/21",
        "needs": [
         "p04"
@@ -3891,9 +3859,9 @@
        "title": "Agent Framework ACP host",
        "pr": "#25",
        "branch": "agents/stack-08-agent-framework",
-       "x": 680,
+       "x": 580,
        "y": 370,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/25",
        "needs": [
         "p04"
@@ -3917,13 +3885,13 @@
       {
        "id": "relaydef",
        "label": "later",
-       "title": "Relay modality · per-turn budgets",
+       "title": "Relay modality · turn budgets",
        "kind": "deferred · after 4",
        "tone": "grey",
        "deferred": true,
-       "x": 680,
+       "x": 580,
        "y": 460,
-       "w": 260,
+       "w": 240,
        "claim": "Per-request modality enforcement and per-turn inference budgets change evidence semantics; deferred with the limits documented in chapter 04.",
        "facts": [
         [
@@ -3939,9 +3907,9 @@
        "kind": "deferred · after 5",
        "tone": "grey",
        "deferred": true,
-       "x": 40,
+       "x": 20,
        "y": 460,
-       "w": 260,
+       "w": 240,
        "needs": [
         "p05"
        ],
@@ -3959,9 +3927,9 @@
        "title": "Co-PyRIT API",
        "pr": "#22",
        "branch": "agents/stack-06a-copyrit-api",
-       "x": 360,
+       "x": 300,
        "y": 460,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/22",
        "needs": [
         "p05"
@@ -3985,9 +3953,9 @@
        "kind": "deferred · after 6a",
        "tone": "grey",
        "deferred": true,
-       "x": 680,
+       "x": 580,
        "y": 550,
-       "w": 260,
+       "w": 240,
        "needs": [
         "p6a"
        ],
@@ -4005,9 +3973,9 @@
        "title": "Co-PyRIT UI",
        "pr": "#23",
        "branch": "agents/stack-06b-copyrit-ui",
-       "x": 360,
+       "x": 300,
        "y": 550,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/23",
        "needs": [
         "p6a"
@@ -4030,9 +3998,9 @@
        "title": "Interactive controls",
        "pr": "#24",
        "branch": "agents/stack-07-approvals",
-       "x": 360,
+       "x": 300,
        "y": 640,
-       "w": 260,
+       "w": 240,
        "url": "https://github.com/spencrr/PyRIT/pull/24",
        "needs": [
         "p6b"
@@ -4056,13 +4024,13 @@
       {
        "id": "registry",
        "label": "later",
-       "title": "Agent configuration registry UI",
+       "title": "Agent config registry UI",
        "kind": "deferred · after 6b",
        "tone": "grey",
        "deferred": true,
-       "x": 680,
+       "x": 580,
        "y": 640,
-       "w": 260,
+       "w": 240,
        "needs": [
         "p6b"
        ],
