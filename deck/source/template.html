@@ -316,7 +316,7 @@ function render() {
   stopAnims();
   const ch = chapterOf(state.i), st = stepOf(state.i);
   location.hash = `#/${ch.id}/${st.id}`;
-  document.title = `${ch.title} · ${st.title || st.id} · PyRIT agent targets`;
+  document.title = `${ch.title} · ${st.title || st.id} · PyRIT agent targets`.replace(/<\/?em>/g, '');
   frame.innerHTML = '';
   document.querySelectorAll('#app > #legend, #heroVersion').forEach((n) => n.remove());
   frame.classList.toggle('bleedOnly', ['hero', 'agenda', 'card'].includes(st.kind));
